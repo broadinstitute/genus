@@ -4,7 +4,8 @@ resul*
 *.tiff
 *.pt
 ground_truth
-*.json
+/submit/*.json
+/src/*json
 .idea/
 .ipynb_checkpoints/
 ./dataset_multiMNIST/MNIST/raw

@@ -8,7 +8,7 @@ from .unet import UNet, PreProcessor
 from .encoders_decoders import EncoderInstance, DecoderInstance, DecoderBackground, DecoderWhere
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_ranking, compute_average_in_box
 from .util_ml import sample_and_kl_diagonal_normal, sample_c_grid, compute_logp_dpp, compute_logp_bernoulli, SimilarityKernel
-from .namedtuple import Inference, BB, UNEToutput, ZZ, DIST, MetricMiniBatch
+from .namedtuple import Inference, BB, UNEToutput, ZZ, DIST, MetricMiniBatch, NmsOutput
 
 
 def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int):
@@ -206,15 +206,15 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
             score_nb = convert_to_box_list(c_grid_before_nms_b1wh + torch.sigmoid(logit_grid_corrected)).squeeze(-1)
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
-            indices_kb = NonMaxSuppression.compute_indices(score_nb=score_nb,
-                                                           bounding_box_nb=bounding_box_nb,
-                                                           iom_threshold=iom_threshold,
-                                                           k_objects_max=k_objects_max,
-                                                           topk_only=combined_topk_only)
+            nms_output: NmsOutput = NonMaxSuppression.compute_indices(score_nb=score_nb,
+                                                                      bounding_box_nb=bounding_box_nb,
+                                                                      iom_threshold=iom_threshold,
+                                                                      k_objects_max=k_objects_max,
+                                                                      topk_only=combined_topk_only)
 
             # Mask with all zero except 1s in the locations specified by the indices
             mask_nb = torch.zeros_like(score_nb).scatter(dim=0,
-                                                         index=indices_kb,
+                                                         index=nms_output.indices_kb,
                                                          src=torch.ones_like(score_nb))
             mask_grid_b1wh = invert_convert_to_box_list(mask_nb.unsqueeze(-1),
                                                         original_width=c_grid_before_nms_b1wh.shape[-2],
@@ -233,18 +233,18 @@ class InferenceAndGeneration(torch.nn.Module):
         # this will make adjust DPP and keep entropy of posterior
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
-        c_kb = torch.gather(convert_to_box_list(c_grid_before_nms_b1wh).squeeze(-1), dim=0, index=indices_kb)
-        bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=indices_kb),
-                                 by=torch.gather(bounding_box_nb.by, dim=0, index=indices_kb),
-                                 bw=torch.gather(bounding_box_nb.bw, dim=0, index=indices_kb),
-                                 bh=torch.gather(bounding_box_nb.bh, dim=0, index=indices_kb))
+        c_kb = torch.gather(convert_to_box_list(c_grid_before_nms_b1wh).squeeze(-1), dim=0, index=nms_output.indices_kb)
+        bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=nms_output.indices_kb),
+                                 by=torch.gather(bounding_box_nb.by, dim=0, index=nms_output.indices_kb),
+                                 bw=torch.gather(bounding_box_nb.bw, dim=0, index=nms_output.indices_kb),
+                                 bh=torch.gather(bounding_box_nb.bh, dim=0, index=nms_output.indices_kb))
 
         zwhere_kl_nbz = convert_to_box_list(zwhere_grid.kl)
-        indices_kbz = indices_kb.unsqueeze(-1).expand(-1, -1, zwhere_kl_nbz.shape[-1])
+        indices_kbz = nms_output.indices_kb.unsqueeze(-1).expand(-1, -1, zwhere_kl_nbz.shape[-1])
         zwhere_kl_kbz = torch.gather(zwhere_kl_nbz, dim=0, index=indices_kbz)
 
         # Crop the unet_features according to the selected boxes
-        unet_features_kbcwh = unet_output.features.unsqueeze(0).expand(indices_kb.shape[0], -1, -1, -1, -1)
+        unet_features_kbcwh = unet_output.features.unsqueeze(0).expand(nms_output.indices_kb.shape[0], -1, -1, -1, -1)
         cropped_feature_kbcwh = Cropper.crop(bounding_box=bounding_box_kb,
                                              big_stuff=unet_features_kbcwh,
                                              width_small=self.glimpse_size,
@@ -287,7 +287,7 @@ class InferenceAndGeneration(torch.nn.Module):
             bb_ideal_kb = mixing_to_ideal_bb(mixing_kb1wh, pad_size=self.pad_size_bb)
         ######    bh_target = torch.max(ideal_y3 - inference.sample_bb.by,
         ######                          inference.sample_bb.by - ideal_y1).clamp(min=size_obj_min, max=size_obj_max)
-        cost_bb_regression = self.bb_regression_penalty_strength * torch.zeros(1)
+        cost_bb_regression = self.bb_regression_penalty_strength * torch.zeros_like(cost_mask_overlap)
 
         # Compute MSE
         mixing_fg_b1wh = torch.sum(mixing_kb1wh, dim=-5)

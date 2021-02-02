@@ -156,10 +156,15 @@ class ZZ(NamedTuple):
 
 
 class BB(NamedTuple):
-    bx: torch.Tensor  # shape: n_box, batch_size
+    bx: torch.Tensor
     by: torch.Tensor
     bw: torch.Tensor
     bh: torch.Tensor
+
+
+class NmsOutput(NamedTuple):
+    score_kb: torch.Tensor  # shape k, batch_size
+    indices_kb: torch.Tensor
 
 
 class SparseSimilarity(NamedTuple):

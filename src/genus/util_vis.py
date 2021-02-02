@@ -14,7 +14,8 @@ from .namedtuple import BB, Output, Segmentation, Suggestion, Inference
 from .util_logging import log_img_only
 
 """ This module contains specialized plotting functions to visualize the segmentation results 
-and the training process."""
+and the training process. In most cases if :attr:`experiment` (of :class:`neptune.experiments.Experiment`) and 
+:attr:`neptune_name` of class str are specified then the corresponding image is logged into neptune """
 
 
 #  Functions whose documentation should NOT be exposed
@@ -129,9 +130,6 @@ def movie_from_resolution_sweep(suggestion: Suggestion,
     return HTML(anim.to_html5_video())
 
 
-
-# FROM HERE
-
 def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                         image: Union[torch.Tensor, numpy.ndarray],
                         window: Optional[tuple] = None,
@@ -140,7 +138,6 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                         figsize: tuple = (24, 24),
                         experiment: Optional[neptune.experiments.Experiment] = None,
                         neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
     assert len(label.shape) == 2
     assert len(image.shape) == 2 or len(image.shape)==3
     
@@ -181,9 +178,9 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                                          bg_label=0))
 
     fig.tight_layout()
-    if neptune_name is not None:
+    if (neptune_name is not None) and (experiment is not None):
         # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
 
@@ -253,7 +250,6 @@ def plot_grid(img,
               figsize: Optional[Tuple[float, float]] = None,
               experiment: Optional[neptune.experiments.Experiment] = None,
               neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
 
     assert len(img.shape) == 3
     n_max = img.shape[-3]
@@ -271,9 +267,9 @@ def plot_grid(img,
             axes[row, col].imshow(img[n])
 
     fig.tight_layout()
-    if neptune_name is not None:
+    if (neptune_name is not None) and (experiment is not None):
         # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
 
@@ -283,7 +279,6 @@ def plot_img_and_seg(img: torch.Tensor,
                      figsize: Optional[Tuple[float, float]] = None,
                      experiment: Optional[neptune.experiments.Experiment] = None,
                      neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
 
     assert len(img.shape) == len(seg.shape) == 4
     n_row = img.shape[-4]
@@ -303,9 +298,9 @@ def plot_img_and_seg(img: torch.Tensor,
             axes[n, 1].set_axis_off()
 
     fig.tight_layout()
-    if neptune_name is not None:
+    if (neptune_name is not None) and (experiment is not None):
         # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
 
@@ -319,7 +314,6 @@ def show_batch(images: torch.Tensor,
                figsize: Optional[Tuple[float, float]] = None,
                experiment: Optional[neptune.experiments.Experiment] = None,
                neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
 
     """Visualize a torch tensor of shape: (batch x ch x width x height) """
     assert len(images.shape) == 4  # batch, ch, width, height
@@ -337,9 +331,9 @@ def show_batch(images: torch.Tensor,
         plt.title(title)
     fig.tight_layout()
 
-    if neptune_name is not None:
+    if (neptune_name is not None) and (experiment is not None):
         # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
 
     plt.close(fig)
     return fig
@@ -350,7 +344,6 @@ def plot_tiling(tiling,
                 window: Optional[tuple] = None,
                 experiment: Optional[neptune.experiments.Experiment] = None,
                 neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
 
     if window is None:
         window = [0, 0, tiling.integer_mask.shape[-2], tiling.integer_mask.shape[-1]]
@@ -384,9 +377,10 @@ def plot_tiling(tiling,
     axes[1, 0].set_title("fg prob")
     axes[1, 1].set_title("raw image")
     fig.tight_layout()
-    if neptune_name is not None:
+
+    if (neptune_name is not None) and (experiment is not None):
         # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
 
@@ -401,39 +395,39 @@ def plot_generation(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    _exp = experiment if experiment else neptune
-
-    _ = show_batch(output.imgs,
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='imgs, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix + "imgs" + postfix)
-    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix + "c_grid_before_nms" + postfix)
-    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix + "c_grid_after_nms" + postfix)
-    _ = show_batch(output.inference.background_bcwh,
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='background, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix + "bg" + postfix)
+    fig_a = show_batch(output.imgs,
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='imgs, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "imgs" + postfix)
+    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "c_grid_before_nms" + postfix)
+    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "c_grid_after_nms" + postfix)
+    fig_d = show_batch(output.inference.background_bcwh,
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='background, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "bg" + postfix)
 
     if verbose:
         print("leaving plot_generation")
+
+    return fig_a, fig_b, fig_c, fig_d
 
 
 def plot_reconstruction_and_inference(output: Output,
@@ -445,52 +439,52 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    _exp = experiment if experiment else neptune
-
-    _ = show_batch(output.imgs,
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='imgs, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"imgs"+postfix)
-    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"c_grid_before_nms"+postfix)
-    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"c_grid_after_nms"+postfix)
-    _ = show_batch(output.inference.logit_grid,
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='logit_grid, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"logit_grid"+postfix)
-    _ = show_batch(torch.sigmoid(output.inference.logit_grid),
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='prob_grid, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"prob_grid"+postfix)
-    _ = show_batch(output.inference.background_bcwh,
-                   n_col=4,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   title='background, epoch= {0:6d}'.format(epoch),
-                   experiment=_exp,
-                   neptune_name=prefix+"bg"+postfix)
+    fig_a = show_batch(output.imgs,
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='imgs, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"imgs"+postfix)
+    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"c_grid_before_nms"+postfix)
+    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"c_grid_after_nms"+postfix)
+    fig_d = show_batch(output.inference.logit_grid,
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='logit_grid, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"logit_grid"+postfix)
+    fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='prob_grid, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"prob_grid"+postfix)
+    fig_f = show_batch(output.inference.background_bcwh,
+                       n_col=4,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       title='background, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"bg"+postfix)
     if verbose:
         print("leaving plot_reconstruction_and_inference")
+
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f
 
 
 def plot_segmentation(segmentation: Segmentation,
@@ -498,11 +492,9 @@ def plot_segmentation(segmentation: Segmentation,
                       prefix: str = "",
                       postfix: str = "",
                       experiment: Optional[neptune.experiments.Experiment] = None,
-                      verbose: bool = False):
+                      verbose: bool = False) -> tuple:
     if verbose:
         print("in plot_segmentation")
-
-    _exp = experiment if experiment else neptune
 
     if isinstance(epoch, int):
         title_postfix = 'epoch= {0:6d}'.format(epoch)
@@ -511,37 +503,38 @@ def plot_segmentation(segmentation: Segmentation,
     else:
         raise Exception
 
-    _ = show_batch(segmentation.integer_mask.float(),
-                   n_padding=4,
-                   normalize_range=None,  # use min_max of tensor
-                   figsize=(12, 12),
-                   title='integer_mask, '+title_postfix,
-                   experiment=_exp,
-                   neptune_name=prefix+"integer_mask"+postfix)
-    _ = show_batch(segmentation.fg_prob,
-                   n_padding=4,
-                   normalize_range=(0.0, 1.0),
-                   figsize=(12, 12),
-                   title='fg_prob, '+title_postfix,
-                   experiment=_exp,
-                   neptune_name=prefix+"fg_prob"+postfix)
+    fig_a = show_batch(segmentation.integer_mask.float(),
+                       n_padding=4,
+                       normalize_range=None,  # use min_max of tensor
+                       figsize=(12, 12),
+                       title='integer_mask, '+title_postfix,
+                       experiment=experiment,
+                       neptune_name=prefix+"integer_mask"+postfix)
+    fig_b = show_batch(segmentation.fg_prob,
+                       n_padding=4,
+                       normalize_range=(0.0, 1.0),
+                       figsize=(12, 12),
+                       title='fg_prob, '+title_postfix,
+                       experiment=experiment,
+                       neptune_name=prefix+"fg_prob"+postfix)
 
     if verbose:
         print("leaving plot_segmentation")
+
+    return fig_a, fig_b
 
 
 def plot_concordance(concordance,
                      figsize: tuple = (12, 12),
                      experiment: Optional[neptune.experiments.Experiment] = None,
                      neptune_name: Optional[str] = None):
-    _exp = experiment if experiment else neptune
     fig, axes = plt.subplots(figsize=figsize)
     axes.imshow(concordance.intersection_mask.cpu(), cmap='gray')
     axes.set_title("intersection mask, iou=" + str(concordance.iou))
 
     fig.tight_layout()
-    if neptune_name is not None:
-        log_img_only(name=neptune_name, fig=fig, experiment=_exp)
+    if (neptune_name is not None) and (experiment is not None):
+        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
 

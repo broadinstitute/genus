@@ -332,7 +332,7 @@ class CompositionalVae(torch.nn.Module):
                             roi_mask: Optional[torch.Tensor],
                             patch_size: Optional[Tuple[int, int]] = None,
                             stride: Optional[Tuple[int, int]] = None,
-                            n_objects_max_per_patch: Optional[int] = None,
+                            k_objects_max_per_patch: Optional[int] = None,
                             prob_corr_factor: float = 0.0,
                             topk_only: bool = False,
                             iom_threshold: float = 0.3,
@@ -417,8 +417,8 @@ class CompositionalVae(torch.nn.Module):
         patch_size = (self._params["input_image"]["size_image_patch"],
                       self._params["input_image"]["size_image_patch"]) if patch_size is None else patch_size
         stride = (int(patch_size[0] // 4), int(patch_size[1] // 4)) if stride is None else stride
-        k_objects_max_per_patch = self._params["input_image"]["max_objects_per_patch"] if n_objects_max_per_patch is None \
-            else n_objects_max_per_patch
+        k_objects_max_per_patch = self._params["input_image"]["max_objects_per_patch"] if k_objects_max_per_patch is None \
+            else k_objects_max_per_patch
 
         assert patch_size[0] % stride[0] == 0, "crop and stride size are NOT compatible"
         assert patch_size[1] % stride[1] == 0, "crop and stride size are NOT compatible"
@@ -561,6 +561,7 @@ class CompositionalVae(torch.nn.Module):
                                 fg_prob=big_fg_prob[None, None, pad_w:pad_w + w_img, pad_h:pad_h + h_img],
                                 integer_mask=big_integer_mask[None, None, pad_w:pad_w + w_img, pad_h:pad_h + h_img],
                                 bounding_boxes=None,
+                                bounding_boxes_ideal=None,
                                 similarity=SparseSimilarity(sparse_matrix=sparse_similarity_matrix,
                                                             index_matrix=index_matrix_padded[0, 0, pad_w:pad_w + w_img,
                                                                                              pad_h:pad_h + h_img]))
