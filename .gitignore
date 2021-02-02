@@ -3,6 +3,7 @@ resul*
 *.tif
 *.tiff
 *.pt
+*.json
 .idea/
 .ipynb_checkpoints/
 ./dataset_multiMNIST/MNIST/raw

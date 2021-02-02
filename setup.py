@@ -26,16 +26,16 @@ def read(*names, **kwargs):
 long_description = read('README.md')
 
 setup(
-    name='cellsegmenter',  # Required
+    name='genus',  # Required
     version='0.0.1',  # Required
-    description='Unsupervised instance segmentation based on Structured Variational Auto Encoders',  # Optional
+    description='GENerative framework for the Unsupervised Segmentation of modular images.',  # Optional
     long_description=long_description,  # Optional
     # Denotes that our long_description is in Markdown; valid values are
     # text/plain, text/x-rst, and text/markdown
     long_description_content_type='text/markdown',  # Optional (see note above)
     author='Luca D\'Alessio',  # Optional
     author_email='ldalessi@broadinstitute.org',  # Optional
-    url='https://github.com/broadinstitute/cellsegmenter.git',  # Optional
+    url='https://github.com/broadinstitute/genus.git',  # Optional
     packages=find_packages('src'),
     package_dir={'': 'src'},
     py_modules=[splitext(basename(path))[0] for path in glob('src/*.py')],
