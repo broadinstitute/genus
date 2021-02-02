@@ -3,6 +3,7 @@ resul*
 *.tif
 *.tiff
 *.pt
+ground_truth
 *.json
 .idea/
 .ipynb_checkpoints/
