@@ -18,6 +18,8 @@ def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int, min_box_size: 
         Args:
             mixing_kb1wh: torch.Tensor of shape :math:`(K, B, 1, W, H)`
             pad_size: padding around the mask. If :attr:`pad_size` = 0 then the bounding box is body fitted
+            min_box_size: minimum allowed size for the bounding_box
+            max_box_size: maximum allowed size for the bounding box
 
         Returns:
             The ideal bounding boxes in :class:`BB` of shape :math:`(K, B)`
@@ -190,7 +192,6 @@ class InferenceAndGeneration(torch.nn.Module):
             else:
                 p_corr_b1wh = 0.5*torch.ones_like(unet_output.logit)
         # End of torch.no_grad
-
         logit_grid_corrected = self._compute_logit_corrected(logit_praw=unet_output.logit,
                                                              p_corr=p_corr_b1wh,
                                                              a=prob_corr_factor)
@@ -199,6 +200,8 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
 
+        # TODO: Maybe c_grid should be not differentiable and I should explicitely gather
+        #  the corresponding logit_grid_corrected
         c_grid_before_nms_b1wh = sample_c_grid(logit_grid=logit_grid_corrected,
                                                similarity_matrix=similarity_kernel,
                                                noisy_sampling=noisy_sampling,
@@ -235,6 +238,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # this will make adjust DPP and keep entropy of posterior
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
+        logit_kb = torch.gather(convert_to_box_list(logit_grid_corrected).squeeze(-1), dim=0, index=nms_output.indices_kb)
         c_kb = torch.gather(convert_to_box_list(c_grid_before_nms_b1wh).squeeze(-1), dim=0, index=nms_output.indices_kb)
         bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=nms_output.indices_kb),
                                  by=torch.gather(bounding_box_nb.by, dim=0, index=nms_output.indices_kb),
@@ -276,8 +280,10 @@ class InferenceAndGeneration(torch.nn.Module):
         # Compute the mixing
         out_mask_kb1wh = torch.sigmoid(out_weights_kb1wh)
         c_times_mask_kb1wh = out_mask_kb1wh * c_kb[..., None, None, None]  # this is strictly smaller than 1
-        mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        # TODO: the next line has problems. I get that mixing is 1. It means that I can not learn the background....
+        mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp_(min=1.0)  # softplus-like function
         print("DEBUG  mean_fg_fraction", mixing_kb1wh.sum(dim=-5).mean())
+        assert 1==2
 
         # Compute the mask_overlap
         # TODO: Maybe c should be detached when computing cost_mask_overlap. I do not want this to make all boxes turn off
@@ -335,10 +341,13 @@ class InferenceAndGeneration(torch.nn.Module):
             batch_size = c_grid_after_nms_b1wh.shape[0]
             # If in range log_lambda should decrease if out of range it should increase
             ncell_av = c_grid_after_nms_b1wh.sum() / batch_size
-            v_ncell = min(ncell_av - self.target_ncell_min, self.target_ncell_max - ncell_av)
+            range_ncell = self.target_ncell_max - self.target_ncell_min
+            v_ncell = min(ncell_av - self.target_ncell_min, self.target_ncell_max - ncell_av) / range_ncell
 
             fgfraction_av = mixing_fg_b1wh.mean()
-            v_fgfraction = min(fgfraction_av - self.target_fgfraction_min, self.target_fgfraction_max - fgfraction_av)
+            range_fgfraction = self.target_fgfraction_max - self.target_fgfraction_min
+            v_fgfraction = min(fgfraction_av - self.target_fgfraction_min,
+                               self.target_fgfraction_max - fgfraction_av) / range_fgfraction
 
             v_mse = min(mse_av - self.target_mse_min, self.target_mse_max - mse_av)
 
@@ -348,8 +357,8 @@ class InferenceAndGeneration(torch.nn.Module):
             lambda_ncell = self.geco_loglambda_ncell.exp() * torch.sign(ncell_av - self.target_ncell_min)
 
         loss_vae = kl_av + \
-                   lambda_ncell * torch.sum(c_grid_before_nms_b1wh) / batch_size + \
-                   lambda_fgfraction * torch.sum(mixing_fg_b1wh) / batch_size + \
+                   lambda_ncell * torch.mean(c_grid_before_nms_b1wh) + \
+                   lambda_fgfraction * torch.mean(mixing_fg_b1wh) + \
                    lambda_mse * (mse_av + cost_bb_regression + cost_mask_overlap)
 
         loss_geco = v_mse * self.geco_loglambda_mse + \
