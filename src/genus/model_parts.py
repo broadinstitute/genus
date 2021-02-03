@@ -190,11 +190,10 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_corr_b1wh = 0.5*torch.ones_like(unet_output.logit)
         # End of torch.no_grad
 
-        #logit_grid_corrected = self._compute_logit_corrected(logit_praw=unet_output.logit,
-        #                                                     p_corr=p_corr_b1wh,
-        #                                                     a=prob_corr_factor)
+        logit_grid_corrected = self._compute_logit_corrected(logit_praw=unet_output.logit,
+                                                             p_corr=p_corr_b1wh,
+                                                             a=prob_corr_factor)
 
-        logit_grid_corrected = torch.log(p_corr_b1wh) - torch.log(1-p_corr_b1wh)
 
         # Sample the probability grid from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
