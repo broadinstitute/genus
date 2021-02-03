@@ -169,7 +169,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   sample_from_prior=generate_synthetic_data)
         out_background_bcwh = self.decoder_zbg(z=zbg.sample, high_resolution=(imgs_bcwh.shape[-2], imgs_bcwh.shape[-1]))
 
-
         # bounding boxes
         zwhere_grid: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
                                                           posterior_std=unet_output.zwhere.std,
@@ -347,7 +346,7 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
             batch_size = c_grid_after_nms_b1wh.shape[0]
             # If in range log_lambda should decrease if out of range it should increase
-            ncell_av = c_grid_after_nms_b1wh.sum() / batch_size
+            ncell_av = c_detached_kb.sum() / batch_size
             range_ncell = self.target_ncell_max - self.target_ncell_min
             v_ncell = min(ncell_av - self.target_ncell_min, self.target_ncell_max - ncell_av) / range_ncell
 

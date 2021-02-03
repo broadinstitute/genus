@@ -88,7 +88,7 @@ class Uncropper(object):
         # Compute the affine matrix. Note that z_where has only independent dimensions
         affine_matrix: torch.Tensor = Uncropper._compute_affine_uncropper(bounding_box=bounding_box,
                                                                           width_raw=width_big,
-                                                                          height_raw=height_big)
+                                                                          height_raw=height_big).view(independent_dim+[2, 3])
 
         # The cropped and uncropped imgs have:
         # a. same independent dimension (boxes, batch)
@@ -97,7 +97,7 @@ class Uncropper(object):
         uncropped_stuff: torch.Tensor = torch.zeros(independent_dim + large_dependent_dim,
                                                     dtype=small_stuff.dtype,
                                                     device=small_stuff.device).view([-1] + large_dependent_dim)
-        grid = F.affine_grid(affine_matrix, list(uncropped_stuff.shape), align_corners=True)
+        grid = F.affine_grid(affine_matrix.view(-1, 2, 3), list(uncropped_stuff.shape), align_corners=True)
         uncropped_stuff = F.grid_sample(small_stuff.view([-1] + small_dependent_dim), grid,
                                         mode='bilinear', padding_mode='zeros', align_corners=True)
         return uncropped_stuff.view(independent_dim + large_dependent_dim)
