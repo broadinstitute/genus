@@ -460,13 +460,13 @@ def plot_reconstruction_and_inference(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_after_nms"+postfix)
-    fig_d = show_batch(output.inference.logit_grid,
+    fig_d = show_batch(torch.sigmoid(output.inference.logit_grid_unet),
                        n_col=4,
                        n_padding=4,
                        normalize_range=(0.0, 1.0),
                        title='logit_grid, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
-                       neptune_name=prefix+"logit_grid"+postfix)
+                       neptune_name=prefix+"prob_unet_grid"+postfix)
     fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=4,
                        n_padding=4,

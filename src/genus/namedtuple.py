@@ -191,6 +191,7 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
+    logit_grid_unet: torch.Tensor  #for debug
     background_bcwh: torch.Tensor
     foreground_kbcwh: torch.Tensor
     mixing_kb1wh: torch.Tensor

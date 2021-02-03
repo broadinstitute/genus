@@ -183,11 +183,11 @@ class InferenceAndGeneration(torch.nn.Module):
                 av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
                 ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
                 tmp_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
-                p_corr_b1wh = invert_convert_to_box_list(tmp_nb.unsqueeze(-1),
+                p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
             else:
-                p_corr_b1wh = torch.zeros_like(unet_output.logit)
+                p_corr_b1wh = 0.5*torch.ones_like(unet_output.logit)
         # End of torch.no_grad
         logit_grid_corrected = self._compute_logit_corrected(logit_praw=unet_output.logit,
                                                              p_corr=p_corr_b1wh,
@@ -361,6 +361,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                   kl_logit_av=self.running_avarage_kl_logit.detach().item())
 
         inference = Inference(logit_grid=logit_grid_corrected.detach(),
+                              logit_grid_unet=unet_output.logit.detach(),
                               background_bcwh=out_background_bcwh.detach(),
                               mixing_kb1wh=mixing_kb1wh.detach(),
                               foreground_kbcwh=out_img_kbcwh.detach(),
