@@ -290,10 +290,21 @@ class InferenceAndGeneration(torch.nn.Module):
         # Compute ideal box
         # TODO: compute the L1 or L2 loss between the ideal and actual bounding box
         with torch.no_grad():
-            bb_ideal_kb = mixing_to_ideal_bb(mixing_kb1wh, pad_size=self.pad_size_bb)
-        ######    bh_target = torch.max(ideal_y3 - inference.sample_bb.by,
-        ######                          inference.sample_bb.by - ideal_y1).clamp(min=size_obj_min, max=size_obj_max)
-        cost_bb_regression = self.bb_regression_penalty_strength * torch.zeros_like(cost_mask_overlap)
+            bb_ideal_kb = mixing_to_ideal_bb(mixing_kb1wh,
+                                             pad_size=self.pad_size_bb,
+                                             min_box_size=self.size_min,
+                                             max_box_size=self.size_max)
+            ideal_x1 = bb_ideal_kb.bx - 0.5 * bb_ideal_kb.bw
+            ideal_x3 = bb_ideal_kb.bx + 0.5 * bb_ideal_kb.bw
+            ideal_y1 = bb_ideal_kb.by - 0.5 * bb_ideal_kb.bh
+            ideal_y3 = bb_ideal_kb.by + 0.5 * bb_ideal_kb.bh
+            bw_target = torch.max(ideal_x3 - bounding_box_kb.bx,
+                                  bounding_box_kb.bx - ideal_x1).clamp(min=self.size_min, max=self.size_max)
+            bh_target = torch.max(ideal_y3 - bounding_box_kb.by,
+                                  bounding_box_kb.by - ideal_y1).clamp(min=self.size_min, max=self.size_max)
+        # cost_bb_regression = self.bb_regression_penalty_strength * torch.zeros_like(cost_mask_overlap)
+        cost_bb_regression = torch.sum((bw_target - bounding_box_kb.bw)**2 +
+                                       (bh_target - bounding_box_kb.bh)**2) * self.bb_regression_penalty_strength
 
         # Compute MSE
         mixing_fg_b1wh = torch.sum(mixing_kb1wh, dim=-5)
