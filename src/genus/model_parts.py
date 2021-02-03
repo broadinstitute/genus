@@ -92,7 +92,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                   ch_out=params["architecture"]["n_ch_img"] + 1)
         # Encoders
         self.encoder_zinstance: EncoderInstance = EncoderInstance(size=params["architecture"]["glimpse_size"],
-                                                                  ch_in=params["architecture"]["n_ch_output_features"],
+                                                                  ch_in=params["architecture"]["n_ch_output_features"] + \
+                                                                        params["architecture"]["n_ch_img"],
                                                                   dim_z=params["architecture"]["dim_zinstance"])
 
         # Parameters
@@ -245,7 +246,10 @@ class InferenceAndGeneration(torch.nn.Module):
         zwhere_kl_kbz = torch.gather(zwhere_kl_nbz, dim=0, index=indices_kbz)
 
         # Crop the unet_features according to the selected boxes
-        unet_features_kbcwh = unet_output.features.unsqueeze(0).expand(nms_output.indices_kb.shape[0], -1, -1, -1, -1)
+        #TODO remove this concatenation
+        #unet_features_kbcwh = unet_output.features.unsqueeze(0).expand(nms_output.indices_kb.shape[0], -1, -1, -1, -1)
+        concat_unet_and_raw_image = torch.cat((unet_output.features, imgs_bcwh), dim=-3)
+        unet_features_kbcwh = concat_unet_and_raw_image.unsqueeze(0).expand(nms_output.indices_kb.shape[0], -1, -1, -1, -1)
         cropped_feature_kbcwh = Cropper.crop(bounding_box=bounding_box_kb,
                                              big_stuff=unet_features_kbcwh,
                                              width_small=self.glimpse_size,
@@ -363,8 +367,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                   kl_logit_av=self.running_avarage_kl_logit.detach().item())
 
         inference = Inference(logit_grid=logit_grid_corrected.detach(),
-                              p_grid_unet=torch.sigmoid(unet_output.logit).detach(),
-                              p_grid_corr=p_corr_b1wh.detach(),
+                              p_grid_unet=torch.sigmoid(unet_output.logit).detach(),  # for debug
+                              p_grid_corr=p_corr_b1wh.detach(),  # for debug
                               background_bcwh=out_background_bcwh.detach(),
                               mixing_kb1wh=mixing_kb1wh.detach(),
                               foreground_kbcwh=out_img_kbcwh.detach(),
