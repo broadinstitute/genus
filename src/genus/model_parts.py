@@ -194,7 +194,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              p_corr=p_corr_b1wh,
                                                              a=prob_corr_factor)
 
-
         # Sample the probability grid from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
@@ -276,6 +275,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
 
         # Compute the mask_overlap
+        # TODO: Maybe c should be detached when computing cost_mask_overlap
         # A = (x1+x2+x3)^2 = x1^2 + x2^2 + x3^2 + 2 x1*x2 + 2 x1*x3 + 2 x2*x3
         # Therefore sum_{i \ne j} x_i x_j = x1*x2 + x1*x3 + x2*x3 = 0.5 * [(sum xi)^2 - (sum xi^2)]
         sum_x = c_times_mask_kb1wh.sum(dim=-5)  # sum over boxes first
@@ -363,7 +363,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                   kl_logit_av=self.running_avarage_kl_logit.detach().item())
 
         inference = Inference(logit_grid=logit_grid_corrected.detach(),
-                              logit_grid_unet=unet_output.logit.detach(),
+                              p_grid_unet=torch.sigmoid(unet_output.logit).detach(),
+                              p_grid_corr=p_corr_b1wh.detach(),
                               background_bcwh=out_background_bcwh.detach(),
                               mixing_kb1wh=mixing_kb1wh.detach(),
                               foreground_kbcwh=out_img_kbcwh.detach(),
