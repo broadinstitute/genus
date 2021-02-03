@@ -151,19 +151,16 @@ def sample_c_grid(logit_grid: torch.Tensor,
         Binarized torch.Tensor with c_grid which has the same size as :attr:`logit_grid`.
 
     Note:
-        If :attr:`sample_from_prior` is True the returned value (c_grid) is NOT differentiable w.r.t.
-        the :attr:`similarity_matrix`. If :attr:`sample_from_prior` is False the returned value (c_grid)
-        IS differentiable w.r.t. :attr:`logit_grid`. We use a pass-thought approximation,
-        i.e. :math:`\delta c/\delta logit = \delta p/\delta logit * \delta c/\delta p = \delta p/\delta logit * 1'
+        The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`logit_grid` or :attr:`similarity_matrix`)
     """
     assert len(logit_grid.shape) == 4
     assert logit_grid.shape[-3] == 1
     assert len(similarity_matrix.shape) == 2
     assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == logit_grid.shape[-1]*logit_grid.shape[-2]
 
-    if sample_from_prior:
-        # sample from DPP specified by the similarity kernel
-        with torch.no_grad():
+    with torch.no_grad():
+        if sample_from_prior:
+            # sample from DPP specified by the similarity kernel
             batch_size = torch.Size([logit_grid.shape[0]])
             s = similarity_matrix.requires_grad_(False)
             c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
@@ -171,15 +168,12 @@ def sample_c_grid(logit_grid: torch.Tensor,
             c_grid = invert_convert_to_box_list(c_reshaped,
                                                 original_width=logit_grid.shape[-2],
                                                 original_height=logit_grid.shape[-1])
-            return c_grid  # shape: batch_size, 1, p_map.shape[-2], p_map.shape[-1]
-    else:
-        # sample from posterior which is a collection of independent Bernoulli variables
-        p_grid = torch.sigmoid(logit_grid)
-        with torch.no_grad():
+        else:
+            # sample from posterior which is a collection of independent Bernoulli variables
+            p_grid = torch.sigmoid(logit_grid)
             c_grid = (torch.rand_like(p_grid) < p_grid) if noisy_sampling else (0.5 < p_grid)
 
-        # trick so that value is given by c_grid but derivatives from p_grid
-        return c_grid.float() + p_grid - p_grid.detach()
+        return c_grid.float()  # same shape as logit_grid.
 
 
 def compute_logp_dpp(c_grid: torch.Tensor,

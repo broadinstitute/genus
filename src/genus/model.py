@@ -188,7 +188,7 @@ class CompositionalVae(torch.nn.Module):
 
     def segment(self, imgs_in: torch.Tensor,
                 k_objects_max: Optional[int] = None,
-                prob_corr_factor: float = 0.0,
+                prob_corr_factor: Optional[float] = None,
                 topk_only: bool = False,
                 iom_threshold: float = 0.3,
                 noisy_sampling: bool = False,
@@ -234,6 +234,7 @@ class CompositionalVae(torch.nn.Module):
             >>> segmentation = vae.segment(imgs_in=img_to_segment)
         """
 
+        prob_corr_factor = getattr(self, "prob_corr_factor", 0.0) if prob_corr_factor is None else prob_corr_factor
         k_objects_max = self._params["input_image"]["max_objects_per_patch"] if k_objects_max is None else k_objects_max
         iom_threshold = self._params["architecture"]["iom_threshold_test"] if iom_threshold is None else iom_threshold
 

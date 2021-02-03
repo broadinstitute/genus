@@ -123,21 +123,26 @@ class InferenceAndGeneration(torch.nn.Module):
         self.target_mse_min = 0.0
         self.target_mse_max = 1.0
 
-    @staticmethod
-    def _compute_logit_corrected(logit_praw: torch.Tensor,
-                                 p_corr: torch.Tensor,
-                                 a: float):
-        """ In log space computes the probability correction p = (1-a) * p_raw + a * p_corr
-            It returns the logit of the corrected probability
-        """
-        log_praw = F.logsigmoid(logit_praw)
-        log_1_m_praw = F.logsigmoid(-logit_praw)
-        log_a = torch.tensor(a, device=logit_praw.device, dtype=logit_praw.dtype).log()
-        log_1_m_a = torch.tensor(1-a, device=logit_praw.device, dtype=logit_praw.dtype).log()
-        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_corr) + log_a)
-        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log(1-p_corr) + log_a)
-        logit_corrected = log_p_corrected - log_1_m_p_corrected
-        return logit_corrected
+#####    @staticmethod
+#####    def _compute_logit_target(logit_praw: torch.Tensor,
+#####                              p_corr: torch.Tensor,
+#####                              a: float):
+#########        """ In log space computes the probability correction p = (1-a) * p_raw + a * p_corr
+#########            It returns the logit of the corrected probability
+#########        """
+#########        log_praw = F.logsigmoid(logit_praw)
+#########        log_1_m_praw = F.logsigmoid(-logit_praw)
+#########        log_a = torch.tensor(a, device=logit_praw.device, dtype=logit_praw.dtype).log()
+#########        log_1_m_a = torch.tensor(1-a, device=logit_praw.device, dtype=logit_praw.dtype).log()
+#########        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_corr) + log_a)
+#########        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log(1-p_corr) + log_a)
+#########        logit_corrected = log_p_corrected - log_1_m_p_corrected
+#########        return logit_corrected
+#####        p_new = (a * torch.sigmoid(logit_praw) + (1-a) * p_corr).clamp(min=0.1, max=0.9)
+#####        logit_target = torch.log(p_new) - torch.log(1-p_new)
+#####        return logit_target
+
+
 
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
@@ -181,6 +186,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # print("bounding_box_nb.bx.shape ->", bounding_box_nb.bx.shape)
 
         # Correct probability if necessary
+        print("prob_corr_factor ->", prob_corr_factor)
         with torch.no_grad():
             if prob_corr_factor > 0:
                 av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
@@ -189,26 +195,25 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
+                p_new = (1-prob_corr_factor) * torch.sigmoid(unet_output.logit) + prob_corr_factor * p_corr_b1wh
+                p_new.clamp_(min=0.1, max=0.9)
+                logit_target = torch.log(p_new) - torch.log(1-p_new)
             else:
-                p_corr_b1wh = 0.5*torch.ones_like(unet_output.logit)
+                logit_target = unet_output.logit
         # End of torch.no_grad
-        logit_grid_corrected = self._compute_logit_corrected(logit_praw=unet_output.logit,
-                                                             p_corr=p_corr_b1wh,
-                                                             a=prob_corr_factor)
+        logit_grid_corrected = unet_output.logit + (logit_target - unet_output.logit).detach()
 
         # Sample the probability grid from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
 
-        # TODO: Maybe c_grid should be not differentiable and I should explicitely gather
-        #  the corresponding logit_grid_corrected
-        c_grid_before_nms_b1wh = sample_c_grid(logit_grid=logit_grid_corrected,
-                                               similarity_matrix=similarity_kernel,
-                                               noisy_sampling=noisy_sampling,
-                                               sample_from_prior=generate_synthetic_data)
-
         # NMS + top-K operation
         with torch.no_grad():
+            c_grid_before_nms_b1wh = sample_c_grid(logit_grid=logit_grid_corrected,
+                                                   similarity_matrix=similarity_kernel,
+                                                   noisy_sampling=noisy_sampling,
+                                                   sample_from_prior=generate_synthetic_data)
+
             score_nb = convert_to_box_list(c_grid_before_nms_b1wh + torch.sigmoid(logit_grid_corrected)).squeeze(-1)
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_indices(score_nb=score_nb,
@@ -224,22 +229,23 @@ class InferenceAndGeneration(torch.nn.Module):
             mask_grid_b1wh = invert_convert_to_box_list(mask_nb.unsqueeze(-1),
                                                         original_width=c_grid_before_nms_b1wh.shape[-2],
                                                         original_height=c_grid_before_nms_b1wh.shape[-1])
+            c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * mask_grid_b1wh
 
-        # Compute the KL divergence between the DPP prior and the posterior.
-        # Note that I use: c_grid_after_nms = c_grid_before_nms * mask_grid
-        # This is because I am learning the prior. If I feed c_grid_before_nms which can have nearby points on,
-        # then I can learn very bad parameters for my prior.
-        c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * mask_grid_b1wh
+        # Compute KL divergence between the DPP prior and the posterior: KL = logp(c|logit) - logp(c|similarity)
+        # The effect of this term should be:
+        # 1. DECREASE logit where c=1, INCREASE logit where c=0 (i.e. make the posterior distribution more entropic)
+        # 2. Make the DPP parameters adjust to the seen configurations
         c_grid_logp_prior_b = compute_logp_dpp(c_grid=c_grid_after_nms_b1wh.detach(),
                                                similarity_matrix=similarity_kernel)
         c_grid_logp_posterior_b = compute_logp_bernoulli(c_grid=c_grid_after_nms_b1wh.detach(),
                                                          logit_grid=logit_grid_corrected)
-
-        # this will make adjust DPP and keep entropy of posterior
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
-        logit_kb = torch.gather(convert_to_box_list(logit_grid_corrected).squeeze(-1), dim=0, index=nms_output.indices_kb)
-        c_kb = torch.gather(convert_to_box_list(c_grid_before_nms_b1wh).squeeze(-1), dim=0, index=nms_output.indices_kb)
+        # Gather all relevant quantities from the selected boxes
+        logit_kb = torch.gather(convert_to_box_list(logit_grid_corrected).squeeze(-1),
+                                dim=0, index=nms_output.indices_kb)
+        c_detached_kb = torch.gather(convert_to_box_list(c_grid_after_nms_b1wh).squeeze(-1),
+                                     dim=0, index=nms_output.indices_kb)
         bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=nms_output.indices_kb),
                                  by=torch.gather(bounding_box_nb.by, dim=0, index=nms_output.indices_kb),
                                  bw=torch.gather(bounding_box_nb.bw, dim=0, index=nms_output.indices_kb),
@@ -278,20 +284,21 @@ class InferenceAndGeneration(torch.nn.Module):
                                                        dim=-3)
 
         # Compute the mixing
+        # mixing = p * mask / (sum_n p mask).clamp(min=1.0).detach()
         out_mask_kb1wh = torch.sigmoid(out_weights_kb1wh)
-        c_times_mask_kb1wh = out_mask_kb1wh * c_kb[..., None, None, None]  # this is strictly smaller than 1
-        # TODO: the next line has problems. I get that mixing is 1. It means that I can not learn the background....
-        mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp_(min=1.0)  # softplus-like function
-        print("DEBUG  mean_fg_fraction", mixing_kb1wh.sum(dim=-5).mean())
-        assert 1==2
+        p_kb = torch.sigmoid(logit_kb)
+        p_times_mask_kb1wh = p_kb[..., None, None, None] * out_mask_kb1wh
+        sum_p_times_mask_b1wh = p_times_mask_kb1wh.sum(dim=-5)
+        sum_p_times_mask_squared_b1wh = p_times_mask_kb1wh.pow(2).sum(dim=-5)
+        mixing_kb1wh = p_times_mask_kb1wh / sum_p_times_mask_b1wh.clamp(min=1.0).detach()
+        print("DEBUG  mean_fg_fraction, mean_c ->", mixing_kb1wh.sum(dim=-5).mean(), c_detached_kb.mean())
+        # assert 1==2
 
         # Compute the mask_overlap
         # TODO: Maybe c should be detached when computing cost_mask_overlap. I do not want this to make all boxes turn off
         # A = (x1+x2+x3)^2 = x1^2 + x2^2 + x3^2 + 2 x1*x2 + 2 x1*x3 + 2 x2*x3
         # Therefore sum_{i \ne j} x_i x_j = x1*x2 + x1*x3 + x2*x3 = 0.5 * [(sum xi)^2 - (sum xi^2)]
-        sum_x = c_times_mask_kb1wh.sum(dim=-5)  # sum over boxes first
-        sum_x2 = c_times_mask_kb1wh.pow(2).sum(dim=-5)  # square first and sum over boxes later
-        mask_overlap = 0.5 * (sum_x.pow(2) - sum_x2).clamp(min=0).sum()
+        mask_overlap = 0.5 * (sum_p_times_mask_b1wh.pow(2) - sum_p_times_mask_squared_b1wh).clamp(min=0).sum()
         cost_mask_overlap = self.mask_overlap_penalty_strength * mask_overlap
 
         # Compute ideal box
@@ -316,17 +323,17 @@ class InferenceAndGeneration(torch.nn.Module):
                                        (bh_target - bounding_box_kb.bh)**2) * self.bb_regression_penalty_strength
 
         # Compute MSE
-        mixing_fg_b1wh = torch.sum(mixing_kb1wh, dim=-5)
+        mixing_fg_b1wh = mixing_kb1wh.sum(dim=-5)
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh)/self.sigma_mse_bg).pow(2)
         mse_fg_kbcwh = ((out_img_kbcwh - imgs_bcwh)/self.sigma_mse_fg).pow(2)
         mse_av = ((mixing_kb1wh * mse_fg_kbcwh).sum(dim=-5) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
         # Compute KL (mean over batch, latent_dim, sum over n_boxes)
-        c_detach_kb1 = c_kb.unsqueeze(-1).detach()
+        c_detached_kb1 = c_detached_kb.unsqueeze(-1).detach()
         kl_background = torch.mean(zbg.kl)  # mean over batch, latent_dim
-        kl_instance = torch.mean(c_detach_kb1 * zinstance_kbz.kl) * c_detach_kb1.shape[0]
-        kl_where = torch.mean(c_detach_kb1 * zwhere_kl_kbz) * c_detach_kb1.shape[0]
+        kl_instance = torch.mean(c_detached_kb1 * zinstance_kbz.kl) * c_detached_kb1.shape[0]
+        kl_where = torch.mean(c_detached_kb1 * zwhere_kl_kbz) * c_detached_kb1.shape[0]
         kl_logit = torch.mean(kl_logit_b)
         kl_av = kl_background + kl_instance + kl_where + \
                 torch.exp(-self.running_avarage_kl_logit) * kl_logit + \
@@ -349,7 +356,8 @@ class InferenceAndGeneration(torch.nn.Module):
             v_fgfraction = min(fgfraction_av - self.target_fgfraction_min,
                                self.target_fgfraction_max - fgfraction_av) / range_fgfraction
 
-            v_mse = min(mse_av - self.target_mse_min, self.target_mse_max - mse_av)
+            range_mse = self.target_mse_max - self.target_mse_min
+            v_mse = min(mse_av - self.target_mse_min, self.target_mse_max - mse_av) / range_mse
 
             # Get lambda from log_lambda
             lambda_mse = self.geco_loglambda_mse.exp() * torch.sign(mse_av - self.target_mse_min)
@@ -357,7 +365,7 @@ class InferenceAndGeneration(torch.nn.Module):
             lambda_ncell = self.geco_loglambda_ncell.exp() * torch.sign(ncell_av - self.target_ncell_min)
 
         loss_vae = kl_av + \
-                   lambda_ncell * torch.mean(c_grid_before_nms_b1wh) + \
+                   lambda_ncell * torch.sigmoid(logit_grid_corrected).sum() + \
                    lambda_fgfraction * torch.mean(mixing_fg_b1wh) + \
                    lambda_mse * (mse_av + cost_bb_regression + cost_mask_overlap)
 
@@ -381,7 +389,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                   lambda_ncell=lambda_ncell.detach().item(),
                                   lambda_fgfraction=lambda_fgfraction.detach().item(),
                                   # conting accuracy
-                                  count_prediction=c_kb.sum(dim=0).detach().cpu().numpy(),
+                                  count_prediction=c_detached_kb.sum(dim=0).cpu().numpy(),
                                   wrong_examples=-1*numpy.ones(1),
                                   accuracy=-1.0,
                                   # similarity
@@ -390,15 +398,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                   kl_logit_av=self.running_avarage_kl_logit.detach().item())
 
         inference = Inference(logit_grid=logit_grid_corrected.detach(),
-                              p_grid_unet=torch.sigmoid(unet_output.logit).detach(),  # for debug
-                              p_grid_corr=p_corr_b1wh.detach(),  # for debug
+                              logit_grid_unet=unet_output.logit.detach(),  # for debug
                               background_bcwh=out_background_bcwh.detach(),
                               mixing_kb1wh=mixing_kb1wh.detach(),
                               foreground_kbcwh=out_img_kbcwh.detach(),
                               # the sample of the 4 latent variables
                               sample_c_grid_before_nms=c_grid_before_nms_b1wh.detach(),
                               sample_c_grid_after_nms=c_grid_after_nms_b1wh.detach(),
-                              sample_c_kb=c_kb.detach(),
+                              sample_c_kb=c_detached_kb,
                               sample_bb_kb=bounding_box_kb,
                               sample_bb_ideal_kb=bb_ideal_kb)
 

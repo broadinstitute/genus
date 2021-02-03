@@ -206,7 +206,7 @@ def draw_img(inference: Inference,
                                        width=rec_imgs_no_bb.shape[-2],
                                        height=rec_imgs_no_bb.shape[-1],
                                        c_kb=inference.sample_c_kb,
-                                       color="blue")
+                                       color="green")
     else:
         bb_ideal = torch.zeros_like(fg_mask)
 
@@ -400,11 +400,10 @@ def plot_generation(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    fig_a = show_batch(output.imgs,
+    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
-                       normalize=True,
-                       normalize_range=(0.0, 1.0),
+                       normalize=False,
                        title='imgs, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "imgs" + postfix)
@@ -422,11 +421,10 @@ def plot_generation(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "c_grid_after_nms" + postfix)
-    fig_d = show_batch(output.inference.background_bcwh,
+    fig_d = show_batch(output.inference.background_bcwh.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
-                       normalize=True,
-                       normalize_range=(0.0, 1.0),
+                       normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "bg" + postfix)
@@ -446,11 +444,10 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    fig_a = show_batch(output.imgs,
+    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
-                       normalize=True,
-                       normalize_range=(0.0, 1.0),
+                       normalize=False,
                        title='imgs, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"imgs"+postfix)
@@ -468,20 +465,13 @@ def plot_reconstruction_and_inference(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_after_nms"+postfix)
-    fig_g = show_batch(output.inference.p_grid_unet,
+    fig_g = show_batch(torch.sigmoid(output.inference.logit_grid_unet),
                        n_col=4,
                        n_padding=4,
                        normalize=False,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet_grid"+postfix)
-    fig_d = show_batch(output.inference.p_grid_corr,
-                       n_col=4,
-                       n_padding=4,
-                       normalize=False,
-                       title='prob_corr", epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"prob_corr_grid"+postfix)
     fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=4,
                        n_padding=4,
@@ -489,18 +479,17 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_grid, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_grid"+postfix)
-    fig_f = show_batch(output.inference.background_bcwh,
+    fig_f = show_batch(output.inference.background_bcwh.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
-                       normalize=True,
-                       normalize_range=(0.0, 1.0),
+                       normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
+    return fig_a, fig_b, fig_c, fig_e, fig_f, fig_g
 
 
 def plot_segmentation(segmentation: Segmentation,
