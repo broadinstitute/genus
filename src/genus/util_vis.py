@@ -200,11 +200,15 @@ def draw_img(inference: Inference,
                              c_kb=inference.sample_c_kb,
                              color="red") if draw_boxes else torch.zeros_like(fg_mask)
 
-    bb_ideal = draw_bounding_boxes(bounding_box_kb=inference.sample_bb_ideal_kb,
-                                   width=rec_imgs_no_bb.shape[-2],
-                                   height=rec_imgs_no_bb.shape[-1],
-                                   c_kb=inference.sample_c_kb,
-                                   color="blue") if draw_ideal_boxes else torch.zeros_like(fg_mask)
+    if draw_ideal_boxes:
+        print("drawing_real_boxes")
+        bb_ideal = draw_bounding_boxes(bounding_box_kb=inference.sample_bb_ideal_kb,
+                                       width=rec_imgs_no_bb.shape[-2],
+                                       height=rec_imgs_no_bb.shape[-1],
+                                       c_kb=inference.sample_c_kb,
+                                       color="blue")
+    else:
+        bb_ideal = torch.zeros_like(fg_mask)
 
     mask_no_bb = (torch.sum(bb + bb_ideal, dim=-3, keepdim=True) == 0)
 

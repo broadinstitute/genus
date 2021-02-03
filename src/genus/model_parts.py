@@ -11,7 +11,7 @@ from .util_ml import sample_and_kl_diagonal_normal, sample_c_grid, compute_logp_
 from .namedtuple import Inference, BB, UNEToutput, ZZ, DIST, MetricMiniBatch, NmsOutput
 
 
-def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int):
+def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int, min_box_size: float, max_box_size: float):
     """ Given the mixing probabilities, it finds the :math:`mask=(mixing > 0.5)` and compute the coordinates of a
         bounding box which fits around the mask with a padding of size `attr:pad_size` pixels.
 
@@ -48,8 +48,8 @@ def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int):
     # print("ideal_y3_kb.shape ->", ideal_y3_kb.shape)
     return BB(bx=0.5*(ideal_x1_kb+ideal_x3_kb),
               by=0.5*(ideal_y1_kb+ideal_y3_kb),
-              bw=ideal_x3_kb + ideal_x1_kb,
-              bh=ideal_y1_kb + ideal_x1_kb)
+              bw=(ideal_x3_kb - ideal_x1_kb).clamp(min=min_box_size, max=max_box_size),
+              bh=(ideal_y3_kb - ideal_y1_kb).clamp(min=min_box_size, max=max_box_size))
 
 
 ######    # assuming that bx and bw are fixed. What should bw and bh be?
@@ -279,7 +279,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
 
         # Compute the mask_overlap
-        # TODO: Maybe c should be detached when computing cost_mask_overlap
+        # TODO: Maybe c should be detached when computing cost_mask_overlap. I do not want this to make all boxes turn off
         # A = (x1+x2+x3)^2 = x1^2 + x2^2 + x3^2 + 2 x1*x2 + 2 x1*x3 + 2 x2*x3
         # Therefore sum_{i \ne j} x_i x_j = x1*x2 + x1*x3 + x2*x3 = 0.5 * [(sum xi)^2 - (sum xi^2)]
         sum_x = c_times_mask_kb1wh.sum(dim=-5)  # sum over boxes first
