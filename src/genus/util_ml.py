@@ -154,7 +154,7 @@ def sample_c_grid(logit_grid: torch.Tensor,
         If :attr:`sample_from_prior` is True the returned value (c_grid) is NOT differentiable w.r.t.
         the :attr:`similarity_matrix`. If :attr:`sample_from_prior` is False the returned value (c_grid)
         IS differentiable w.r.t. :attr:`logit_grid`. We use a pass-thought approximation,
-        i.e. :math:`\delta c/\delta logit = \delta p/\delta logit * \delta c/\delta p = p(1-p) * 1'
+        i.e. :math:`\delta c/\delta logit = \delta p/\delta logit * \delta c/\delta p = \delta p/\delta logit * 1'
     """
     assert len(logit_grid.shape) == 4
     assert logit_grid.shape[-3] == 1

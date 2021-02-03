@@ -174,12 +174,11 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                               destination=history_dict,
                                               prefix_exclude="wrong_examples",
                                               prefix_to_add="train_")
-                if exp is not None:
-                    log_many_metrics(metrics=train_metrics,
-                                     prefix_for_neptune="train_",
-                                     experiment=exp,
-                                     keys_exclude=["wrong_examples"],
-                                     verbose=False)
+                log_many_metrics(metrics=train_metrics,
+                                 prefix_for_neptune="train_",
+                                 experiment=exp,
+                                 keys_exclude=["wrong_examples"],
+                                 verbose=False)
 
                 if (epoch % TEST_FREQUENCY) == 0:
 
@@ -196,12 +195,12 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                   destination=history_dict,
                                                   prefix_exclude="wrong_examples",
                                                   prefix_to_add="test_")
-                    if exp is not None:
-                        log_many_metrics(metrics=test_metrics,
-                                         prefix_for_neptune="test_",
-                                         experiment=exp,
-                                         keys_exclude=["wrong_examples"],
-                                         verbose=False)
+
+                    log_many_metrics(metrics=test_metrics,
+                                     prefix_for_neptune="test_",
+                                     experiment=exp,
+                                     keys_exclude=["wrong_examples"],
+                                     verbose=False)
 
                     test_out_metrics = process_one_epoch(model=vae,
                                                          dataloader=test_out_loader,
@@ -214,12 +213,11 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                   destination=history_dict,
                                                   prefix_exclude="wrong_examples",
                                                   prefix_to_add="test_out_")
-                    if exp is not None:
-                        log_many_metrics(metrics=test_out_metrics,
-                                         prefix_for_neptune="test_",
-                                         experiment=exp,
-                                         keys_exclude=["wrong_examples"],
-                                         verbose=False)
+                    log_many_metrics(metrics=test_out_metrics,
+                                     prefix_for_neptune="test_",
+                                     experiment=exp,
+                                     keys_exclude=["wrong_examples"],
+                                     verbose=False)
 
                     if len(test_metrics.wrong_examples) > 0:
                         error_index = torch.tensor(test_metrics.wrong_examples[:5], dtype=torch.long)
@@ -254,7 +252,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                  draw_boxes_ideal=True,
                                                  draw_bg=True)
 
-                    plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_")
+                    plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_", experiment=exp)
                     reference_n_cells_inferred = output.inference.sample_c_kb.sum().item()
                     reference_n_cells_truth = reference_count.sum().item()
                     delta_n_cells = reference_n_cells_inferred - reference_n_cells_truth
@@ -291,6 +289,6 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                         ckpt = vae.create_ckpt(optimizer=optimizer,
                                                epoch=epoch,
                                                history_dict=history_dict)
-                        log_object_as_artifact(name="last_ckpt", obj=ckpt)  # log file into neptune
+                        log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
                     print("Done epoch")
 exp.stop()
