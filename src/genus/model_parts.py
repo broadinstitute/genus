@@ -277,6 +277,7 @@ class InferenceAndGeneration(torch.nn.Module):
         out_mask_kb1wh = torch.sigmoid(out_weights_kb1wh)
         c_times_mask_kb1wh = out_mask_kb1wh * c_kb[..., None, None, None]  # this is strictly smaller than 1
         mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        print("DEBUG  mean_fg_fraction", mixing_kb1wh.sum(dim=-5).mean())
 
         # Compute the mask_overlap
         # TODO: Maybe c should be detached when computing cost_mask_overlap. I do not want this to make all boxes turn off
@@ -298,10 +299,12 @@ class InferenceAndGeneration(torch.nn.Module):
             ideal_x3 = bb_ideal_kb.bx + 0.5 * bb_ideal_kb.bw
             ideal_y1 = bb_ideal_kb.by - 0.5 * bb_ideal_kb.bh
             ideal_y3 = bb_ideal_kb.by + 0.5 * bb_ideal_kb.bh
-            bw_target = torch.max(ideal_x3 - bounding_box_kb.bx,
-                                  bounding_box_kb.bx - ideal_x1).clamp(min=self.size_min, max=self.size_max)
-            bh_target = torch.max(ideal_y3 - bounding_box_kb.by,
-                                  bounding_box_kb.by - ideal_y1).clamp(min=self.size_min, max=self.size_max)
+            #bw_target = torch.max(ideal_x3 - bounding_box_kb.bx,
+            #                      bounding_box_kb.bx - ideal_x1).clamp(min=self.size_min, max=self.size_max)
+            #bh_target = torch.max(ideal_y3 - bounding_box_kb.by,
+            #                      bounding_box_kb.by - ideal_y1).clamp(min=self.size_min, max=self.size_max)
+            bw_target = self.size_min
+            bh_target = self.size_min
         # cost_bb_regression = self.bb_regression_penalty_strength * torch.zeros_like(cost_mask_overlap)
         cost_bb_regression = torch.sum((bw_target - bounding_box_kb.bw)**2 +
                                        (bh_target - bounding_box_kb.bh)**2) * self.bb_regression_penalty_strength
