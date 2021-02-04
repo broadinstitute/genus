@@ -63,48 +63,55 @@ def mixing_to_ideal_bb(mixing_kb1wh: torch.Tensor, pad_size: int, min_box_size: 
 
 class InferenceAndGeneration(torch.nn.Module):
 
-    def __init__(self, params):
+    def __init__(self, config: dict):
         super().__init__()
 
-        # variables
-        self.size_min = params["input_image"]["range_object_size"][0]
-        self.size_max = params["input_image"]["range_object_size"][1]
-        self.glimpse_size = params["architecture"]["glimpse_size"]
-        self.mask_overlap_penalty_strength = params["loss"]["mask_overlap_penalty_strength"]
-        self.pad_size_bb = params["loss"]["bounding_box_regression_padding"]
-        self.bb_regression_penalty_strength = params["loss"]["bounding_box_regression_penalty_strength"]
+        # save the few variable which will be used later
+        self.size_min = config["input_image"]["range_object_size"][0]
+        self.size_max = config["input_image"]["range_object_size"][1]
+        self.glimpse_size = config["architecture"]["glimpse_size"]
+        self.mask_overlap_penalty_strength = config["loss"]["mask_overlap_penalty_strength"]
+        self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
+        self.bb_regression_penalty_strength = config["loss"]["bounding_box_regression_penalty_strength"]
 
         # modules
-        self.similarity_kernel_dpp = SimilarityKernel(length_scale=params["input_image"]["similarity_DPP_l"],
-                                                      weight=params["input_image"]["similarity_DPP_w"],
-                                                      length_scale_min_max=params["input_image"]["similarity_DPP_l_min_max"],
-                                                      weight_min_max=params["input_image"]["similarity_DPP_w_min_max"])
+        self.similarity_kernel_dpp = SimilarityKernel(length_scale=config["input_image"]["similarity_DPP_l"],
+                                                      weight=config["input_image"]["similarity_DPP_w"],
+                                                      length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
+                                                      weight_min_max=config["input_image"]["similarity_DPP_w_min_max"])
 
-        self.unet: UNet = UNet(params)
-        self.preprocessor: PreProcessor = PreProcessor(params)
+        self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
+                               level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
+                               n_ch_output_features=config["architecture"]["n_ch_output_features"],
+                               n_ch_input=config["architecture"]["n_ch_after_preprocessing"],
+                               dim_zwhere=config["architecture"]["dim_zwhere"],
+                               dim_zbg=config["architecture"]["dim_zbg"])
+
+        self.preprocessor: PreProcessor = PreProcessor(n_ch_in=config["architecture"]["n_ch_img"],
+                                                       n_ch_out=config["architecture"]["n_ch_after_preprocessing"],
+                                                       downsampling_factor=config["architecture"]["downsampling_factor_during_preprocessing"])
 
         # Decoders
-        self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=params["architecture"]["dim_zbg"],
-                                                                ch_out=params["architecture"]["n_ch_img"])
+        self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
+                                                                ch_out=config["architecture"]["n_ch_img"])
 
-        self.decoder_zwhere: DecoderWhere = DecoderWhere(dim_z=params["architecture"]["dim_zwhere"])
+        self.decoder_zwhere: DecoderWhere = DecoderWhere(dim_z=config["architecture"]["dim_zwhere"])
 
-        self.decoder_zinstance: DecoderInstance = DecoderInstance(size=params["architecture"]["glimpse_size"],
-                                                                  dim_z=params["architecture"]["dim_zinstance"],
-                                                                  ch_out=params["architecture"]["n_ch_img"] + 1)
+        self.decoder_zinstance: DecoderInstance = DecoderInstance(size=config["architecture"]["glimpse_size"],
+                                                                  dim_z=config["architecture"]["dim_zinstance"],
+                                                                  ch_out=config["architecture"]["n_ch_img"] + 1)
         # Encoders
-        self.encoder_zinstance: EncoderInstance = EncoderInstance(size=params["architecture"]["glimpse_size"],
-                                                                  ch_in=params["architecture"]["n_ch_output_features"] + \
-                                                                        params["architecture"]["n_ch_img"],
-                                                                  dim_z=params["architecture"]["dim_zinstance"])
+        self.encoder_zinstance: EncoderInstance = EncoderInstance(size=config["architecture"]["glimpse_size"],
+                                                                  ch_in=config["architecture"]["n_ch_output_features"] + \
+                                                                        config["architecture"]["n_ch_img"],
+                                                                  dim_z=config["architecture"]["dim_zinstance"])
 
         # Parameters
-        self.loss_dict = params["loss"]
         one = torch.ones(1, dtype=torch.float)
 
-        self.sigma_mse_bg = torch.nn.Parameter(data=self.loss_dict["geco_mse_target"]*one[..., None, None],
+        self.sigma_mse_bg = torch.nn.Parameter(data=config["loss"]["geco_mse_target"]*one[..., None, None],
                                                requires_grad=False)
-        self.sigma_mse_fg = torch.nn.Parameter(data=self.loss_dict["geco_mse_target"]*one[..., None, None],
+        self.sigma_mse_fg = torch.nn.Parameter(data=config["loss"]["geco_mse_target"]*one[..., None, None],
                                                requires_grad=False)
         self.running_avarage_kl_logit = torch.nn.Parameter(data=one, requires_grad=True)
 
@@ -112,14 +119,14 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_loglambda_ncell = torch.nn.Parameter(data=one, requires_grad=True)
         self.geco_loglambda_mse = torch.nn.Parameter(data=one, requires_grad=True)
 
-        self.max_loglambda_mse = numpy.log(self.loss_dict["geco_lambda_mse_max"])
-        self.max_loglambda_fgfraction = numpy.log(self.loss_dict["geco_lambda_fgfraction_max"])
-        self.max_loglambda_ncell = numpy.log(self.loss_dict["geco_lambda_ncell_max"])
+        self.max_loglambda_mse = numpy.log(config["loss"]["geco_lambda_mse_max"])
+        self.max_loglambda_fgfraction = numpy.log(config["loss"]["geco_lambda_fgfraction_max"])
+        self.max_loglambda_ncell = numpy.log(config["loss"]["geco_lambda_ncell_max"])
 
-        self.target_fgfraction_min = min(self.loss_dict["geco_fgfraction_target"])
-        self.target_fgfraction_max = max(self.loss_dict["geco_fgfraction_target"])
-        self.target_ncell_min = min(self.loss_dict["geco_ncell_target"])
-        self.target_ncell_max = max(self.loss_dict["geco_ncell_target"])
+        self.target_fgfraction_min = min(config["loss"]["geco_fgfraction_target"])
+        self.target_fgfraction_max = max(config["loss"]["geco_fgfraction_target"])
+        self.target_ncell_min = min(config["loss"]["geco_ncell_target"])
+        self.target_ncell_max = max(config["loss"]["geco_ncell_target"])
         self.target_mse_min = 0.0
         self.target_mse_max = 1.0
 

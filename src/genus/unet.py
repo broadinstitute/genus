@@ -6,14 +6,12 @@ from .namedtuple import UNEToutput
 
 
 class PreProcessor(torch.nn.Module):
-    def __init__(self, params: dict):
+    def __init__(self, n_ch_in: int, n_ch_out: int, downsampling_factor: int):
         super().__init__()
-        if params["architecture"]["downsampling_factor_during_preprocessing"] != 1:
-            raise NotImplementedError
 
-        self.ch_raw_image = params["architecture"]["n_ch_img"]
-        self.n_ch_after_preprocessing = params["architecture"]["n_ch_after_preprocessing"]
-        self.preprocessor = DoubleConvolutionBlock(self.ch_raw_image, self.n_ch_after_preprocessing)
+        if downsampling_factor != 1:
+            raise NotImplementedError
+        self.preprocessor = DoubleConvolutionBlock(n_ch_in, n_ch_out)
 
     def forward(self, x: torch.Tensor, verbose: bool) -> torch.Tensor:
         y = self.preprocessor.forward(x)
@@ -24,19 +22,25 @@ class PreProcessor(torch.nn.Module):
 
 
 class UNet(torch.nn.Module):
-    def __init__(self, params: dict):
+    def __init__(self,
+                 n_max_pool: int,
+                 level_zwhere_and_logit_output: int,
+                 n_ch_output_features: int,
+                 n_ch_input: int,
+                 dim_zwhere: int,
+                 dim_zbg: int):
         super().__init__()
 
         # Parameters UNet
-        self.n_max_pool = params["architecture"]["n_max_pool_unet"]
-        self.level_zwhere_and_logit_output = params["architecture"]["level_zwherelogit_unet"]
-        self.n_ch_output_features = params["architecture"]["n_ch_output_features"]
-        self.n_ch_after_preprocessing = params["architecture"]["n_ch_after_preprocessing"]
-        self.dim_zwhere = params["architecture"]["dim_zwhere"]
-        self.dim_zbg = params["architecture"]["dim_zbg"]
+        self.n_max_pool = n_max_pool
+        self.level_zwhere_and_logit_output = level_zwhere_and_logit_output
+        self.n_ch_output_features = n_ch_output_features
+        self.n_ch_input = n_ch_input
+        self.dim_zwhere = dim_zwhere
+        self.dim_zbg = dim_zbg
 
         # Initializations
-        ch = self.n_ch_after_preprocessing
+        ch = self.n_ch_input
         j = 1
         down_j_list = [j]
         down_ch_list = [ch]

@@ -79,16 +79,17 @@ log_img_only(name="test_out_batch_example", fig=test_out_batch_example_fig, expe
 # Instantiate model, optimizer and checks
 vae = CompositionalVae(params)
 log_model_summary(vae)
-optimizer = instantiate_optimizer(model=vae, dict_params_optimizer=params["optimizer"])
+optimizer = instantiate_optimizer(model=vae, config_optimizer=params["optimizer"])
 
 # Make reference images
-index_tmp = torch.tensor([25,26,27,28,29], dtype=torch.long)
+index_tmp = torch.tensor([25, 26, 27, 28, 29], dtype=torch.long)
 tmp_imgs, tmp_seg, tmp_count = test_loader.load(index=index_tmp)[:3]
 tmp_out_imgs, tmp_out_seg, tmp_out_count = test_out_loader.load(index=index_tmp)[:3]
 reference_imgs = torch.cat([tmp_imgs, tmp_out_imgs], dim=0)
 reference_count = torch.cat([tmp_count, tmp_out_count], dim=0)
 
-reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0), neptune_name="reference_imgs", experiment=exp)
+reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0),
+                                neptune_name="reference_imgs", experiment=exp)
 
 if torch.cuda.is_available():
     reference_imgs = reference_imgs.cuda()
@@ -140,7 +141,7 @@ else:
     
 # instantiate the scheduler if necessary    
 if params["optimizer"]["scheduler_is_active"]:
-    scheduler = instantiate_scheduler(optimizer=optimizer, dict_params_scheduler=params["optimizer"])
+    scheduler = instantiate_scheduler(optimizer=optimizer, config_scheduler=params["scheduler"])
 else:
     scheduler = None
 
