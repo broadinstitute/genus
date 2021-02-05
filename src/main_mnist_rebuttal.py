@@ -286,10 +286,10 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                     test_loss = test_metrics.loss
                     min_test_loss = min(min_test_loss, test_loss)
 
-                    if (test_loss == min_test_loss) or (epoch % CHECKPOINT_FREQUENCY == 0) and (epoch >= 50):
-                        ckpt = vae.create_ckpt(optimizer=optimizer,
-                                               epoch=epoch,
-                                               history_dict=history_dict)
-                        log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
+###                    if (test_loss == min_test_loss) or (epoch % CHECKPOINT_FREQUENCY == 0) and (epoch >= 50):
+###                        ckpt = vae.create_ckpt(optimizer=optimizer,
+###                                               epoch=epoch,
+###                                               history_dict=history_dict)
+###                        log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
                     print("Done epoch")
 exp.stop()

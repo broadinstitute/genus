@@ -72,11 +72,11 @@ class NonMaxSuppression(object):
         return intersection_area / min_area
 
     @staticmethod
-    def compute_indices(score_nb: torch.Tensor,
-                        bounding_box_nb: BB,
-                        iom_threshold: float,
-                        k_objects_max: int,
-                        topk_only: bool) -> NmsOutput:
+    def compute_mask_and_index(score_nb: torch.Tensor,
+                               bounding_box_nb: BB,
+                               iom_threshold: float,
+                               k_objects_max: int,
+                               topk_only: bool) -> NmsOutput:
         """ Filter the proposals according to their score and their Intersection over Minimum.
 
             Args:

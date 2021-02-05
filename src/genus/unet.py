@@ -1,81 +1,80 @@
 import torch
-from collections import deque
 from .unet_parts import DownBlock, DoubleConvolutionBlock, UpBlock
-from .encoders_decoders import EncoderWhereLogit, EncoderBackground, Mlp1by1
+from .encoders_decoders import Encoder1by1, MLP_1by1, EncoderBackground
+from collections import deque
 from .namedtuple import UNEToutput
-
-
-class PreProcessor(torch.nn.Module):
-    def __init__(self, n_ch_in: int, n_ch_out: int, downsampling_factor: int):
-        super().__init__()
-
-        if downsampling_factor != 1:
-            raise NotImplementedError
-        self.preprocessor = DoubleConvolutionBlock(n_ch_in, n_ch_out)
-
-    def forward(self, x: torch.Tensor, verbose: bool) -> torch.Tensor:
-        y = self.preprocessor.forward(x)
-        if verbose:
-            print("preprocessor input_shape -->", x.shape)
-            print("preprocessor output_shape ->", y.shape)
-        return y
 
 
 class UNet(torch.nn.Module):
     def __init__(self,
                  n_max_pool: int,
                  level_zwhere_and_logit_output: int,
+                 level_background_output: int,
                  n_ch_output_features: int,
-                 n_ch_input: int,
+                 ch_after_first_two_conv: int,
+                 dim_zbg: int,
                  dim_zwhere: int,
-                 dim_zbg: int):
+                 dim_logit: int,
+                 ch_raw_image: int,
+                 concatenate_raw_image_to_fmap: bool):
         super().__init__()
 
         # Parameters UNet
         self.n_max_pool = n_max_pool
         self.level_zwhere_and_logit_output = level_zwhere_and_logit_output
+        self.level_background_output = level_background_output
         self.n_ch_output_features = n_ch_output_features
-        self.n_ch_input = n_ch_input
-        self.dim_zwhere = dim_zwhere
+        self.ch_after_first_two_conv = ch_after_first_two_conv
         self.dim_zbg = dim_zbg
+        self.dim_zwhere = dim_zwhere
+        self.dim_logit = dim_logit
+        self.ch_raw_image = ch_raw_image
+        self.concatenate_raw_image_to_fmap = concatenate_raw_image_to_fmap
 
         # Initializations
-        ch = self.n_ch_input
+        ch = self.ch_after_first_two_conv
         j = 1
-        down_j_list = [j]
-        down_ch_list = [ch]
+        self.j_list = [j]
+        self.ch_list = [ch]
 
         # Down path to center
-        self.down_path = torch.nn.ModuleList()
+        self.down_path = torch.nn.ModuleList([DoubleConvolutionBlock(self.ch_raw_image, self.ch_list[-1])])
         for i in range(0, self.n_max_pool):
             j = j * 2
             ch = ch * 2
-            down_ch_list.append(ch)
-            down_j_list.append(j)
-            self.down_path.append(DownBlock(down_ch_list[-2], down_ch_list[-1]))
-
-        up_j_list = down_j_list[::-1]
-        up_ch_list = down_ch_list[::-1]
-        up_ch_list[-1] = self.n_ch_output_features
-        self.j_list = down_j_list + up_j_list
-        self.ch_list = down_ch_list + up_ch_list
+            self.ch_list.append(ch)
+            self.j_list.append(j)
+            self.down_path.append(DownBlock(self.ch_list[-2], self.ch_list[-1]))
 
         # Up path
         self.up_path = torch.nn.ModuleList()
         for i in range(0, self.n_max_pool):
-            self.up_path.append(UpBlock(up_ch_list[i], up_ch_list[i+1]))
+            j = int(j // 2)
+            ch = int(ch // 2)
+            self.ch_list.append(ch)
+            self.j_list.append(j)
+            self.up_path.append(UpBlock(self.ch_list[-2], self.ch_list[-1]))
 
-        # Encode zwhere and logit in mu and std
-        self.ch_in_zwhere = up_ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_zwherelogit = EncoderWhereLogit(ch_in=self.ch_in_zwhere,
-                                                    dim_z=self.dim_zwhere,
-                                                    dim_logit=1,
-                                                    ch_hidden=int((self.ch_in_zwhere+self.dim_zwhere)//2))
+        # Prediction maps
+        ch_out_fmap = self.n_ch_output_features - \
+                      self.ch_raw_image if self.concatenate_raw_image_to_fmap else self.n_ch_output_features
+        self.pred_features = MLP_1by1(ch_in=self.ch_list[-1],
+                                      ch_out=ch_out_fmap,
+                                      ch_hidden=-1)  # this means there is NO hidden layer
 
-        # Encode zbg in mu and std
-        self.ch_in_zbg = down_ch_list[-1]
-        self.encode_background = EncoderBackground(ch_in=self.ch_in_zbg,
-                                                   dim_z=self.dim_zbg)
+        self.ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
+        self.encode_zwhere = Encoder1by1(ch_in=self.ch_in_zwhere,
+                                         dim_z=self.dim_zwhere,
+                                         ch_hidden=(self.ch_in_zwhere + self.dim_zwhere)//2)
+
+        self.ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
+        self.encode_logit = MLP_1by1(ch_in=self.ch_in_logit,
+                                     ch_out=self.dim_logit,
+                                     ch_hidden=(self.ch_in_logit + self.dim_logit) // 2)
+
+        self.ch_in_bg = self.ch_list[-self.level_background_output - 1]
+        self.pred_background = EncoderBackground(ch_in=self.ch_in_bg,
+                                                 dim_z=self.dim_zbg)
 
     def forward(self, x: torch.Tensor, verbose: bool):
         # input_w, input_h = x.shape[-2:]
@@ -83,36 +82,42 @@ class UNet(torch.nn.Module):
             print("INPUT ---> shape ", x.shape)
 
         # Down path and save the tensor which will need to be concatenated
+        raw_image = x
         to_be_concatenated = deque()
         for i, down in enumerate(self.down_path):
-            to_be_concatenated.append(x)  # save before applying max_pool
             x = down(x, verbose)
             if verbose:
                 print("down   ", i, " shape ", x.shape)
-
-        # At the bottom of Unet extract the background
-        if verbose:
-            print("doing encoding of background", x.shape, self.ch_in_zbg)
-        zbg = self.encode_background(x)
+            if i < self.n_max_pool:
+                to_be_concatenated.append(x)
+                if verbose:
+                    print("appended")
 
         # During up path I need to concatenate with the tensor obtained during the down path
         # If distance is < self.n_prediction_maps I need to export a prediction map
-        zwhere, logit = None, None
+        zwhere, logit, zbg = None, None, None
         for i, up in enumerate(self.up_path):
             dist_to_end_of_net = self.n_max_pool - i
             if dist_to_end_of_net == self.level_zwhere_and_logit_output:
-                zwhere, logit = self.encode_zwherelogit(x)
-                if verbose:
-                    print("extracting zwhere and logit", x.shape)
+                zwhere = self.encode_zwhere(x)
+                logit = self.encode_logit(x)
+            if dist_to_end_of_net == self.level_background_output:
+                zbg = self.pred_background(x)  # only few channels needed for predicting bg
 
             x = up(to_be_concatenated.pop(), x, verbose)
             if verbose:
                 print("up     ", i, " shape ", x.shape)
 
+        # always add a pred_map to the rightmost layer (which had distance 0 from the end of the net)
+        if self.concatenate_raw_image_to_fmap:
+            features = torch.cat((self.pred_features(x), raw_image), dim=-3)  # Here I am concatenating the raw image
+        else:
+            features = self.pred_features(x)
+
         return UNEToutput(zwhere=zwhere,
                           logit=logit,
                           zbg=zbg,
-                          features=x)
+                          features=features)
 
     def show_grid(self, ref_image):
         """ overimpose a grid the size of the corresponding resolution of each unet layer """

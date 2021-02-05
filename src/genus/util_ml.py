@@ -133,7 +133,28 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
     return DIST(sample=sample, kl=kl)
 
 
-def sample_c_grid(logit_grid: torch.Tensor,
+def sample_c_map(p_map: torch.Tensor,
+                 similarity_kernel: torch.Tensor,
+                 noisy_sampling: bool,
+                 sample_from_prior: bool):
+
+    if sample_from_prior:
+        with torch.no_grad():
+            batch_size = torch.Size([p_map.shape[0]])
+            s = similarity_kernel.requires_grad_(False)
+            c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
+            c_reshaped = c_all.transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, batch_size, 1
+            c_map = invert_convert_to_box_list(c_reshaped,
+                                               original_width=p_map.shape[-2],
+                                               original_height=p_map.shape[-1])
+            return c_map
+    else:
+        with torch.no_grad():
+            c_map = (torch.rand_like(p_map) < p_map) if noisy_sampling else (0.5 < p_map)
+        return c_map.float() + p_map - p_map.detach()
+
+
+def NEW_sample_c_grid(logit_grid: torch.Tensor,
                   similarity_matrix: torch.Tensor,
                   noisy_sampling: bool,
                   sample_from_prior: bool) -> torch.Tensor:
@@ -211,12 +232,100 @@ def compute_logp_bernoulli(c_grid: torch.Tensor,
     """
     log_p_grid = F.logsigmoid(logit_grid)
     log_1_m_p_grid = F.logsigmoid(-logit_grid)
-    log_prob_bernoulli = (c_grid.detach() * log_p_grid +
-                          (c_grid - 1).detach() * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
+    log_prob_bernoulli = (c_grid * log_p_grid +
+                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
     return log_prob_bernoulli
 
 
 class SimilarityKernel(torch.nn.Module):
+    """ Similarity based on sum of gaussian kernels of different strength and length_scales """
+    def __init__(self, n_kernels: int = 4,
+                 pbc: bool = False,
+                 eps: float = 1E-4,
+                 length_scales: Optional[torch.Tensor] = None,
+                 kernel_weights: Optional[torch.Tensor] = None):
+        """ It is safer to set pbc=False b/c the matrix might become ill-conditioned otherwise """
+        super().__init__()
+
+        self.n_kernels = n_kernels
+        self.eps = eps
+        self.pbc = pbc
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+        if length_scales is None:
+            LENGTH_2 = 10.0
+            length_scales = torch.linspace(LENGTH_2/self.n_kernels, LENGTH_2,
+                                           steps=self.n_kernels,
+                                           device=self.device,
+                                           dtype=torch.float)
+        else:
+            length_scales = self._invertsoftplus(length_scales.float().to(self.device))
+        assert length_scales.shape[0] == self.n_kernels
+        self.similarity_length = torch.nn.Parameter(data=length_scales, requires_grad=True)
+
+        if kernel_weights is None:
+            kernel_weights = torch.ones(self.n_kernels,
+                                        device=self.device,
+                                        dtype=torch.float)/self.n_kernels
+        else:
+            kernel_weights = self._invertsoftplus(kernel_weights.float().to(self.device))
+        assert kernel_weights.shape[0] == self.n_kernels
+        self.similarity_w = torch.nn.Parameter(data=kernel_weights, requires_grad=True)
+
+        # Initialization
+        self.n_width = -1
+        self.n_height = -1
+        self.d2 = None
+        self.diag = None
+
+    @staticmethod
+    def _invertsoftplus(x):
+        return torch.log(torch.exp(x)-1.0)
+
+    def _compute_d2_diag(self, n_width: int, n_height: int):
+        with torch.no_grad():
+            ix_array = torch.arange(start=0, end=n_width, dtype=torch.int, device=self.device)
+            iy_array = torch.arange(start=0, end=n_height, dtype=torch.int, device=self.device)
+            ix_grid, iy_grid = torch.meshgrid([ix_array, iy_array])
+            map_points = torch.stack((ix_grid, iy_grid), dim=-1)  # n_width, n_height, 2
+            locations = map_points.flatten(start_dim=0, end_dim=-2)  # (n_width*n_height, 2)
+            d = (locations.unsqueeze(-2) - locations.unsqueeze(-3)).abs()  # (n_width*n_height, n_width*n_height, 2)
+            if self.pbc:
+                d_pbc = d.clone()
+                d_pbc[..., 0] = -d[..., 0] + n_width
+                d_pbc[..., 1] = -d[..., 1] + n_height
+                d2 = torch.min(d, d_pbc).pow(2).sum(dim=-1).float()
+            else:
+                d2 = d.pow(2).sum(dim=-1).float()
+
+            values = self.eps * torch.ones(d2.shape[-2], dtype=torch.float, device=self.device)
+            diag = torch.diag_embed(values, offset=0, dim1=-2, dim2=-1)
+            return d2, diag
+
+    def sample_2_mask(self, sample):
+        independent_dims = list(sample.shape[:-1])
+        mask = sample.view(independent_dims + [self.n_width, self.n_height])
+        return mask
+
+    def get_l_w(self):
+        return F.softplus(self.similarity_length)+1.0, F.softplus(self.similarity_w)+1E-2
+
+    def forward(self, n_width: int, n_height: int):
+        """ Implement L = sum_i a_i exp[-b_i d2] """
+        l, w = self.get_l_w()
+        l2 = l.pow(2)
+
+        if (n_width != self.n_width) or (n_height != self.n_height):
+            self.n_width = n_width
+            self.n_height = n_height
+            self.d2, self.diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
+
+        likelihood_kernel = (w[..., None, None] *
+                             torch.exp(-0.5*self.d2/l2[..., None, None])).sum(dim=-3) + self.diag
+        return likelihood_kernel  # shape (n_width*n_height, n_width*n_height)
+
+
+class NEW_SimilarityKernel(torch.nn.Module):
     """
     Square gaussian kernel with learnable parameters (weight and lenght_scale).
     """
