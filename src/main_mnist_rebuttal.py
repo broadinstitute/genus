@@ -21,11 +21,11 @@ print("torch.__version__ --> ", torch.__version__)
 torch.manual_seed(0)
 numpy.random.seed(0)
 
-params = load_json_as_dict("./ML_parameters.json")
+config = load_json_as_dict("./ML_parameters.json")
 
-neptune.set_project(params["neptune_project"])
+neptune.set_project(config["neptune_project"])
 exp: neptune.experiments.Experiment = \
-    neptune.create_experiment(params=flatten_dict(params),
+    neptune.create_experiment(params=flatten_dict(config),
                               upload_source_files=["./main_mnist_rebuttal.py", "./ML_parameters.json"],
                               upload_stdout=True,
                               upload_stderr=True)
@@ -34,7 +34,7 @@ exp: neptune.experiments.Experiment = \
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
 img_test, seg_mask_test, count_test = load_obj("./data_test.pt")
 img_test_out, seg_mask_test_out, count_test_out = load_obj("./ground_truth")  # using the ground truth filename to pass extrapolation test dataset
-BATCH_SIZE = params["simulation"]["batch_size"]
+BATCH_SIZE = config["simulation"]["batch_size"]
 
 
 train_loader = SpecialDataSet(x=img_train,
@@ -77,9 +77,9 @@ test_out_batch_example_fig = test_out_loader.check_batch()
 log_img_only(name="test_out_batch_example", fig=test_out_batch_example_fig, experiment=exp)
 
 # Instantiate model, optimizer and checks
-vae = CompositionalVae(params)
+vae = CompositionalVae(config)
 log_model_summary(vae)
-optimizer = instantiate_optimizer(model=vae, config_optimizer=params["optimizer"])
+optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 # Make reference images
 index_tmp = torch.tensor([25, 26, 27, 28, 29], dtype=torch.long)
@@ -97,15 +97,15 @@ imgs_out = vae.inference_and_generator.unet.show_grid(reference_imgs)
 unet_grid_fig = show_batch(imgs_out[:, 0], normalize_range=(0.0, 1.0), neptune_name="unet_grid", experiment=exp)
 
 # Check the constraint dictionary
-print("simulation type = "+str(params["simulation"]["type"]))
+print("simulation type = "+str(config["simulation"]["type"]))
     
-if params["simulation"]["type"] == "scratch":
+if config["simulation"]["type"] == "scratch":
     
     epoch_restart = -1
     history_dict = {}
     min_test_loss = 999999
 
-elif params["simulation"]["type"] == "resume":
+elif config["simulation"]["type"] == "resume":
     
     ckpt = file2ckpt(path="ckpt.pt", device=None)
     # ckpt = file2ckpt(path="ckpt.pt", device='cpu')
@@ -122,7 +122,7 @@ elif params["simulation"]["type"] == "resume":
     except:
         min_test_loss = 999999
 
-elif params["simulation"]["type"] == "pretrained":
+elif config["simulation"]["type"] == "pretrained":
 
     ckpt = file2ckpt(path="ckpt.pt", device=None)
     # ckpt = file2ckpt(path="ckpt.pt", device='cpu')
@@ -140,22 +140,22 @@ else:
     raise Exception("simulation type is NOT recognized")
     
 # instantiate the scheduler if necessary    
-if params["optimizer"]["scheduler_is_active"]:
-    scheduler = instantiate_scheduler(optimizer=optimizer, config_scheduler=params["scheduler"])
+if config["scheduler"]["is_active"]:
+    scheduler = instantiate_scheduler(optimizer=optimizer, config_scheduler=config["scheduler"])
 else:
     scheduler = None
 
 
-TEST_FREQUENCY = params["simulation"]["TEST_FREQUENCY"]
-CHECKPOINT_FREQUENCY = params["simulation"]["CHECKPOINT_FREQUENCY"]
-NUM_EPOCHS = params["simulation"]["MAX_EPOCHS"]
+TEST_FREQUENCY = config["simulation"]["TEST_FREQUENCY"]
+CHECKPOINT_FREQUENCY = config["simulation"]["CHECKPOINT_FREQUENCY"]
+NUM_EPOCHS = config["simulation"]["MAX_EPOCHS"]
 torch.cuda.empty_cache()
 for delta_epoch in range(1, NUM_EPOCHS+1):
     epoch = delta_epoch+epoch_restart    
 
     vae.prob_corr_factor = linear_interpolation(epoch,
-                                                values=params["shortcut_prob_corr_factor"]["values"],
-                                                times=params["shortcut_prob_corr_factor"]["times"])
+                                                values=config["shortcut_prob_corr_factor"]["values"],
+                                                times=config["shortcut_prob_corr_factor"]["times"])
     exp.log_metric("prob_corr_factor", vae.prob_corr_factor)
         
     with torch.autograd.set_detect_anomaly(False):
@@ -166,7 +166,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                               dataloader=train_loader,
                                               optimizer=optimizer,
                                               scheduler=scheduler,
-                                              iom_threshold=params["architecture"]["nms_threshold_train"],
+                                              iom_threshold=config["architecture"]["nms_threshold_train"],
                                               verbose=(epoch == 0))
 
             with torch.no_grad():
@@ -188,7 +188,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                      dataloader=test_loader,
                                                      optimizer=optimizer,
                                                      scheduler=scheduler,
-                                                     iom_threshold=params["architecture"]["nms_threshold_test"],
+                                                     iom_threshold=config["architecture"]["nms_threshold_test"],
                                                      verbose=(epoch == 0))
                     print("Test  "+test_metrics.pretty_print(epoch))
 
@@ -207,7 +207,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                          dataloader=test_out_loader,
                                                          optimizer=optimizer,
                                                          scheduler=scheduler,
-                                                         iom_threshold=params["architecture"]["nms_threshold_train"],
+                                                         iom_threshold=config["architecture"]["nms_threshold_train"],
                                                          verbose=(epoch == 0))
                     print("Test Out "+test_out_metrics.pretty_print(epoch))
                     history_dict = append_to_dict(source=test_out_metrics,
@@ -234,7 +234,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                     error_img = torch.cat((error_test_img, error_test_out_img), dim=0)
 
                     error_output: Output = vae.forward(error_img,
-                                                       iom_threshold=params["architecture"]["nms_threshold_test"],
+                                                       iom_threshold=config["architecture"]["nms_threshold_test"],
                                                        noisy_sampling=True,
                                                        draw_image=True,
                                                        draw_boxes=True,
@@ -246,7 +246,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                    experiment=exp, neptune_name="test_errors")
 
                     output: Output = vae.forward(reference_imgs,
-                                                 iom_threshold=params["architecture"]["nms_threshold_test"],
+                                                 iom_threshold=config["architecture"]["nms_threshold_test"],
                                                  noisy_sampling=True,
                                                  draw_image=True,
                                                  draw_boxes=True,
@@ -266,7 +266,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                     print("segmentation")
                     segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,
                                                              noisy_sampling=True,
-                                                             iom_threshold=params["architecture"]["nms_threshold_test"])
+                                                             iom_threshold=config["architecture"]["nms_threshold_test"])
                     plot_segmentation(segmentation, epoch=epoch, prefix="seg_", experiment=exp)
 
                     # Here I could add a measure of agreement with the ground truth

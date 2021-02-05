@@ -13,6 +13,81 @@ from .namedtuple import Inference, NmsOutput, BB, UNEToutput, ZZ, DIST, MetricMi
 from .non_max_suppression import NonMaxSuppression
 
 
+def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
+                                         bounding_boxes_kb: BB,
+                                         pad_size: int,
+                                         min_box_size: float,
+                                         max_box_size: float) -> (BB, torch.Tensor):
+    """ Given the mixing probabilities and the predicted bounding_boxes it computes the optimal bounding_boxes and
+        the L2 cost between the predicted bounding_boxes and ideal bounding_boxes.
+
+        Note:
+            The optimal bounding_box  is body-fitted around :math:`mask=(mixing > 0.5)`
+            with a padding of size `attr:pad_size` pixels. If the mask is small (or completely empty)
+            the optimal bounding_box is a box of the minimum_allowed size.
+
+        Args:
+            mixing_kb1wh: torch.Tensor of shape :math:`(K, B, 1, W, H)`
+            bounding_boxes_kb: the bounding boxes predicted by the CNN of type :class:`BB` and shape :math:`(K,B)`
+            pad_size: padding around the mask. If :attr:`pad_size` = 0 then the bounding box is body-fitted
+            min_box_size: minimum allowed size for the bounding_box
+            max_box_size: maximum allowed size for the bounding box
+
+        Returns:
+            The optimal bounding boxes in :class:`BB` of shape :math:`(K, B)` and
+            the regression_penalty of shape :math:`(K, B)`
+    """
+
+    with torch.no_grad():
+
+        # Compute the ideal Bounding boxes
+        mask_kbwh = (mixing_kb1wh.squeeze(-3) > 0.5).int()
+        mask_kbh = torch.max(mask_kbwh, dim=-2)[0]
+        mask_kbw = torch.max(mask_kbwh, dim=-1)[0]
+        mask_kb = torch.max(mask_kbw, dim=-1)[0]  # 0 if empty, 1 if non-empty
+
+        plus_h = torch.arange(start=0, end=mask_kbh.shape[-1], step=1, dtype=torch.float, device=mixing_kb1wh.device) + 1
+        plus_w = torch.arange(start=0, end=mask_kbw.shape[-1], step=1, dtype=torch.float, device=mixing_kb1wh.device) + 1
+        minus_h = plus_h[-1] - plus_h + 1
+        minus_w = plus_w[-1] - plus_w + 1
+
+        # Find the coordinates of the bounding box
+        ideal_x3_kb = (torch.argmax(mask_kbw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kbw.shape[-1]).float()
+        ideal_x1_kb = (torch.argmax(mask_kbw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kbw.shape[-1]).float()
+        ideal_y3_kb = (torch.argmax(mask_kbh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
+        ideal_y1_kb = (torch.argmax(mask_kbh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
+
+        # If the box is empty, do a special treatment
+        empty_kb = (mask_kb == 0)
+        ideal_x3_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] + 0.5 * min_box_size
+        ideal_x1_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] - 0.5 * min_box_size
+        ideal_y3_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] + 0.5 * min_box_size
+        ideal_y1_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] - 0.5 * min_box_size
+
+        # Compute the box coordinates
+        ideal_bx_kb = 0.5*(ideal_x3_kb + ideal_x1_kb)
+        ideal_by_kb = 0.5*(ideal_y3_kb + ideal_y1_kb)
+        ideal_bw_kb = (ideal_x3_kb - ideal_x1_kb).clamp(min=min_box_size, max=max_box_size)
+        ideal_bh_kb = (ideal_y3_kb - ideal_y1_kb).clamp(min=min_box_size, max=max_box_size)
+
+        # Now compute the regression cost
+        x3_tmp_kb = ideal_bx_kb + 0.5 * ideal_bw_kb
+        x1_tmp_kb = ideal_bx_kb - 0.5 * ideal_bw_kb
+        y3_tmp_kb = ideal_by_kb + 0.5 * ideal_bh_kb
+        y1_tmp_kb = ideal_by_kb - 0.5 * ideal_bh_kb
+
+        bw_target_kb = torch.max(x3_tmp_kb - bounding_boxes_kb.bx,
+                                 bounding_boxes_kb.bx - x1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
+        bh_target_kb = torch.max(y3_tmp_kb - bounding_boxes_kb.bw,
+                                 bounding_boxes_kb.bw - y1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
+
+    # this is the only part outside the torch.no_grad()
+    cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
+                         ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
+
+    return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
+
+
 def tmaps_to_bb(tmaps, width_raw_image: int, height_raw_image: int, min_box_size: float, max_box_size: float):
     tx_map, ty_map, tw_map, th_map = torch.split(tmaps, 1, dim=-3)
     n_width, n_height = tx_map.shape[-2:]
@@ -59,6 +134,7 @@ class InferenceAndGeneration(torch.nn.Module):
         self.size_max = config["input_image"]["range_object_size"][0]
         self.size_min = config["input_image"]["range_object_size"][1]
         self.cropped_size = config["architecture"]["glimpse_size"]
+        self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
         # modules
         self.similarity_kernel_dpp = SimilarityKernel(n_kernels=1)
@@ -265,6 +341,13 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing = big_mask_times_c / big_mask_times_c.sum(dim=-5).clamp_(min=1.0)  # softplus-like function
         similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
+        # Compute the ideal bounding boxes
+        bb_ideal_kb, bb_regression_cost = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing,
+                                                                               bounding_boxes_kb=bounding_box_few,
+                                                                               pad_size=self.pad_size_bb,
+                                                                               min_box_size=self.size_min,
+                                                                               max_box_size=self.size_max)
+
         inference = Inference(logit_grid=log_p_map-log_one_minus_p_map,
                               logit_grid_unet=unet_output.logit,
                               background_bcwh=big_bg,
@@ -274,7 +357,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_c_grid_after_nms=c_map_after_nms,
                               sample_c_kb=c_few,
                               sample_bb_kb=bounding_box_few,
-                              sample_bb_ideal_kb=bounding_box_few)
+                              sample_bb_ideal_kb=bb_ideal_kb)
 
         overlap = torch.sum(mixing * (torch.ones_like(mixing) - mixing), dim=-5)  # sum boxes
         cost_overlap_tmp = 0.01 * torch.sum(overlap, dim=(-1, -2, -3))
@@ -360,7 +443,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mse_av=mse_av.detach().item(),
                                  kl_av=kl_av.detach().item(),
                                  cost_mask_overlap_av=cost_overlap.detach().item(),
-                                 cost_bb_regression_av=0.0,
+                                 cost_bb_regression_av=bb_regression_cost.sum().item(),
                                  ncell_av=x_cell_av.detach().item(),
                                  fgfraction_av=torch.mean(mixing_fg).detach().item(),
                                  lambda_mse=geco_mse_detached.detach().item(),
