@@ -52,17 +52,17 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         minus_w = plus_w[-1] - plus_w + 1
 
         # Find the coordinates of the bounding box
-        ideal_x3_kb = (torch.argmax(mask_kbw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kbw.shape[-1]).float()
         ideal_x1_kb = (torch.argmax(mask_kbw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kbw.shape[-1]).float()
-        ideal_y3_kb = (torch.argmax(mask_kbh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
+        ideal_x3_kb = (torch.argmax(mask_kbw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kbw.shape[-1]).float()
         ideal_y1_kb = (torch.argmax(mask_kbh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
+        ideal_y3_kb = (torch.argmax(mask_kbh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
 
         # If the box is empty, do a special treatment
         empty_kb = (mask_kb == 0)
-        ideal_x3_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] + 0.5 * min_box_size
         ideal_x1_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] - 0.5 * min_box_size
-        ideal_y3_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] + 0.5 * min_box_size
+        ideal_x3_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] + 0.5 * min_box_size
         ideal_y1_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] - 0.5 * min_box_size
+        ideal_y3_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] + 0.5 * min_box_size
 
         # Compute the box coordinates
         ideal_bx_kb = 0.5*(ideal_x3_kb + ideal_x1_kb)
@@ -71,10 +71,10 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         ideal_bh_kb = (ideal_y3_kb - ideal_y1_kb).clamp(min=min_box_size, max=max_box_size)
 
         # Now compute the regression cost
-        x3_tmp_kb = ideal_bx_kb + 0.5 * ideal_bw_kb
         x1_tmp_kb = ideal_bx_kb - 0.5 * ideal_bw_kb
-        y3_tmp_kb = ideal_by_kb + 0.5 * ideal_bh_kb
+        x3_tmp_kb = ideal_bx_kb + 0.5 * ideal_bw_kb
         y1_tmp_kb = ideal_by_kb - 0.5 * ideal_bh_kb
+        y3_tmp_kb = ideal_by_kb + 0.5 * ideal_bh_kb
 
         bw_target_kb = torch.max(x3_tmp_kb - bounding_boxes_kb.bx,
                                  bounding_boxes_kb.bx - x1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
@@ -85,6 +85,10 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
     cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
                          ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
 
+    print("DEBUG input ->", bounding_boxes_kb.bx[0,0], bounding_boxes_kb.by[0,0],
+          bounding_boxes_kb.bw[0,0], bounding_boxes_kb.bh[0,0])
+    print("DEBUG ideal ->", ideal_bx_kb[0,0], ideal_by_kb[0,0],
+          ideal_bw_kb[0,0], ideal_bh_kb[0,0])
     return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
 
 

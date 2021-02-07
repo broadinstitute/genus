@@ -233,6 +233,7 @@ def draw_bounding_boxes(bounding_box_kb: BB,
     y1 = bounding_box_kb.by - 0.5 * bounding_box_kb.bh
     y3 = bounding_box_kb.by + 0.5 * bounding_box_kb.bh
     x1y1x3y3 = torch.stack((x1, y1, x3, y3), dim=-1)
+    bxby = torch.stack((bounding_box_kb.bx, bounding_box_kb.by),dim=-1)
 
     # draw the bounding boxes
     for batch in range(batch_size):
@@ -243,6 +244,7 @@ def draw_bounding_boxes(bounding_box_kb: BB,
         for box in range(n_boxes):
             if c_kb[box, batch] > 0.5:
                 draw.rectangle(x1y1x3y3[box, batch, :].cpu().numpy(), outline=color, fill=None)
+                draw.point(bxby.cpu().numpy(), fill=color)
         batch_bb_numpy[batch, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((width, height, 3))
 
     # Transform np to torch, rescale from [0,255] to (0,1)
