@@ -136,6 +136,9 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_target_fgfraction_max = 0.10
 
         # variables
+        self.bb_regression_strength = config["loss"]["mask_overlap_penalty_strength"]
+        self.mask_overlap_strength = config["loss"]["bounding_box_regression_penalty_strength"]
+
         self.size_min = config["input_image"]["range_object_size"][0]
         self.size_max = config["input_image"]["range_object_size"][1]
         self.cropped_size = config["architecture"]["glimpse_size"]
@@ -347,11 +350,18 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
         # Compute the ideal bounding boxes
-        bb_ideal_kb, bb_regression_cost = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing,
-                                                                               bounding_boxes_kb=bounding_box_few,
-                                                                               pad_size=self.pad_size_bb,
-                                                                               min_box_size=self.size_min,
-                                                                               max_box_size=self.size_max)
+        bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing,
+                                                                             bounding_boxes_kb=bounding_box_few,
+                                                                             pad_size=self.pad_size_bb,
+                                                                             min_box_size=self.size_min,
+                                                                             max_box_size=self.size_max)
+
+        # TODO change to the proper formulation of overlap
+        overlap = torch.sum(mixing * (torch.ones_like(mixing) - mixing), dim=-5)  # sum boxes
+        cost_overlap_tmp = 0.01 * torch.sum(overlap, dim=(-1, -2, -3))
+        cost_overlap = self.mask_overlap_strength * cost_overlap_tmp.mean()
+
+        cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
 
         inference = Inference(logit_grid=log_p_map-log_one_minus_p_map,
                               logit_grid_unet=unet_output.logit,
@@ -363,10 +373,6 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_c_kb=c_few,
                               sample_bb_kb=bounding_box_few,
                               sample_bb_ideal_kb=bb_ideal_kb)
-
-        overlap = torch.sum(mixing * (torch.ones_like(mixing) - mixing), dim=-5)  # sum boxes
-        cost_overlap_tmp = 0.01 * torch.sum(overlap, dim=(-1, -2, -3))
-        cost_overlap = cost_overlap_tmp.mean()
 
         # ---------------------------------- #
         # Compute the metrics
@@ -435,7 +441,7 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfraction_detached = self.geco_fgfraction.data.clamp_(min=0.1, max=20.0).detach()
         one_minus_geco_mse_detached = torch.ones_like(geco_mse_detached) - geco_mse_detached
 
-        reg_av = cost_overlap
+        reg_av = cost_overlap + cost_bb_regression
         sparsity_av = geco_fgfraction_detached * f_sparsity + geco_ncell_detached * f_cell
         loss_vae = sparsity_av + geco_mse_detached * (mse_av + reg_av) + one_minus_geco_mse_detached * kl_av
         loss_geco = self.geco_fgfraction * g_sparsity.detach() + \
@@ -448,7 +454,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mse_av=mse_av.detach().item(),
                                  kl_av=kl_av.detach().item(),
                                  cost_mask_overlap_av=cost_overlap.detach().item(),
-                                 cost_bb_regression_av=bb_regression_cost.sum().item(),
+                                 cost_bb_regression_av=cost_bb_regression.detach().item(),
                                  ncell_av=x_cell_av.detach().item(),
                                  fgfraction_av=torch.mean(mixing_fg).detach().item(),
                                  lambda_mse=geco_mse_detached.detach().item(),
