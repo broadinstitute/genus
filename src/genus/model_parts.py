@@ -85,10 +85,11 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
     cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
                          ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
 
+    print("DEBUG min, max ->", min_box_size, max_box_size)
     print("DEBUG input ->", bounding_boxes_kb.bx[0,0], bounding_boxes_kb.by[0,0],
-          bounding_boxes_kb.bw[0,0], bounding_boxes_kb.bh[0,0])
+          bounding_boxes_kb.bw[0,0], bounding_boxes_kb.bh[0,0], empty_kb[0,0])
     print("DEBUG ideal ->", ideal_bx_kb[0,0], ideal_by_kb[0,0],
-          ideal_bw_kb[0,0], ideal_bh_kb[0,0])
+          ideal_bw_kb[0,0], ideal_bh_kb[0,0], empty_kb[0,0])
     return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
 
 
@@ -135,8 +136,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_target_fgfraction_max = 0.10
 
         # variables
-        self.size_max = config["input_image"]["range_object_size"][0]
-        self.size_min = config["input_image"]["range_object_size"][1]
+        self.size_min = config["input_image"]["range_object_size"][0]
+        self.size_max = config["input_image"]["range_object_size"][1]
         self.cropped_size = config["architecture"]["glimpse_size"]
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
