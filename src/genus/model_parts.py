@@ -81,15 +81,16 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         bh_target_kb = torch.max(y3_tmp_kb - bounding_boxes_kb.bw,
                                  bounding_boxes_kb.bw - y1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
 
+        print("DEBUG min, max ->", min_box_size, max_box_size)
+        print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
+              bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
+        print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
+              ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
+
     # this is the only part outside the torch.no_grad()
     cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
                          ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
 
-    print("DEBUG min, max ->", min_box_size, max_box_size)
-    print("DEBUG input ->", bounding_boxes_kb.bx[0,0], bounding_boxes_kb.by[0,0],
-          bounding_boxes_kb.bw[0,0], bounding_boxes_kb.bh[0,0], empty_kb[0,0])
-    print("DEBUG ideal ->", ideal_bx_kb[0,0], ideal_by_kb[0,0],
-          ideal_bw_kb[0,0], ideal_bh_kb[0,0], empty_kb[0,0])
     return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
 
 
@@ -221,7 +222,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
 
-        big_bg = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
+        out_background_bcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
                                                 high_resolution=(imgs_bcwh.shape[-2], imgs_bcwh.shape[-1])))
 
         # bounbding boxes
@@ -232,21 +233,21 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          noisy_sampling=noisy_sampling,
                                                          sample_from_prior=generate_synthetic_data)
 
-        bounding_box_all: BB = tmaps_to_bb(tmaps=torch.sigmoid(self.decoder_zwhere(zwhere_map.sample)),
-                                           width_raw_image=width_raw_image,
-                                           height_raw_image=height_raw_image,
-                                           min_box_size=self.size_min,
-                                           max_box_size=self.size_max)
+        bounding_box_nb: BB = tmaps_to_bb(tmaps=torch.sigmoid(self.decoder_zwhere(zwhere_map.sample)),
+                                          width_raw_image=width_raw_image,
+                                          height_raw_image=height_raw_image,
+                                          min_box_size=self.size_min,
+                                          max_box_size=self.size_max)
 
         with torch.no_grad():
 
             # Correct probability if necessary
             if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-                av_intensity = compute_average_in_box((imgs_bcwh - big_bg).abs(), bounding_box_all)
-                assert len(av_intensity.shape) == 2
-                n_boxes_all, batch_size = av_intensity.shape
-                ranking = compute_ranking(av_intensity)  # n_boxes_all, batch. It is in [0,n_box_all-1]
-                tmp = (ranking + 1).float() / n_boxes_all  # less or equal to 1
+                av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
+                assert len(av_intensity_nb.shape) == 2
+                n_boxes_all, batch_size = av_intensity_nb.shape
+                ranking_nb = compute_ranking(av_intensity_nb)  # n_boxes_all, batch. It is in [0,n_box_all-1]
+                tmp = (ranking_nb + 1).float() / (n_boxes_all + 1)  # less or equal to 1
                 q_approx = tmp.pow(10)  # suppress most probabilities but keep few close to 1.
                 p_map_delta = invert_convert_to_box_list(q_approx.unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
@@ -284,7 +285,7 @@ class InferenceAndGeneration(torch.nn.Module):
             score = convert_to_box_list(c_map_before_nms + p_map).squeeze(-1)  # shape: n_box_all, batch_size
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_nb=score,
-                                                                             bounding_box_nb=bounding_box_all,
+                                                                             bounding_box_nb=bounding_box_nb,
                                                                              iom_threshold=iom_threshold,
                                                                              k_objects_max=k_objects_max,
                                                                              topk_only=combined_topk_only)
@@ -306,10 +307,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         c_few = torch.gather(convert_to_box_list(c_map_before_nms).squeeze(-1), dim=0, index=nms_output.indices_kb)
 
-        bounding_box_few: BB = BB(bx=torch.gather(bounding_box_all.bx, dim=0, index=nms_output.indices_kb),
-                                  by=torch.gather(bounding_box_all.by, dim=0, index=nms_output.indices_kb),
-                                  bw=torch.gather(bounding_box_all.bw, dim=0, index=nms_output.indices_kb),
-                                  bh=torch.gather(bounding_box_all.bh, dim=0, index=nms_output.indices_kb))
+        bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=nms_output.indices_kb),
+                                 by=torch.gather(bounding_box_nb.by, dim=0, index=nms_output.indices_kb),
+                                 bw=torch.gather(bounding_box_nb.bw, dim=0, index=nms_output.indices_kb),
+                                 bh=torch.gather(bounding_box_nb.bh, dim=0, index=nms_output.indices_kb))
 
         zwhere_sample_all = convert_to_box_list(zwhere_map.sample)  # shape: nbox_all, batch_size, ch
         zwhere_kl_all = convert_to_box_list(zwhere_map.kl)  # shape: nbox_all, batch_size, ch
@@ -321,9 +322,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # ------------------------------------------------------------------#
         # 5. Crop the unet_features according to the selected boxes
         # ------------------------------------------------------------------#
-        n_boxes, batch_size = bounding_box_few.bx.shape
+        n_boxes, batch_size = bounding_box_kb.bx.shape
         unet_features_expanded = unet_output.features.unsqueeze(0).expand(n_boxes, batch_size, -1, -1, -1)
-        cropped_feature_map: torch.Tensor = Cropper.crop(bounding_box=bounding_box_few,
+        cropped_feature_map: torch.Tensor = Cropper.crop(bounding_box=bounding_box_kb,
                                                          big_stuff=unet_features_expanded,
                                                          width_small=self.cropped_size,
                                                          height_small=self.cropped_size)
@@ -340,38 +341,38 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             sample_from_prior=generate_synthetic_data)
 
         small_stuff = torch.sigmoid(self.decoder_zinstance.forward(zinstance_few.sample))  # stuff between 0 and 1
-        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_few,
+        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_kb,
                                      small_stuff=small_stuff,
                                      width_big=width_raw_image,
                                      height_big=height_raw_image)  # shape: n_box, batch, ch, w, h
-        big_mask, big_img = torch.split(big_stuff, split_size_or_sections=(1, big_stuff.shape[-3] - 1), dim=-3)
-        big_mask_times_c = big_mask * c_few[..., None, None, None]  # this is strictly smaller than 1
-        mixing = big_mask_times_c / big_mask_times_c.sum(dim=-5).clamp_(min=1.0)  # softplus-like function
-        similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
+        out_mask_kb1wh, out_img_kbcwh = torch.split(big_stuff, split_size_or_sections=(1, big_stuff.shape[-3] - 1), dim=-3)
+        c_times_mask_kb1wh = out_mask_kb1wh * c_few[..., None, None, None]  # this is strictly smaller than 1
+        sum_c_times_mask_b1wh = c_times_mask_kb1wh.sum(dim=-5)
+        sum_c_times_mask_squared_b1wh = c_times_mask_kb1wh.pow(2).sum(dim=-5)
+        mixing_kb1wh = c_times_mask_kb1wh / sum_c_times_mask_b1wh.clamp_(min=1.0)  # softplus-like function
 
         # Compute the ideal bounding boxes
-        bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing,
-                                                                             bounding_boxes_kb=bounding_box_few,
+        bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing_kb1wh,
+                                                                             bounding_boxes_kb=bounding_box_kb,
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.size_min,
                                                                              max_box_size=self.size_max)
-
-        # TODO change to the proper formulation of overlap
-        overlap = torch.sum(mixing * (torch.ones_like(mixing) - mixing), dim=-5)  # sum boxes
-        cost_overlap_tmp = 0.01 * torch.sum(overlap, dim=(-1, -2, -3))
-        cost_overlap = self.mask_overlap_strength * cost_overlap_tmp.mean()
-
         cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
+
+        # Compute mask overlap penalty
+        mask_overlap = 0.5 * (sum_c_times_mask_b1wh.pow(2) - sum_c_times_mask_squared_b1wh).clamp(min=0)
+        cost_overlap_tmp = torch.sum(mask_overlap, dim=(-1, -2, -3))  # sum over ch, w, h
+        cost_overlap = self.mask_overlap_strength * cost_overlap_tmp.mean()  # mean over batch
 
         inference = Inference(logit_grid=log_p_map-log_one_minus_p_map,
                               logit_grid_unet=unet_output.logit,
-                              background_bcwh=big_bg,
-                              foreground_kbcwh=big_img,
-                              mixing_kb1wh=mixing,
+                              background_bcwh=out_background_bcwh,
+                              foreground_kbcwh=out_img_kbcwh,
+                              mixing_kb1wh=mixing_kb1wh,
                               sample_c_grid_before_nms=c_map_before_nms,
                               sample_c_grid_after_nms=c_map_after_nms,
                               sample_c_kb=c_few,
-                              sample_bb_kb=bounding_box_few,
+                              sample_bb_kb=bounding_box_kb,
                               sample_bb_ideal_kb=bb_ideal_kb)
 
         # ---------------------------------- #
@@ -379,15 +380,15 @@ class InferenceAndGeneration(torch.nn.Module):
         n_box_few, batch_size = c_few.shape
 
         # 1. Observation model
-        mixing_fg = torch.sum(mixing, dim=-5)  # sum over boxes
+        mixing_fg = torch.sum(mixing_kb1wh, dim=-5)  # sum over boxes
         mixing_bg = torch.ones_like(mixing_fg) - mixing_fg
-        mse = InferenceAndGeneration.NLL_MSE(output=big_img,
+        mse = InferenceAndGeneration.NLL_MSE(output=out_img_kbcwh,
                                              target=imgs_bcwh,
                                              sigma=self.sigma_fg)  # boxes, batch_size, ch, w, h
-        mse_bg = InferenceAndGeneration.NLL_MSE(output=big_bg,
+        mse_bg = InferenceAndGeneration.NLL_MSE(output=out_background_bcwh,
                                                 target=imgs_bcwh,
                                                 sigma=self.sigma_bg)  # batch_size, ch, w, h
-        mse_av = ((mixing * mse).sum(dim=-5) + mixing_bg * mse_bg).mean()  # mean over batch_size, ch, w, h
+        mse_av = ((mixing_kb1wh * mse).sum(dim=-5) + mixing_bg * mse_bg).mean()  # mean over batch_size, ch, w, h
 
         # TODO: put htis stuff inside torch.no_grad()
         with torch.no_grad():
@@ -409,7 +410,8 @@ class InferenceAndGeneration(torch.nn.Module):
             x_sparsity_min = self.geco_target_fgfraction_min
             g_sparsity = torch.min(x_sparsity_av - x_sparsity_min,
                                    x_sparsity_max - x_sparsity_av)  # positive if in range
-        c_times_area_few = c_few * bounding_box_few.bw * bounding_box_few.bh
+        # TODO remove c_times_area_few from the sparsity term
+        c_times_area_few = c_few * bounding_box_kb.bw * bounding_box_kb.bh
         x_sparsity = 0.5 * (torch.sum(mixing_fg) + torch.sum(c_times_area_few)) / torch.numel(mixing_fg)
         f_sparsity = x_sparsity * torch.sign(x_sparsity_av - x_sparsity_min).detach()
 
@@ -448,6 +450,8 @@ class InferenceAndGeneration(torch.nn.Module):
                     self.geco_ncell * g_cell.detach() + \
                     self.geco_mse * g_mse.detach()
         loss = loss_vae + loss_geco - loss_geco.detach()
+
+        similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
         # add everything you want as long as there is one loss
         metric = MetricMiniBatch(loss=loss,
