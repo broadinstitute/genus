@@ -157,6 +157,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # variables
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
+        self.mask_overlap_type = config["loss"]["mask_overlap_penalty_type"]
 
         self.size_min = config["input_image"]["range_object_size"][0]
         self.size_max = config["input_image"]["range_object_size"][1]
@@ -388,7 +389,12 @@ class InferenceAndGeneration(torch.nn.Module):
         cost_overlap_tmp_v2 = 0.01 * torch.sum(mask_overlap_v2, dim=(-1, -2, -3))
         cost_overlap_v2 = self.mask_overlap_strength * cost_overlap_tmp_v2.mean()
 
-        cost_overlap = cost_overlap_v1
+        if self.mask_overlap_type == 1:
+            cost_overlap = cost_overlap_v1
+        elif self.mask_overlap_type == 2:
+            cost_overlap = cost_overlap_v2
+        else:
+            raise Exception("self.mask_overlap_type not valid")
 
         inference = Inference(logit_grid=log_p_map-log_one_minus_p_map,
                               logit_grid_unet=unet_output.logit,
