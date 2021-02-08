@@ -57,20 +57,22 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         ideal_y1_kb = (torch.argmax(mask_kbh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
         ideal_y3_kb = (torch.argmax(mask_kbh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kbh.shape[-1]).float()
 
-        # If the box is empty, do a special treatment
+        # If the box is empty, do a special treatment, i.e. make them the smallest possible size
         empty_kb = (mask_kb == 0)
         ideal_x1_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] - 0.5 * min_box_size
         ideal_x3_kb[empty_kb] = bounding_boxes_kb.bx[empty_kb] + 0.5 * min_box_size
         ideal_y1_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] - 0.5 * min_box_size
         ideal_y3_kb[empty_kb] = bounding_boxes_kb.by[empty_kb] + 0.5 * min_box_size
 
-        # Compute the box coordinates
-        ideal_bx_kb = 0.5*(ideal_x3_kb + ideal_x1_kb)
-        ideal_by_kb = 0.5*(ideal_y3_kb + ideal_y1_kb)
+        # Compute the box coordinates (note the clamping of bw and bh)
+        ideal_bx_kb = 0.5 * (ideal_x3_kb + ideal_x1_kb)
+        ideal_by_kb = 0.5 * (ideal_y3_kb + ideal_y1_kb)
         ideal_bw_kb = (ideal_x3_kb - ideal_x1_kb).clamp(min=min_box_size, max=max_box_size)
         ideal_bh_kb = (ideal_y3_kb - ideal_y1_kb).clamp(min=min_box_size, max=max_box_size)
 
-        # Now compute the regression cost
+        # Now compute the regression cost for bw and bh (bx,by are NOT subject to regression cost)
+        # TODO: Make a regression cost for bx and by.
+        #  The problem is that depending on the value of bx, by different grid cell are responsible
         x1_tmp_kb = ideal_bx_kb - 0.5 * ideal_bw_kb
         x3_tmp_kb = ideal_bx_kb + 0.5 * ideal_bw_kb
         y1_tmp_kb = ideal_by_kb - 0.5 * ideal_bh_kb
@@ -81,11 +83,11 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         bh_target_kb = torch.max(y3_tmp_kb - bounding_boxes_kb.bw,
                                  bounding_boxes_kb.bw - y1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
 
-        print("DEBUG min, max ->", min_box_size, max_box_size)
-        print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
-              bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
-        print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
-              ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
+##        print("DEBUG min, max ->", min_box_size, max_box_size)
+##        print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
+##              bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
+##        print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
+##              ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
 
     # this is the only part outside the torch.no_grad()
     cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
@@ -223,7 +225,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   sample_from_prior=generate_synthetic_data)
 
         out_background_bcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
-                                                high_resolution=(imgs_bcwh.shape[-2], imgs_bcwh.shape[-1])))
+                                                             high_resolution=(imgs_bcwh.shape[-2],
+                                                                              imgs_bcwh.shape[-1])))
 
         # bounbding boxes
         zwhere_map: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
