@@ -83,11 +83,11 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         bh_target_kb = torch.max(y3_tmp_kb - bounding_boxes_kb.bw,
                                  bounding_boxes_kb.bw - y1_tmp_kb).clamp(min=min_box_size, max=max_box_size)
 
-##        print("DEBUG min, max ->", min_box_size, max_box_size)
-##        print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
-##              bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
-##        print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
-##              ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
+        # print("DEBUG min, max ->", min_box_size, max_box_size)
+        # print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
+        #       bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
+        # print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
+        #       ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
 
     # this is the only part outside the torch.no_grad()
     cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
@@ -127,19 +127,6 @@ def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box
               by=convert_to_box_list(by_grid).squeeze(-1),
               bw=convert_to_box_list(bw_grid).squeeze(-1),
               bh=convert_to_box_list(bh_grid).squeeze(-1))
-
-
-def from_w_to_pi(weight: torch.Tensor, dim: int):
-    """ Compute the interacting and non-interacting mixing probabilities
-        Make sure that when summing over dim=dim the mask sum to zero or one
-        mask_j = fg_mask * partitioning_j
-        where fg_mask = tanh ( sum_i w_i) and partitioning_j = w_j / (sum_i w_i)
-    """
-    assert len(weight.shape) == 5
-    sum_weight = torch.sum(weight, dim=dim, keepdim=True)
-    fg_mask = torch.tanh(sum_weight)
-    partitioning = weight / torch.clamp(sum_weight, min=1E-6)
-    return fg_mask * partitioning
 
 
 class InferenceAndGeneration(torch.nn.Module):
@@ -233,7 +220,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # ---------------------------#
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
 
-        # background
+        # TODO: Replace the background block with a VQ-VAE
+        # Compute the background
         zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zbg.mu,
                                                   posterior_std=unet_output.zbg.std,
                                                   prior_mu=torch.zeros_like(unet_output.zbg.mu),
@@ -367,9 +355,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                      height_big=height_raw_image)  # shape: n_box, batch, ch, w, h
         out_mask_kb1wh, out_img_kbcwh = torch.split(big_stuff, split_size_or_sections=(1, big_stuff.shape[-3] - 1), dim=-3)
         c_times_mask_kb1wh = out_mask_kb1wh * c_few[..., None, None, None]  # this is strictly smaller than 1
-        sum_c_times_mask_b1wh = c_times_mask_kb1wh.sum(dim=-5)
-        sum_c_times_mask_squared_b1wh = c_times_mask_kb1wh.pow(2).sum(dim=-5)
-        mixing_kb1wh = c_times_mask_kb1wh / sum_c_times_mask_b1wh.clamp_(min=1.0)  # softplus-like function
+        mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
 
         # Compute the ideal bounding boxes
         bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing_kb1wh,
@@ -379,19 +365,20 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              max_box_size=self.size_max)
         cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
 
-        # APPROACH 1: Compute mask overlap penalty
-        mask_overlap_v1 = 0.5 * (sum_c_times_mask_b1wh.pow(2) - sum_c_times_mask_squared_b1wh).clamp(min=0)
-        cost_overlap_tmp_v1 = torch.sum(mask_overlap_v1, dim=(-1, -2, -3))  # sum over ch, w, h
-        cost_overlap_v1 = self.mask_overlap_strength * cost_overlap_tmp_v1.mean()  # mean over batch
-
-        # APPROACH 2: Compute mask overlap
-        mask_overlap_v2 = torch.sum(mixing_kb1wh * (torch.ones_like(mixing_kb1wh) - mixing_kb1wh), dim=-5)  # sum boxes
-        cost_overlap_tmp_v2 = 0.01 * torch.sum(mask_overlap_v2, dim=(-1, -2, -3))
-        cost_overlap_v2 = self.mask_overlap_strength * cost_overlap_tmp_v2.mean()
-
+        # TODO: detach c when computing the overlap? Probably yes.
+        #   Actually, I should probably have here p. Not c.
         if self.mask_overlap_type == 1:
+            # APPROACH 1: Compute mask overlap penalty
+            mask_overlap_v1 = c_times_mask_kb1wh.sum(dim=-5).pow(2) - c_times_mask_kb1wh.pow(2).sum(dim=-5)
+            # print("DEBUG mask_overlap1 min,max", torch.min(mask_overlap_v1), torch.max(mask_overlap_v1))
+            cost_overlap_tmp_v1 = torch.sum(mask_overlap_v1, dim=(-1, -2, -3))  # sum over ch, w, h
+            cost_overlap_v1 = self.mask_overlap_strength * cost_overlap_tmp_v1.mean()  # mean over batch
             cost_overlap = cost_overlap_v1
         elif self.mask_overlap_type == 2:
+            # APPROACH 2: Compute mask overlap
+            mask_overlap_v2 = torch.sum(mixing_kb1wh * (torch.ones_like(mixing_kb1wh) - mixing_kb1wh), dim=-5)
+            cost_overlap_tmp_v2 = 0.01 * torch.sum(mask_overlap_v2, dim=(-1, -2, -3))
+            cost_overlap_v2 = self.mask_overlap_strength * cost_overlap_tmp_v2.mean()
             cost_overlap = cost_overlap_v2
         else:
             raise Exception("self.mask_overlap_type not valid")
@@ -400,6 +387,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               logit_grid_unet=unet_output.logit,
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
+                              sum_c_times_mask_b1wh=c_times_mask_kb1wh.sum(dim=-5),
                               mixing_kb1wh=mixing_kb1wh,
                               sample_c_grid_before_nms=c_map_before_nms,
                               sample_c_grid_after_nms=c_map_after_nms,

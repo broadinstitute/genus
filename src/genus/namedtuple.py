@@ -194,6 +194,7 @@ class Inference(NamedTuple):
     logit_grid_unet: torch.Tensor  # for debug
     background_bcwh: torch.Tensor
     foreground_kbcwh: torch.Tensor
+    sum_c_times_mask_b1wh: torch.Tensor
     mixing_kb1wh: torch.Tensor
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor

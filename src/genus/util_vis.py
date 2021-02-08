@@ -467,7 +467,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_after_nms"+postfix)
-    fig_g = show_batch(torch.sigmoid(output.inference.logit_grid_unet),
+    fig_d = show_batch(torch.sigmoid(output.inference.logit_grid_unet),
                        n_col=4,
                        n_padding=4,
                        normalize=False,
@@ -488,10 +488,18 @@ def plot_reconstruction_and_inference(output: Output,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
+    fig_g = show_batch(output.inference.sum_c_times_mask_b1wh,
+                       n_col=4,
+                       n_padding=4,
+                       normalize=True,
+                       normalize_range=(0.0, 2.0),
+                       title='overlap, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"overlap"+postfix)
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_e, fig_f, fig_g
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
 
 
 def plot_segmentation(segmentation: Segmentation,
