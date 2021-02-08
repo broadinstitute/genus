@@ -96,21 +96,37 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
     return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
 
 
-def tmaps_to_bb(tmaps, width_raw_image: int, height_raw_image: int, min_box_size: float, max_box_size: float):
-    tx_map, ty_map, tw_map, th_map = torch.split(tmaps, 1, dim=-3)
-    n_width, n_height = tx_map.shape[-2:]
-    ix_array = torch.arange(start=0, end=n_width, dtype=tx_map.dtype, device=tx_map.device)
-    iy_array = torch.arange(start=0, end=n_height, dtype=tx_map.dtype, device=tx_map.device)
-    ix_grid, iy_grid = torch.meshgrid([ix_array, iy_array])
+def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box_size: float, max_box_size: float):
+    """ 
+    Convert the output of the zwhere decoder to a list of boundinb boxes 
+    
+    Args:
+        t_grid: tensor of shape :math:`(B,4,w_grid,h_grid)` with values in (0,1)
+        width_input_image: width of the input image
+        height_input_image: height of the input image
+        min_box_size: minimum allowed size for the bounding boxes
+        max_box_size: maximum allowed size for the bounding boxes
+        
+    Returns:
+        A container of type :class:`BB` with the bounding boxes of shape :math:`(N,B)` 
+        where :math:`N = w_grid * h_grid`. 
+    """
+    grid_width, grid_height = t_grid.shape[-2:]
+    ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
+                           device=t_grid.device).unsqueeze(-1)  # shape: grid_width, 1
+    iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
+                           device=t_grid.device).unsqueeze(-2)  # shape: 1, grid_height
 
-    bx_map: torch.Tensor = width_raw_image * (ix_grid + tx_map) / n_width
-    by_map: torch.Tensor = height_raw_image * (iy_grid + ty_map) / n_height
-    bw_map: torch.Tensor = min_box_size + (max_box_size - min_box_size) * tw_map
-    bh_map: torch.Tensor = min_box_size + (max_box_size - min_box_size) * th_map
-    return BB(bx=convert_to_box_list(bx_map).squeeze(-1),
-              by=convert_to_box_list(by_map).squeeze(-1),
-              bw=convert_to_box_list(bw_map).squeeze(-1),
-              bh=convert_to_box_list(bh_map).squeeze(-1))
+    tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, 1, dim=-3)  # shapes: (b,1,grid_width,grid_height)
+
+    bx_grid = width_input_image * (ix_grid + tx_grid) / grid_width    # values in (0,width_input_image)
+    by_grid = height_input_image * (iy_grid + ty_grid) / grid_height  # values in (0,height_input_image)
+    bw_grid = min_box_size + (max_box_size - min_box_size) * tw_grid  # values in (min_box_size, max_box_size)
+    bh_grid = min_box_size + (max_box_size - min_box_size) * th_grid  # values in (min_box_size, max_box_size)
+    return BB(bx=convert_to_box_list(bx_grid).squeeze(-1),
+              by=convert_to_box_list(by_grid).squeeze(-1),
+              bw=convert_to_box_list(bw_grid).squeeze(-1),
+              bh=convert_to_box_list(bh_grid).squeeze(-1))
 
 
 def from_w_to_pi(weight: torch.Tensor, dim: int):
@@ -139,8 +155,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_target_fgfraction_max = 0.10
 
         # variables
-        self.bb_regression_strength = config["loss"]["mask_overlap_penalty_strength"]
-        self.mask_overlap_strength = config["loss"]["bounding_box_regression_penalty_strength"]
+        self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
+        self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
 
         self.size_min = config["input_image"]["range_object_size"][0]
         self.size_max = config["input_image"]["range_object_size"][1]
@@ -236,9 +252,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          noisy_sampling=noisy_sampling,
                                                          sample_from_prior=generate_synthetic_data)
 
-        bounding_box_nb: BB = tmaps_to_bb(tmaps=torch.sigmoid(self.decoder_zwhere(zwhere_map.sample)),
-                                          width_raw_image=width_raw_image,
-                                          height_raw_image=height_raw_image,
+        bounding_box_nb: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere_map.sample)),
+                                          width_input_image=width_raw_image,
+                                          height_input_image=height_raw_image,
                                           min_box_size=self.size_min,
                                           max_box_size=self.size_max)
 
