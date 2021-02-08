@@ -378,10 +378,17 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              max_box_size=self.size_max)
         cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
 
-        # Compute mask overlap penalty
-        mask_overlap = 0.5 * (sum_c_times_mask_b1wh.pow(2) - sum_c_times_mask_squared_b1wh).clamp(min=0)
-        cost_overlap_tmp = torch.sum(mask_overlap, dim=(-1, -2, -3))  # sum over ch, w, h
-        cost_overlap = self.mask_overlap_strength * cost_overlap_tmp.mean()  # mean over batch
+        # APPROACH 1: Compute mask overlap penalty
+        mask_overlap_v1 = 0.5 * (sum_c_times_mask_b1wh.pow(2) - sum_c_times_mask_squared_b1wh).clamp(min=0)
+        cost_overlap_tmp_v1 = torch.sum(mask_overlap_v1, dim=(-1, -2, -3))  # sum over ch, w, h
+        cost_overlap_v1 = self.mask_overlap_strength * cost_overlap_tmp_v1.mean()  # mean over batch
+
+        # APPROACH 2: Compute mask overlap
+        mask_overlap_v2 = torch.sum(mixing_kb1wh * (torch.ones_like(mixing_kb1wh) - mixing_kb1wh), dim=-5)  # sum boxes
+        cost_overlap_tmp_v2 = 0.01 * torch.sum(mask_overlap_v2, dim=(-1, -2, -3))
+        cost_overlap_v2 = self.mask_overlap_strength * cost_overlap_tmp_v2.mean()
+
+        cost_overlap = cost_overlap_v1
 
         inference = Inference(logit_grid=log_p_map-log_one_minus_p_map,
                               logit_grid_unet=unet_output.logit,
