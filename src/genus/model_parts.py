@@ -46,8 +46,10 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         mask_kbw = torch.max(mask_kbwh, dim=-1)[0]
         mask_kb = torch.max(mask_kbw, dim=-1)[0]  # 0 if empty, 1 if non-empty
 
-        plus_h = torch.arange(start=0, end=mask_kbh.shape[-1], step=1, dtype=torch.float, device=mixing_kb1wh.device) + 1
-        plus_w = torch.arange(start=0, end=mask_kbw.shape[-1], step=1, dtype=torch.float, device=mixing_kb1wh.device) + 1
+        plus_h = torch.arange(start=0, end=mask_kbh.shape[-1], step=1,
+                              dtype=torch.float, device=mixing_kb1wh.device) + 1
+        plus_w = torch.arange(start=0, end=mask_kbw.shape[-1], step=1,
+                              dtype=torch.float, device=mixing_kb1wh.device) + 1
         minus_h = plus_h[-1] - plus_h + 1
         minus_w = plus_w[-1] - plus_w + 1
 
@@ -279,6 +281,7 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
 
         # End of torch.no_grad
+        print("DEBUG. min,max unet_output.logit ->", torch.min(unet_output.logit), torch.max(unet_output.logit))
         logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
                                                                                p_correction=p_corr_b1wh,
                                                                                prob_corr_factor=prob_corr_factor)
@@ -362,9 +365,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                     dim=-3)
 
         # 7. Compute the mixing
-        c_attached_kb = (c_detached_kb - prob_kb).detach() + prob_kb  # value is c, derivative goes through p
-        c_times_mask_kb1wh = out_mask_kb1wh * c_attached_kb[..., None, None, None]  # this is strictly smaller than 1
-        mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        # note that in the denominator there is c_detached while in the numerator there is prob_attached
+        c_times_mask_kb1wh = out_mask_kb1wh * c_detached_kb[..., None, None, None]
+        p_times_mask_kb1wh = out_mask_kb1wh * prob_kb[..., None, None, None]
+        mixing_kb1wh = p_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
 
         # 8. Compute the ideal bounding boxes
         bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing_kb1wh,
@@ -410,7 +414,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 1. Observation model
         mixing_fg = torch.sum(mixing_kb1wh, dim=-5)  # sum over boxes
-        mixing_bg = torch.ones_like(mixing_fg) - mixing_fg
+        mixing_bg = (torch.ones_like(mixing_fg) - mixing_fg).clamp(min=0.0)
         mse = InferenceAndGeneration.NLL_MSE(output=out_img_kbcwh,
                                              target=imgs_bcwh,
                                              sigma=self.sigma_fg)  # boxes, batch_size, ch, w, h
@@ -440,17 +444,18 @@ class InferenceAndGeneration(torch.nn.Module):
             g_sparsity = torch.min(x_sparsity_av - x_sparsity_min,
                                    x_sparsity_max - x_sparsity_av)  # positive if in range
         # TODO remove c_times_area_few from the sparsity term
-        c_times_area_few = c_attached_kb * bounding_box_kb.bw * bounding_box_kb.bh
+        c_times_area_few = c_detached_kb * bounding_box_kb.bw * bounding_box_kb.bh
         x_sparsity = 0.5 * (torch.sum(mixing_fg) + torch.sum(c_times_area_few)) / torch.numel(mixing_fg)
         f_sparsity = x_sparsity * torch.sign(x_sparsity_av - x_sparsity_min).detach()
 
         with torch.no_grad():
-            n_box_few, batch_size = c_attached_kb.shape
+            n_box_few, batch_size = c_detached_kb.shape
             x_cell_av = torch.sum(c_grid_after_nms_b1wh) / batch_size
             x_cell_max = self.geco_target_ncell_max
             x_cell_min = self.geco_target_ncell_min
             g_cell = torch.min(x_cell_av - x_cell_min,
                                x_cell_max - x_cell_av) / n_box_few  # positive if in range, negative otherwise
+        # TODO: Act directly on logit_corrected instead of prob_grid_corrected?
         x_cell = torch.sum(prob_grid_corrected) / (batch_size * n_box_few)
         f_cell = x_cell * torch.sign(x_cell_av - x_cell_min).detach()
 
