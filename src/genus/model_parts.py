@@ -365,10 +365,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                     dim=-3)
 
         # 7. Compute the mixing
-        # note that in the denominator there is c_detached while in the numerator there is prob_attached
         c_times_mask_kb1wh = out_mask_kb1wh * c_detached_kb[..., None, None, None]
         p_times_mask_kb1wh = out_mask_kb1wh * prob_kb[..., None, None, None]
-        mixing_kb1wh = p_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        mixing_kb1wh = p_times_mask_kb1wh / p_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        mixing_fg = mixing_kb1wh.sum(dim=-5)  # sum over boxes
+        mixing_bg = torch.ones_like(mixing_fg) - mixing_fg
 
         # 8. Compute the ideal bounding boxes
         bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing_kb1wh,
@@ -378,6 +379,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              max_box_size=self.size_max)
         cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
 
+        # 9. Compute the mask overlap penalty using c_detached so that this penalty changes
+        #  the mask not the probabilities
         # TODO: detach c when computing the overlap? Probably yes.
         #   Actually, I should probably have here p. Not c.
         if self.mask_overlap_type == 1:
@@ -413,8 +416,6 @@ class InferenceAndGeneration(torch.nn.Module):
         # Compute the metrics
 
         # 1. Observation model
-        mixing_fg = torch.sum(mixing_kb1wh, dim=-5)  # sum over boxes
-        mixing_bg = (torch.ones_like(mixing_fg) - mixing_fg).clamp(min=0.0)
         mse = InferenceAndGeneration.NLL_MSE(output=out_img_kbcwh,
                                              target=imgs_bcwh,
                                              sigma=self.sigma_fg)  # boxes, batch_size, ch, w, h
