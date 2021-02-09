@@ -30,7 +30,7 @@ class Cropper(object):
         # a. same independent dimension (boxes, batch)
         # b. same channels
         # c. different width and height
-        #  Note that I replicate the uncropped image n_boxes times
+        # I use reshape instead of using view and contigous together.
         big_stuff = big_stuff.reshape([-1] + large_dependent_dim)
         cropped_images: torch.Tensor = torch.zeros(independent_dim + small_dependent_dim,
                                                    dtype=big_stuff.dtype,

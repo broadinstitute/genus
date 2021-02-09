@@ -133,28 +133,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
     return DIST(sample=sample, kl=kl)
 
 
-def sample_c_map(p_map: torch.Tensor,
-                 similarity_kernel: torch.Tensor,
-                 noisy_sampling: bool,
-                 sample_from_prior: bool):
-
-    if sample_from_prior:
-        with torch.no_grad():
-            batch_size = torch.Size([p_map.shape[0]])
-            s = similarity_kernel.requires_grad_(False)
-            c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
-            c_reshaped = c_all.transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, batch_size, 1
-            c_map = invert_convert_to_box_list(c_reshaped,
-                                               original_width=p_map.shape[-2],
-                                               original_height=p_map.shape[-1])
-            return c_map
-    else:
-        with torch.no_grad():
-            c_map = (torch.rand_like(p_map) < p_map) if noisy_sampling else (0.5 < p_map)
-        return c_map.float() + p_map - p_map.detach()
-
-
-def NEW_sample_c_grid(logit_grid: torch.Tensor,
+def sample_c_grid(logit_grid: torch.Tensor,
                   similarity_matrix: torch.Tensor,
                   noisy_sampling: bool,
                   sample_from_prior: bool) -> torch.Tensor:
