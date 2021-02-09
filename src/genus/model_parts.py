@@ -365,9 +365,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                     dim=-3)
 
         # 7. Compute the mixing
-        c_times_mask_kb1wh = out_mask_kb1wh * c_detached_kb[..., None, None, None]
-        p_times_mask_kb1wh = out_mask_kb1wh * prob_kb[..., None, None, None]
-        mixing_kb1wh = p_times_mask_kb1wh / p_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
+        # Note that mixing are multiplied by the max between max(p, c).
+        # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
+        c_or_p_attached_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
+        c_or_p_times_mask_kb1wh = out_mask_kb1wh * c_or_p_attached_kb[..., None, None, None]
+        mixing_kb1wh = c_or_p_times_mask_kb1wh / c_or_p_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like
         mixing_fg = mixing_kb1wh.sum(dim=-5)  # sum over boxes
         mixing_bg = torch.ones_like(mixing_fg) - mixing_fg
 
@@ -380,12 +382,13 @@ class InferenceAndGeneration(torch.nn.Module):
         cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
 
         # 9. Compute the mask overlap penalty using c_detached so that this penalty changes
-        #  the mask not the probabilities
+        #  the mask but not the probabilities
         # TODO: detach c when computing the overlap? Probably yes.
-        #   Actually, I should probably have here p. Not c.
+        c_detached_times_mask_kb1wh = out_mask_kb1wh * c_detached_kb[..., None, None, None]
         if self.mask_overlap_type == 1:
             # APPROACH 1: Compute mask overlap penalty
-            mask_overlap_v1 = c_times_mask_kb1wh.sum(dim=-5).pow(2) - c_times_mask_kb1wh.pow(2).sum(dim=-5)
+            mask_overlap_v1 = c_detached_times_mask_kb1wh.sum(dim=-5).pow(2) - \
+                              c_detached_times_mask_kb1wh.pow(2).sum(dim=-5)
             # print("DEBUG mask_overlap1 min,max", torch.min(mask_overlap_v1), torch.max(mask_overlap_v1))
             cost_overlap_tmp_v1 = torch.sum(mask_overlap_v1, dim=(-1, -2, -3))  # sum over ch, w, h
             cost_overlap_v1 = self.mask_overlap_strength * cost_overlap_tmp_v1.mean()  # mean over batch
@@ -404,7 +407,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
-                              sum_c_times_mask_b1wh=c_times_mask_kb1wh.sum(dim=-5),
+                              sum_c_times_mask_b1wh=c_detached_times_mask_kb1wh.sum(dim=-5),
                               mixing_kb1wh=mixing_kb1wh,
                               sample_c_grid_before_nms=c_grid_before_nms_b1wh,
                               sample_c_grid_after_nms=c_grid_after_nms_b1wh,
