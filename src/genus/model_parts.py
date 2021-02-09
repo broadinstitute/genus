@@ -197,6 +197,27 @@ class InferenceAndGeneration(torch.nn.Module):
                                                            requires_grad=True)
 
     @staticmethod
+    def _compute_logit_corrected(logit_praw: torch.Tensor,
+                                 p_correction: torch.Tensor,
+                                 prob_corr_factor: float):
+        """
+        In log space computes the probability correction:
+        1. p = (1-a) * p_raw + a * p_corr
+        2. (1-p) = (1-a) * (1-p_raw) + a * (1-p_corr)
+        3. logit_p = log_p - log_1_m_p
+        It returns the logit of the corrected probability
+        """
+
+        log_praw = F.logsigmoid(logit_praw)
+        log_1_m_praw = F.logsigmoid(-logit_praw)
+        log_a = torch.tensor(prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
+        log_1_m_a = torch.tensor(1 - prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
+        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_correction) + log_a)
+        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log1p(-p_correction) + log_a)
+        logit_corrected = log_p_corrected - log_1_m_p_corrected
+        return logit_corrected
+
+    @staticmethod
     def NLL_MSE(output: torch.tensor, target: torch.tensor, sigma: torch.tensor) -> torch.Tensor:
         return ((output - target) / sigma).pow(2)
 
@@ -251,16 +272,16 @@ class InferenceAndGeneration(torch.nn.Module):
                 av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
                 ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
                 tmp_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
-                p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
+                p_corr_b1wh = invert_convert_to_box_list(tmp_nb.unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
-                p_new = (1-prob_corr_factor) * torch.sigmoid(unet_output.logit) + prob_corr_factor * p_corr_b1wh
-                # p_new.clamp_(min=0.1, max=0.9)
-                logit_target = torch.log(p_new) - torch.log(1-p_new)
             else:
-                logit_target = unet_output.logit
+                p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+
         # End of torch.no_grad
-        logit_grid_corrected = unet_output.logit + (logit_target - unet_output.logit).detach()
+        logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
+                                                                               p_correction=p_corr_b1wh,
+                                                                               prob_corr_factor=prob_corr_factor)
         prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
 
         # Sample the probability map from prior or posterior
@@ -345,7 +366,7 @@ class InferenceAndGeneration(torch.nn.Module):
         c_times_mask_kb1wh = out_mask_kb1wh * c_attached_kb[..., None, None, None]  # this is strictly smaller than 1
         mixing_kb1wh = c_times_mask_kb1wh / c_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like function
 
-        # Compute the ideal bounding boxes
+        # 8. Compute the ideal bounding boxes
         bb_ideal_kb, bb_regression_kb = optimal_bb_and_bb_regression_penalty(mixing_kb1wh=mixing_kb1wh,
                                                                              bounding_boxes_kb=bounding_box_kb,
                                                                              pad_size=self.pad_size_bb,
@@ -373,6 +394,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         inference = Inference(logit_grid=logit_grid_corrected,
                               logit_grid_unet=unet_output.logit,
+                              logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
                               sum_c_times_mask_b1wh=c_times_mask_kb1wh.sum(dim=-5),

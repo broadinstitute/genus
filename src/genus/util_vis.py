@@ -474,6 +474,13 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet_grid"+postfix)
+    fig_h = show_batch(torch.sigmoid(output.inference.logit_grid_correction),
+                       n_col=4,
+                       n_padding=4,
+                       normalize=False,
+                       title='prob_grid, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"prob_correction_grid"+postfix)
     fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=4,
                        n_padding=4,
@@ -499,7 +506,7 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h
 
 
 def plot_segmentation(segmentation: Segmentation,
