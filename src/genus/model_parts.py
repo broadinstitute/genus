@@ -287,18 +287,23 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
             # outside torch.no_grad
-            logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
-                                                                                   p_correction=p_corr_b1wh,
-                                                                                   prob_corr_factor=prob_corr_factor)
-            logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
+            prob_grid_corrected = ((1 - prob_corr_factor) * torch.sigmoid(unet_output.logit) +
+                                   prob_corr_factor * p_corr_b1wh).clamp(min=1E-4, max=1-1E-4)
+            logit_grid_corrected = torch.log(prob_grid_corrected) - torch.log1p(-prob_grid_corrected)
+            logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
+
+            #logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
+            #                                                                       p_correction=p_corr_b1wh,
+            #                                                                       prob_corr_factor=prob_corr_factor)
+            #logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
         elif prob_corr_factor == 0:
             p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
             logit_grid_corrected = unet_output.logit
             logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
+            prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
         else:
             raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
-        prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
 
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=logit_grid_corrected.shape[-2],
@@ -387,7 +392,7 @@ class InferenceAndGeneration(torch.nn.Module):
         c_differentiable_kb = prob_kb + (c_detached_kb - prob_kb).detach()
         # c_differentiable_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         c_differentiable_times_mask_kb1wh = c_differentiable_kb[..., None, None, None] * out_mask_kb1wh
-        c_detached_times_mask_kb1wh = c_detached_kb[..., None, None, None] * out_mask_kb1wh
+        # c_detached_times_mask_kb1wh = c_detached_kb[..., None, None, None] * out_mask_kb1wh
         mixing_kb1wh = c_differentiable_times_mask_kb1wh / c_differentiable_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)
         mixing_fg_b1wh = mixing_kb1wh.sum(dim=-5)  # sum over boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
@@ -413,8 +418,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # TODO: detach c when computing the overlap? Probably yes.
         if self.mask_overlap_type == 1:
             # APPROACH 1: Compute mask overlap penalty
-            mask_overlap_v1 = c_detached_times_mask_kb1wh.sum(dim=-5).pow(2) - \
-                              c_detached_times_mask_kb1wh.pow(2).sum(dim=-5)
+            mask_overlap_v1 = c_differentiable_times_mask_kb1wh.sum(dim=-5).pow(2) - \
+                              c_differentiable_times_mask_kb1wh.pow(2).sum(dim=-5)
             # print("DEBUG mask_overlap1 min,max", torch.min(mask_overlap_v1), torch.max(mask_overlap_v1))
             cost_overlap_tmp_v1 = torch.sum(mask_overlap_v1, dim=(-1, -2, -3))  # sum over ch, w, h
             cost_overlap_v1 = self.mask_overlap_strength * cost_overlap_tmp_v1.mean()  # mean over batch
@@ -433,7 +438,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
-                              sum_c_times_mask_b1wh=c_detached_times_mask_kb1wh.sum(dim=-5),
+                              sum_c_times_mask_b1wh=c_differentiable_times_mask_kb1wh.sum(dim=-5),
                               mixing_kb1wh=mixing_kb1wh,
                               sample_c_grid_before_nms=c_grid_before_nms_b1wh,
                               sample_c_grid_after_nms=c_grid_after_nms_b1wh,
@@ -476,12 +481,13 @@ class InferenceAndGeneration(torch.nn.Module):
         # TODO: kl should act only on filled boxes, i.e. c=1
         kl_zbg = torch.mean(zbg.kl)  # mean over: batch, latent_dim
         kl_zinstance = torch.mean(zinstance_few.kl)  # mean over: n_boxes, batch, latent_dim
-        kl_zwhere = torch.mean(zwhere_kl_kbz)  # mean over: n_boxes, batch, latent_dim
-        kl_logit = torch.mean(kl_logit_b)  # mean over: batch
+        kl_zwhere = torch.zeros_like(kl_zbg)  # torch.mean(zwhere_kl_kbz)  # mean over: n_boxes, batch, latent_dim
+        kl_logit = torch.zeros_like(kl_zbg)  #  torch.mean(kl_logit_b)  # mean over: batch
 
-        kl_av = kl_zbg + kl_zinstance + kl_zwhere + \
-                torch.exp(-self.running_avarage_kl_logit) * kl_logit + \
-                self.running_avarage_kl_logit - self.running_avarage_kl_logit.detach()
+        kl_av = kl_zbg + kl_zinstance + kl_zwhere
+        #+ \
+        #        torch.exp(-self.running_avarage_kl_logit) * kl_logit + \
+        #        self.running_avarage_kl_logit - self.running_avarage_kl_logit.detach()
 
         # 6. Note that I clamp in_place
         # TODO: use lambda_log
