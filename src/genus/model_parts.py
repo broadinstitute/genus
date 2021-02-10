@@ -290,7 +290,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # If necessary make the raw probabilities close to the corrected ones
         if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-            logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).mean()
+            logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
         else:
             logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
 
@@ -412,7 +412,7 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("self.mask_overlap_type not valid")
 
-        inference = Inference(logit_grid=unet_output.logit,
+        inference = Inference(logit_grid=logit_grid_corrected,
                               logit_grid_unet=unet_output.logit,
                               logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
                               background_bcwh=out_background_bcwh,
