@@ -123,11 +123,11 @@ class DecoderBackground(nn.Module):
 
 
 class DecoderConv(nn.Module):
-    def __init__(self, size: int, dim_z: int, ch_out: int, last_channel_is_mask: bool):
+    def __init__(self, size: int, dim_z: int, ch_out: int):
         super().__init__()
         self.width = size
         assert (self.width == 28 or self.width == 56)
-        self.last_channel_is_mask = last_channel_is_mask
+        # self.last_channel_is_mask = last_channel_is_mask
         self.dim_z: int = dim_z
         self.ch_out: int = ch_out
         self.upsample = nn.Linear(self.dim_z, 64 * 7 * 7)
@@ -143,14 +143,7 @@ class DecoderConv(nn.Module):
         independent_dim = list(z.shape[:-1])
         x1 = self.upsample(z.view(-1, self.dim_z)).view(-1, 64, 7, 7)
         x2 = self.decoder(x1).view(independent_dim + [self.ch_out, self.width, self.width])
-        if self.last_channel_is_mask:
-            img, weight = torch.split(x2, split_size_or_sections=(x2.shape[-3]-1, 1), dim=-3)
-            mask = torch.sigmoid(weight)
-            return torch.cat((img, mask), dim=-3)
-        else:
-            return x2
-
-
+        return x2
 
 
 class EncoderConv(nn.Module):

@@ -92,8 +92,11 @@ def optimal_bb_and_bb_regression_penalty(mixing_kb1wh: torch.Tensor,
         #       ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
 
     # this is the only part outside the torch.no_grad()
-    cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
-                         ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
+    cost_bb_regression = torch.abs(bw_target_kb - bounding_boxes_kb.bw) + \
+                         torch.abs(bh_target_kb - bounding_boxes_kb.bh)
+
+    #cost_bb_regression = ((bw_target_kb - bounding_boxes_kb.bw)/min_box_size).pow(2) + \
+    #                     ((bh_target_kb - bounding_boxes_kb.bh)/min_box_size).pow(2)
 
     return BB(bx=ideal_bx_kb, by=ideal_by_kb, bw=ideal_bw_kb, bh=ideal_bh_kb), cost_bb_regression
 
@@ -171,8 +174,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         self.decoder_zinstance: DecoderConv = DecoderConv(size=config["architecture"]["glimpse_size"],
                                                           dim_z=config["architecture"]["dim_zinstance"],
-                                                          ch_out=config["architecture"]["n_ch_img"] + 1,
-                                                          last_channel_is_mask=True)
+                                                          ch_out=config["architecture"]["n_ch_img"] + 1)
 
         # Encoders
         self.encoder_zinstance: EncoderConv = EncoderConv(size=config["architecture"]["glimpse_size"],
@@ -258,8 +260,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   prior_std=torch.ones_like(unet_output.zbg.std),
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
-        out_background_bcwh = self.decoder_zbg(z=zbg.sample, high_resolution=(imgs_bcwh.shape[-2],
-                                                                              imgs_bcwh.shape[-1]))
+        out_background_bcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample, high_resolution=(imgs_bcwh.shape[-2],
+                                                                                            imgs_bcwh.shape[-1])))
 
         # bounding boxes
         zwhere_grid: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
@@ -370,7 +372,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the boun ding boxes
-        small_stuff = self.decoder_zinstance.forward(zinstance_few.sample)
+        small_stuff = torch.sigmoid(self.decoder_zinstance.forward(zinstance_few.sample))
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_kb,
                                      small_stuff=small_stuff,
                                      width_big=width_raw_image,
@@ -382,8 +384,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # 7. Compute the mixing
         # Note that mixing are multiplied by the max between max(p, c).
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
-        # c_differentiable_kb = prob_kb + (c_detached_kb - prob_kb).detach()
-        c_differentiable_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
+        c_differentiable_kb = prob_kb + (c_detached_kb - prob_kb).detach()
+        # c_differentiable_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         c_differentiable_times_mask_kb1wh = c_differentiable_kb[..., None, None, None] * out_mask_kb1wh
         c_detached_times_mask_kb1wh = c_detached_kb[..., None, None, None] * out_mask_kb1wh
         mixing_kb1wh = c_differentiable_times_mask_kb1wh / c_differentiable_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)
@@ -404,7 +406,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
-        cost_bb_regression = self.bb_regression_strength * bb_regression_kb.mean()
+        cost_bb_regression = self.bb_regression_strength * torch.sum(c_detached_kb * bb_regression_kb)/batch_size
 
         # 9. Compute the mask overlap penalty using c_detached so that this penalty changes
         #  the mask but not the probabilities
@@ -451,7 +453,8 @@ class InferenceAndGeneration(torch.nn.Module):
             g_mse = (self.geco_target_mse_min - mse_av).clamp(min=0) + \
                     (self.geco_target_mse_max - mse_av).clamp(max=0)
 
-            x_sparsity_av = c_detached_times_mask_kb1wh.sum(dim=-5).mean()
+            # x_sparsity_av = c_detached_times_mask_kb1wh.sum(dim=-5).mean()
+            x_sparsity_av = torch.mean(mixing_fg_b1wh)
             g_sparsity = torch.min(x_sparsity_av - self.geco_target_fgfraction_min,
                                    self.geco_target_fgfraction_max - x_sparsity_av)
 
@@ -459,9 +462,11 @@ class InferenceAndGeneration(torch.nn.Module):
             g_cell = torch.min(x_cell_av - self.geco_target_ncell_min,
                                self.geco_target_ncell_max - x_cell_av)
 
-        x_sparsity = torch.sum(c_detached_times_mask_kb1wh) / batch_size
+        c_times_area_few = c_differentiable_kb * bounding_box_kb.bw * bounding_box_kb.bh
+        x_sparsity = 0.5 * (torch.sum(mixing_fg_b1wh) + torch.sum(c_times_area_few)) / torch.numel(mixing_fg_b1wh)
         f_sparsity = x_sparsity * torch.sign(x_sparsity_av - self.geco_target_fgfraction_min).detach()
-        x_cell = torch.sum(prob_grid_corrected) / batch_size
+
+        x_cell = torch.sum(prob_grid_corrected) / torch.numel(c_detached_kb)
         f_cell = x_cell * torch.sign(x_cell_av - self.geco_target_ncell_min).detach()
 
         # 3. compute KL
