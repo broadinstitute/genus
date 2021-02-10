@@ -281,6 +281,7 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
 
         # End of torch.no_grad
+        # TODO: SHould I just add a l2_loss so that logit_unet becomes similar to logit_correction?
         print("DEBUG. min,max unet_output.logit ->", torch.min(unet_output.logit), torch.max(unet_output.logit))
         logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
                                                                                p_correction=p_corr_b1wh,
@@ -298,7 +299,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                    noisy_sampling=noisy_sampling,
                                                    sample_from_prior=generate_synthetic_data)
 
-            score_nb = convert_to_box_list(c_grid_before_nms_b1wh + torch.sigmoid(logit_grid_corrected)).squeeze(-1)
+            score_nb = convert_to_box_list(c_grid_before_nms_b1wh + prob_grid_corrected).squeeze(-1)
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_nb=score_nb,
                                                                              bounding_box_nb=bounding_box_nb,
@@ -369,6 +370,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
         c_or_p_attached_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         c_or_p_times_mask_kb1wh = out_mask_kb1wh * c_or_p_attached_kb[..., None, None, None]
+        # TODO: try this one when prob_unet is completed
+        # mixing_kb1wh = c_or_p_times_mask_kb1wh / out_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like
         mixing_kb1wh = c_or_p_times_mask_kb1wh / c_or_p_times_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like
         mixing_fg = mixing_kb1wh.sum(dim=-5)  # sum over boxes
         mixing_bg = torch.ones_like(mixing_fg) - mixing_fg
@@ -443,25 +446,18 @@ class InferenceAndGeneration(torch.nn.Module):
         # 3) sparsity n_cell is based on c_map so that the entire matrix becomes sparse.
         with torch.no_grad():
             x_sparsity_av = torch.mean(mixing_fg)
-            x_sparsity_max = self.geco_target_fgfraction_max
-            x_sparsity_min = self.geco_target_fgfraction_min
-            g_sparsity = torch.min(x_sparsity_av - x_sparsity_min,
-                                   x_sparsity_max - x_sparsity_av)  # positive if in range
-        # TODO remove c_times_area_few from the sparsity term
-        c_times_area_few = c_detached_kb * bounding_box_kb.bw * bounding_box_kb.bh
-        x_sparsity = 0.5 * (torch.sum(mixing_fg) + torch.sum(c_times_area_few)) / torch.numel(mixing_fg)
-        f_sparsity = x_sparsity * torch.sign(x_sparsity_av - x_sparsity_min).detach()
+            g_sparsity = torch.min(x_sparsity_av - self.geco_target_fgfraction_min,
+                                   self.geco_target_fgfraction_max - x_sparsity_av)  # positive if in range
+        f_sparsity = torch.mean(mixing_fg) * torch.sign(x_sparsity_av - self.geco_target_fgfraction_min).detach()
 
         with torch.no_grad():
-            n_box_few, batch_size = c_detached_kb.shape
-            x_cell_av = torch.sum(c_grid_after_nms_b1wh) / batch_size
-            x_cell_max = self.geco_target_ncell_max
-            x_cell_min = self.geco_target_ncell_min
-            g_cell = torch.min(x_cell_av - x_cell_min,
-                               x_cell_max - x_cell_av) / n_box_few  # positive if in range, negative otherwise
+            # This is how many object I would have if there was not prob_corr_factor
+            x_cell_av = (torch.sigmoid(unet_output.logit) > 0.5).float().sum() / batch_size
+            g_cell = torch.min(x_cell_av - self.geco_target_ncell_min,
+                               self.geco_target_ncell_max - x_cell_av)  # positive if in range, negative otherwise
         # TODO: Act directly on logit_corrected instead of prob_grid_corrected?
-        x_cell = torch.sum(prob_grid_corrected) / (batch_size * n_box_few)
-        f_cell = x_cell * torch.sign(x_cell_av - x_cell_min).detach()
+        x_cell = torch.sum(prob_grid_corrected) / batch_size
+        f_cell = x_cell * torch.sign(x_cell_av - self.geco_target_ncell_min).detach()
 
         # 3. compute KL
         # Note that I compute the mean over batch, latent_dimensions and n_object.
