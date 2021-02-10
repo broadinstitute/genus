@@ -277,20 +277,26 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
-            else:
+            elif prob_corr_factor == 0:
                 p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+            else:
+                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
-        # End of torch.no_grad
-        # TODO: SHould I just add a l2_loss so that logit_unet becomes similar to logit_correction?
-        print("DEBUG. min,max unet_output.logit ->", torch.min(unet_output.logit), torch.max(unet_output.logit))
+        # outside torch.no_grad
         logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
                                                                                p_correction=p_corr_b1wh,
                                                                                prob_corr_factor=prob_corr_factor)
         prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
 
+        # If necessary make the raw probabilities close to the corrected ones
+        if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
+            logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).mean()
+        else:
+            logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
+
         # Sample the probability map from prior or posterior
-        similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
-                                                               n_height=unet_output.logit.shape[-1])
+        similarity_kernel = self.similarity_kernel_dpp.forward(n_width=logit_grid_corrected.shape[-2],
+                                                               n_height=logit_grid_corrected.shape[-1])
 
         # NMS + top-K operation
         with torch.no_grad():
@@ -314,6 +320,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         original_width=c_grid_before_nms_b1wh.shape[-2],
                                                         original_height=c_grid_before_nms_b1wh.shape[-1])
             c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * mask_grid_b1wh
+            c_unet_after_nms_b1wh = (torch.sigmoid(unet_output.logit) > 0.5) * mask_grid_b1wh
 
         # Compute KL divergence between the DPP prior and the posterior: KL = logp(c|logit) - logp(c|similarity)
         # The effect of this term should be:
@@ -322,7 +329,7 @@ class InferenceAndGeneration(torch.nn.Module):
         c_grid_logp_prior_b = compute_logp_dpp(c_grid=c_grid_after_nms_b1wh.detach(),
                                                similarity_matrix=similarity_kernel)
         c_grid_logp_posterior_b = compute_logp_bernoulli(c_grid=c_grid_after_nms_b1wh.detach(),
-                                                         logit_grid=logit_grid_corrected)
+                                                         logit_grid=unet_output.logit)
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
         # Gather all relevant quantities from the selected boxes
@@ -405,7 +412,7 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("self.mask_overlap_type not valid")
 
-        inference = Inference(logit_grid=logit_grid_corrected,
+        inference = Inference(logit_grid=unet_output.logit,
                               logit_grid_unet=unet_output.logit,
                               logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
                               background_bcwh=out_background_bcwh,
@@ -451,8 +458,7 @@ class InferenceAndGeneration(torch.nn.Module):
         f_sparsity = torch.mean(mixing_fg) * torch.sign(x_sparsity_av - self.geco_target_fgfraction_min).detach()
 
         with torch.no_grad():
-            # This is how many object I would have if there was not prob_corr_factor
-            x_cell_av = (torch.sigmoid(unet_output.logit) > 0.5).float().sum() / batch_size
+            x_cell_av = c_unet_after_nms_b1wh.sum() / batch_size
             g_cell = torch.min(x_cell_av - self.geco_target_ncell_min,
                                self.geco_target_ncell_max - x_cell_av)  # positive if in range, negative otherwise
         # TODO: Act directly on logit_corrected instead of prob_grid_corrected?
@@ -485,13 +491,15 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_vae = sparsity_av + geco_mse_detached * (mse_av + reg_av) + one_minus_geco_mse_detached * kl_av
         loss_geco = self.geco_fgfraction * g_sparsity.detach() + \
                     self.geco_ncell * g_cell.detach() + \
-                    self.geco_mse * g_mse.detach()
+                    self.geco_mse * g_mse.detach() + \
+                    logit_warming_loss
         loss = loss_vae + loss_geco - loss_geco.detach()
 
         similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
         # add everything you want as long as there is one loss
         metric = MetricMiniBatch(loss=loss,
+                                 logit_warming_loss=logit_warming_loss.detach().item(),
                                  mse_av=mse_av.detach().item(),
                                  kl_av=kl_av.detach().item(),
                                  cost_mask_overlap_av=cost_overlap.detach().item(),
