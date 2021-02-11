@@ -483,9 +483,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                    (ncell_av < self.geco_target_ncell_max))
             fgfraction_in_range = float((fgfraction_av > self.geco_target_fgfraction_min) &
                                         (fgfraction_av < self.geco_target_fgfraction_max))
-            print("debug in_range, mse, ncell, fgfraction", mse_in_range, ncell_in_range, fgfraction_in_range)
-            print("debug loglambda, mse, ncell, fgfraction", self.geco_loglambda_mse,
-                  self.geco_loglambda_ncell, self.geco_loglambda_fgfraction)
+            # print("debug in_range, mse, ncell, fgfraction", mse_in_range, ncell_in_range, fgfraction_in_range)
+            # print("debug loglambda, mse, ncell, fgfraction", self.geco_loglambda_mse,
+            #      self.geco_loglambda_ncell, self.geco_loglambda_fgfraction)
 
             # Clamp the log_lambda into the allowed regime
             self.geco_loglambda_mse.data.clamp_(min=self.geco_loglambda_mse_min,
@@ -496,9 +496,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                        max=self.geco_loglambda_fgfraction_max)
 
             # From log_lambda to lambda
-            lambda_mse = self.geco_loglambda_mse.clone().detach().exp() * torch.sign(mse_av - self.geco_target_mse_min)
-            lambda_ncell = self.geco_loglambda_ncell.clone().detach().exp() * torch.sign(ncell_av - self.geco_target_ncell_min)
-            lambda_fgfraction = self.geco_loglambda_fgfraction.clone().detach().exp() * torch.sign(fgfraction_av -
+            lambda_mse = self.geco_loglambda_mse.data.exp() * torch.sign(mse_av - self.geco_target_mse_min)
+            lambda_ncell = self.geco_loglambda_ncell.data.exp() * torch.sign(ncell_av - self.geco_target_ncell_min)
+            lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * torch.sign(fgfraction_av -
                                                                                        self.geco_target_fgfraction_min)
 
         # Loss geco (i.e. makes loglambda increase or decrease)
