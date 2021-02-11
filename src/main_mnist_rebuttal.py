@@ -203,22 +203,22 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                      keys_exclude=["wrong_examples"],
                                      verbose=False)
 
-                    test_out_metrics = process_one_epoch(model=vae,
-                                                         dataloader=test_out_loader,
-                                                         optimizer=optimizer,
-                                                         scheduler=scheduler,
-                                                         iom_threshold=config["architecture"]["nms_threshold_train"],
-                                                         verbose=(epoch == 0))
-                    print("Test Out "+test_out_metrics.pretty_print(epoch))
-                    history_dict = append_to_dict(source=test_out_metrics,
-                                                  destination=history_dict,
-                                                  prefix_exclude="wrong_examples",
-                                                  prefix_to_add="test_out_")
-                    log_many_metrics(metrics=test_out_metrics,
-                                     prefix_for_neptune="test_",
-                                     experiment=exp,
-                                     keys_exclude=["wrong_examples"],
-                                     verbose=False)
+###                    test_out_metrics = process_one_epoch(model=vae,
+###                                                         dataloader=test_out_loader,
+###                                                         optimizer=optimizer,
+###                                                         scheduler=scheduler,
+###                                                         iom_threshold=config["architecture"]["nms_threshold_test"],
+###                                                         verbose=(epoch == 0))
+###                    print("Test Out "+test_out_metrics.pretty_print(epoch))
+###                    history_dict = append_to_dict(source=test_out_metrics,
+###                                                  destination=history_dict,
+###                                                  prefix_exclude="wrong_examples",
+###                                                  prefix_to_add="test_out_")
+###                    log_many_metrics(metrics=test_out_metrics,
+###                                     prefix_for_neptune="test_out_",
+###                                     experiment=exp,
+###                                     keys_exclude=["wrong_examples"],
+###                                     verbose=False)
 
                     if len(test_metrics.wrong_examples) > 0:
                         error_index = torch.tensor(test_metrics.wrong_examples[:5], dtype=torch.long)
@@ -226,14 +226,14 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                         error_index = torch.arange(5, dtype=torch.long)
                     error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
 
-                    if len(test_out_metrics.wrong_examples) > 0:
-                        error_index = torch.tensor(test_out_metrics.wrong_examples[:5], dtype=torch.long)
-                    else:
-                        error_index = torch.arange(5, dtype=torch.long)
-                    error_test_out_img = test_out_loader.load(index=error_index)[0].to(reference_imgs.device)
-                    error_img = torch.cat((error_test_img, error_test_out_img), dim=0)
+####                    if len(test_out_metrics.wrong_examples) > 0:
+####                        error_index = torch.tensor(test_out_metrics.wrong_examples[:5], dtype=torch.long)
+####                    else:
+####                        error_index = torch.arange(5, dtype=torch.long)
+####                    error_test_out_img = test_out_loader.load(index=error_index)[0].to(reference_imgs.device)
+####                    error_img = torch.cat((error_test_img, error_test_out_img), dim=0)
 
-                    error_output: Output = vae.forward(error_img,
+                    error_output: Output = vae.forward(error_test_img,
                                                        iom_threshold=config["architecture"]["nms_threshold_test"],
                                                        noisy_sampling=True,
                                                        draw_image=True,
@@ -241,7 +241,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                        draw_boxes_ideal=True,
                                                        draw_bg=True)
 
-                    in_out = torch.cat((error_output.imgs, error_img.expand_as(error_output.imgs)), dim=0)
+                    in_out = torch.cat((error_output.imgs, error_test_img.expand_as(error_output.imgs)), dim=0)
                     _ = show_batch(in_out, n_col=in_out.shape[0]//2, title="error epoch="+str(epoch),
                                    experiment=exp, neptune_name="test_errors")
 

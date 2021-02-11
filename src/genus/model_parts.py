@@ -182,32 +182,37 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           dim_z=config["architecture"]["dim_zinstance"])
 
         # Geco values
-        self.geco_target_mse_min = 0.25
-        self.geco_target_mse_max = 0.75
-        self.geco_target_ncell_min = 1.0
-        self.geco_target_ncell_max = 3.0
-        self.geco_target_fgfraction_min = 0.02
-        self.geco_target_fgfraction_max = 0.10
-
-        self.geco_lambda_mse_min = 0.85
-        self.geco_lambda_mse_max = 0.90
-        self.geco_lambda_fgfraction_min = 0.1
-        self.geco_lambda_fgfraction_max = 20.0
-        self.geco_lambda_ncell_min = 0.1
-        self.geco_lambda_ncell_max = 20.0
-
-        # Raw image parameters
         self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["loss"]["geco_mse_target"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["loss"]["geco_mse_target"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
-        self.geco_fgfraction = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.geco_ncell = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.geco_mse = torch.nn.Parameter(data=torch.tensor(0.8, dtype=torch.float), requires_grad=True)
+        self.geco_target_mse_min = 0.0
+        self.geco_target_mse_max = 1.0
+        self.geco_target_ncell_min = config["loss"]["geco_ncell_target"][0]
+        self.geco_target_ncell_max = config["loss"]["geco_ncell_target"][1]
+        self.geco_target_fgfraction_min = config["loss"]["geco_fgfraction_target"][0]
+        self.geco_target_fgfraction_max = config["loss"]["geco_fgfraction_target"][1]
 
+        self.geco_loglambda_mse_min = -6.0
+        self.geco_loglambda_mse_max = numpy.log(config["loss"]["geco_lambda_mse_max"])
+        self.geco_loglambda_fgfraction_min = -6.0
+        self.geco_loglambda_fgfraction_max = numpy.log(config["loss"]["geco_lambda_fgfraction_max"])
+        self.geco_loglambda_ncell_min = -6.0
+        self.geco_loglambda_ncell_max = numpy.log(config["loss"]["geco_lambda_ncell_max"])
+
+        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_fgfraction_min,
+                                                                              dtype=torch.float), requires_grad=True)
+        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_min,
+                                                                         dtype=torch.float), requires_grad=True)
+        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_mse_min,
+                                                                       dtype=torch.float), requires_grad=True)
+
+        # Raw image parameters
         self.running_avarage_kl_logit = torch.nn.Parameter(data=4 * torch.ones(1, dtype=torch.float),
                                                            requires_grad=True)
+
+
 
     @staticmethod
     def _compute_logit_corrected(logit_praw: torch.Tensor,
@@ -304,7 +309,6 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
-
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=logit_grid_corrected.shape[-2],
                                                                n_height=logit_grid_corrected.shape[-1])
@@ -359,7 +363,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 5. Crop the unet_features according to the selected boxes
         n_boxes, batch_size = bounding_box_kb.bx.shape
-        unet_features_expanded = unet_output.features.unsqueeze(0).expand(n_boxes, batch_size, -1, -1, -1)
+        unet_features_expanded = unet_output.features.expand(n_boxes, batch_size, -1, -1, -1)
         cropped_feature_map: torch.Tensor = Cropper.crop(bounding_box=bounding_box_kb,
                                                          big_stuff=unet_features_expanded,
                                                          width_small=self.cropped_size,
@@ -397,7 +401,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_b1wh = mixing_kb1wh.sum(dim=-5)  # sum over boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
-        # TODO: think hard about this part
+        # TODO: think hard about this part with Mehrtash
         # c_or_p_attached_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         # c_or_p_times_mask_kb1wh = out_mask_kb1wh * c_or_p_attached_kb[..., None, None, None]
         # mixing_kb1wh = c_or_p_times_mask_kb1wh / out_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like
@@ -411,6 +415,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
+        # TODO: should I multiply this by c_detached_kb
         cost_bb_regression = self.bb_regression_strength * torch.sum(c_detached_kb * bb_regression_kb)/batch_size
 
         # 9. Compute the mask overlap penalty using c_detached so that this penalty changes
@@ -454,58 +459,55 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = ((mixing_kb1wh * mse_fg_kbcwh).sum(dim=-5) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
-        with torch.no_grad():
-            g_mse = (self.geco_target_mse_min - mse_av).clamp(min=0) + \
-                    (self.geco_target_mse_max - mse_av).clamp(max=0)
-
-            # x_sparsity_av = c_detached_times_mask_kb1wh.sum(dim=-5).mean()
-            x_sparsity_av = torch.mean(mixing_fg_b1wh)
-            g_sparsity = torch.min(x_sparsity_av - self.geco_target_fgfraction_min,
-                                   self.geco_target_fgfraction_max - x_sparsity_av)
-
-            x_cell_av = torch.sum(c_grid_after_nms_b1wh) / batch_size
-            g_cell = torch.min(x_cell_av - self.geco_target_ncell_min,
-                               self.geco_target_ncell_max - x_cell_av)
-
-        c_times_area_few = c_differentiable_kb * bounding_box_kb.bw * bounding_box_kb.bh
-        x_sparsity = 0.5 * (torch.sum(mixing_fg_b1wh) + torch.sum(c_times_area_few)) / torch.numel(mixing_fg_b1wh)
-        f_sparsity = x_sparsity * torch.sign(x_sparsity_av - self.geco_target_fgfraction_min).detach()
-
-        x_cell = torch.sum(prob_grid_corrected) / torch.numel(c_detached_kb)
-        f_cell = x_cell * torch.sign(x_cell_av - self.geco_target_ncell_min).detach()
-
-        # 3. compute KL
+        # 2. KL divergence
         # Note that I compute the mean over batch, latent_dimensions and n_object.
         # This means that latent_dim can effectively control the complexity of the reconstruction,
         # i.e. more latent more capacity.
         # TODO: kl should act only on filled boxes, i.e. c=1
         kl_zbg = torch.mean(zbg.kl)  # mean over: batch, latent_dim
         kl_zinstance = torch.mean(zinstance_few.kl)  # mean over: n_boxes, batch, latent_dim
-        kl_zwhere = torch.zeros_like(kl_zbg)  # torch.mean(zwhere_kl_kbz)  # mean over: n_boxes, batch, latent_dim
+        kl_zwhere = torch.mean(zwhere_kl_kbz)  # torch.zeros_like(kl_zbg)  #  # mean over: n_boxes, batch, latent_dim
         kl_logit = torch.zeros_like(kl_zbg)  #  torch.mean(kl_logit_b)  # mean over: batch
-
         kl_av = kl_zbg + kl_zinstance + kl_zwhere
         #+ \
         #        torch.exp(-self.running_avarage_kl_logit) * kl_logit + \
         #        self.running_avarage_kl_logit - self.running_avarage_kl_logit.detach()
 
-        # 6. Note that I clamp in_place
-        # TODO: use lambda_log
-        geco_mse_detached = self.geco_mse.data.clamp_(min=self.geco_lambda_mse_min,
-                                                      max=self.geco_lambda_mse_max).detach()
-        geco_ncell_detached = self.geco_ncell.data.clamp_(min=self.geco_lambda_ncell_min,
-                                                          max=self.geco_lambda_ncell_max).detach()
-        geco_fgfraction_detached = self.geco_fgfraction.data.clamp_(min=self.geco_lambda_fgfraction_min,
-                                                                    max=self.geco_lambda_fgfraction_max).detach()
-        one_minus_geco_mse_detached = torch.ones_like(geco_mse_detached) - geco_mse_detached
+        with torch.no_grad():
+            ncell_av = torch.sum(c_detached_kb) / batch_size
+            fgfraction_av = torch.mean(mixing_fg_b1wh)
 
-        reg_av = cost_overlap + cost_bb_regression
-        sparsity_av = geco_fgfraction_detached * f_sparsity + geco_ncell_detached * f_cell
-        loss_vae = sparsity_av + geco_mse_detached * (mse_av + reg_av) + one_minus_geco_mse_detached * kl_av
-        loss_geco = self.geco_fgfraction * g_sparsity.detach() + \
-                    self.geco_ncell * g_cell.detach() + \
-                    self.geco_mse * g_mse.detach() + \
-                    logit_warming_loss
+            mse_in_range = float((mse_av > self.geco_target_mse_min) &
+                                 (mse_av < self.geco_target_mse_max))
+            ncell_in_range = float((ncell_av > self.geco_target_ncell_min) &
+                                   (ncell_av < self.geco_target_ncell_max))
+            fgfraction_in_range = float((fgfraction_av > self.geco_target_fgfraction_min) &
+                                        (fgfraction_av < self.geco_target_fgfraction_max))
+
+            # Clamp the log_lambda into the allowed regime
+            self.geco_loglambda_mse.data.clamp_(min=self.geco_loglambda_mse_min,
+                                                max=self.geco_loglambda_mse_max)
+            self.geco_loglambda_ncell.data.clamp_(min=self.geco_loglambda_ncell_min,
+                                                  max=self.geco_loglambda_ncell_max)
+            self.geco_loglambda_fgfraction.data.clamp_(min=self.geco_loglambda_fgfraction_min,
+                                                       max=self.geco_loglambda_fgfraction_max)
+
+            # From log_lambda to lambda
+            lambda_mse = self.geco_loglambda_mse.data.exp() * torch.sign(mse_av - self.geco_target_mse_min)
+            lambda_ncell = self.geco_loglambda_ncell.data.exp() * torch.sign(ncell_av - self.geco_target_ncell_min)
+            lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * torch.sign(fgfraction_av -
+                                                                                       self.geco_target_fgfraction_min)
+
+        # Loss geco (i.e. makes loglambda increase or decrease)
+        loss_geco = self.geco_loglambda_mse * (2.0 * mse_in_range - 1.0) + \
+                    self.geco_loglambda_fgfraction * (2.0 * fgfraction_in_range - 1.0) + \
+                    self.geco_loglambda_ncell * (2.0 * ncell_in_range - 1.0)
+
+        loss_vae = cost_overlap + cost_bb_regression + kl_av + \
+                   lambda_mse.detach() * mse_av + \
+                   lambda_ncell.detach() * torch.sum(prob_kb) + \
+                   lambda_fgfraction.detach() * torch.sum(out_mask_kb1wh)
+
         loss = loss_vae + loss_geco - loss_geco.detach()
 
         similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
@@ -517,11 +519,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                  kl_av=kl_av.detach().item(),
                                  cost_mask_overlap_av=cost_overlap.detach().item(),
                                  cost_bb_regression_av=cost_bb_regression.detach().item(),
-                                 ncell_av=x_cell_av.detach().item(),
-                                 fgfraction_av=torch.mean(mixing_fg_b1wh).detach().item(),
-                                 lambda_mse=geco_mse_detached.detach().item(),
-                                 lambda_ncell=geco_ncell_detached.detach().item(),
-                                 lambda_fgfraction=geco_fgfraction_detached.detach().item(),
+                                 ncell_av=ncell_av.detach().item(),
+                                 fgfraction_av=fgfraction_av.detach().item(),
+                                 lambda_mse=lambda_mse.detach().item(),
+                                 lambda_ncell=lambda_mse.detach().item(),
+                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  count_prediction=torch.sum(c_detached_kb, dim=0).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0,
