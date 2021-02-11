@@ -842,9 +842,11 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
     # split the parameters between GECO and NOT_GECO
     geco_params, similarity_params, other_params = [], [], []
     for name, param in model.named_parameters():
-        if name.startswith("geco"):
+        if ".geco" in name:
+            # print("geco params -->", name)
             geco_params.append(param)
-        elif name.startswith("similarity"):
+        elif ".similarity" in name:
+            # print("similarity params -->", name)
             similarity_params.append(param)
         else:
             other_params.append(param)
