@@ -176,44 +176,68 @@ def sample_c_grid(logit_grid: torch.Tensor,
         return c_grid.float()  # same shape as logit_grid.
 
 
-def compute_logp_dpp(c_grid: torch.Tensor,
-                     similarity_matrix: torch.Tensor):
+####def OLD_compute_logp_dpp(c_grid: torch.Tensor,
+####                     similarity_matrix: torch.Tensor):
+####    """
+####    Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
+####    :attr:`similarity_matrix`.
+####
+####    Args:
+####        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
+####        similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
+####
+####    Returns:
+####        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
+####        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
+####    """
+####    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
+####    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
+####    return log_prob_prior
+####
+####
+####def OLD_compute_logp_bernoulli(c_grid: torch.Tensor,
+####                           logit_grid: torch.Tensor):
+####    """
+####    Compute the log_probability of the :attr:`c_grid` configuration under the collection
+####    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
+####
+####    Args:
+####        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
+####        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
+####
+####    Returns:
+####        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
+####        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
+####    """
+####    log_p_grid = F.logsigmoid(logit_grid)
+####    log_1_m_p_grid = F.logsigmoid(-logit_grid)
+####    log_prob_bernoulli = (c_grid * log_p_grid +
+####                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
+####    return log_prob_bernoulli
+
+
+def compute_kl_bernoulli(logit_prior: torch.Tensor,
+                         logit_posterior: torch.Tensor):
     """
-    Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
-    :attr:`similarity_matrix`.
+    Compute the KL divergence between two Bernoulli distributions.
 
     Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-        similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
+        logit_prior: Logit of the prior Bernoulli distributions
+        logit_posterior: Logit of the posterior Bernoulli distributions
 
     Returns:
-        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
+        :math:`KL= p * log(p/q) + (1-p) * log((1-p)/(1-q)) where p is the posterior and q is the prior probability
+        of the Bernoulli distributions. The shape is equal to the broadcasting of :attr:`logit_prior' and
+        :attr:`logit_posterior`.
     """
-    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
-    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
-    return log_prob_prior
-
-
-def compute_logp_bernoulli(c_grid: torch.Tensor,
-                           logit_grid: torch.Tensor):
-    """
-    Compute the log_probability of the :attr:`c_grid` configuration under the collection
-    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
-
-    Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
-
-    Returns:
-        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
-    """
-    log_p_grid = F.logsigmoid(logit_grid)
-    log_1_m_p_grid = F.logsigmoid(-logit_grid)
-    log_prob_bernoulli = (c_grid * log_p_grid +
-                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
-    return log_prob_bernoulli
+    logit_p, logit_q = broadcast_all(logit_posterior, logit_prior)
+    log_p = F.logsigmoid(logit_p)
+    log_q = F.logsigmoid(logit_q)
+    log_1_m_p = F.logsigmoid(-logit_p)
+    log_1_m_q = F.logsigmoid(-logit_q)
+    one_m_p = torch.sigmoid(-logit_p)
+    p = torch.sigmoid(logit_p)
+    return p * (log_p - log_q) + one_m_p * (log_1_m_p - log_1_m_q)
 
 
 class SimilarityKernel(torch.nn.Module):
