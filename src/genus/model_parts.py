@@ -462,9 +462,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # Loss geco (i.e. makes loglambda increase or decrease)
         # I want to implement: increase slowly, decrease rapidly
         loss_geco = logit_warming_loss + \
-                    self.geco_loglambda_mse * (1.0 * mse_in_range + 0.5 * ~mse_in_range) + \
-                    self.geco_loglambda_fgfraction * (1.0 * fgfraction_in_range + 0.5 * ~fgfraction_in_range) + \
-                    self.geco_loglambda_ncell * (1.0 * ncell_in_range + 0.5 * ~ncell_in_range)
+                    self.geco_loglambda_mse * (1.0 * mse_in_range - 0.5 * ~mse_in_range) + \
+                    self.geco_loglambda_fgfraction * (1.0 * fgfraction_in_range - 0.5 * ~fgfraction_in_range) + \
+                    self.geco_loglambda_ncell * (1.0 * ncell_in_range - 0.5 * ~ncell_in_range)
 
         # TODO: should lambda_ncell act on all probabilities or only the selected ones?
         #  what about acting on the underlying logits
