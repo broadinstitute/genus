@@ -190,8 +190,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             requires_grad=True)
         self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(0.0, dtype=torch.float),
                                                        requires_grad=True)
-        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(0.0, dtype=torch.float),
-                                                     requires_grad=True)
+        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_max,
+                                                                       dtype=torch.float), requires_grad=True)
 
     @staticmethod
     def _compute_logit_corrected(logit_praw: torch.Tensor,
