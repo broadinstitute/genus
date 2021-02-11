@@ -525,7 +525,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  ncell_av=ncell_av.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
                                  lambda_mse=lambda_mse.detach().item(),
-                                 lambda_ncell=lambda_mse.detach().item(),
+                                 lambda_ncell=lambda_ncell.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  count_prediction=torch.sum(c_detached_kb, dim=0).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
