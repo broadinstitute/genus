@@ -162,9 +162,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           ch_in=config["architecture"]["n_ch_output_features"],
                                                           dim_z=config["architecture"]["dim_zinstance"])
 
-
         # Extra penalties
-        self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
+        self.bb_regression_strength_base = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength_base = config["loss"]["mask_overlap_penalty_strength"]
         self.mask_overlap_type = config["loss"]["mask_overlap_penalty_type"]
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
@@ -198,6 +197,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # The some values are changed during pretraining
         self.mask_overlap_strength = None
+        self.bb_regression_strength = None
         self.geco_target_ncell_min = None
         self.geco_target_ncell_max = None
         self.geco_target_fgfraction_min = None
@@ -283,16 +283,18 @@ class InferenceAndGeneration(torch.nn.Module):
         if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
             # If in the warm-up phase
             n_all = torch.numel(unet_output.logit[0, 0])
-            self.geco_target_ncell_min = prob_corr_factor * (0.5 * n_all) + \
+            self.geco_target_ncell_min = prob_corr_factor * (0.40 * n_all) + \
                                          (1 - prob_corr_factor) * self.geco_target_ncell_min_base
-            self.geco_target_ncell_max = prob_corr_factor * (0.75 * n_all) + \
+            self.geco_target_ncell_max = prob_corr_factor * (0.50 * n_all) + \
                                          (1 - prob_corr_factor) * self.geco_target_ncell_max_base
-            self.geco_target_fgfraction_min = prob_corr_factor * 0.5 + \
+            self.geco_target_fgfraction_min = prob_corr_factor * 0.40 + \
                                               (1 - prob_corr_factor) * self.geco_target_fgfraction_min_base
-            self.geco_target_fgfraction_max = prob_corr_factor * 0.75 + \
+            self.geco_target_fgfraction_max = prob_corr_factor * 0.50 + \
                                               (1 - prob_corr_factor) * self.geco_target_fgfraction_max_base
             self.mask_overlap_strength = prob_corr_factor * 0.0 + \
-                                         (1- prob_corr_factor) * self.mask_overlap_strength_base
+                                         (1 - prob_corr_factor) * self.mask_overlap_strength_base
+            self.bb_regression_strength = prob_corr_factor * 0.0 + \
+                                         (1 - prob_corr_factor) * self.bb_regression_strength_base
         else:
             # If NOT in the warm-up phase
             self.geco_target_ncell_min = self.geco_target_ncell_min_base
@@ -300,6 +302,7 @@ class InferenceAndGeneration(torch.nn.Module):
             self.geco_target_fgfraction_min = self.geco_target_fgfraction_min_base
             self.geco_target_fgfraction_max = self.geco_target_fgfraction_max_base
             self.mask_overlap_strength = self.mask_overlap_strength_base
+            self.bb_regression_strength = self.bb_regression_strength_base
         #print("prob_corr_factor ---------->", prob_corr_factor)
         #print("target ncell ---------->", self.geco_target_ncell_min, self.geco_target_ncell_max)
         #print("target fgfraction ----->", self.geco_target_fgfraction_min, self.geco_target_fgfraction_max)
