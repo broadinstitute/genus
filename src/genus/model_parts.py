@@ -292,14 +292,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
             # outside torch.no_grad
-            prob_grid_corrected = ((1 - prob_corr_factor) * torch.sigmoid(unet_output.logit) +
-                                   prob_corr_factor * p_corr_b1wh).clamp(min=1E-4, max=1-1E-4)
-            logit_grid_corrected = torch.log(prob_grid_corrected) - torch.log1p(-prob_grid_corrected)
+            logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
+                                                                                   p_correction=p_corr_b1wh,
+                                                                                   prob_corr_factor=prob_corr_factor)
+            prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
             logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
-
-            #logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
-            #                                                                       p_correction=p_corr_b1wh,
-            #                                                                       prob_corr_factor=prob_corr_factor)
             #logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
         elif prob_corr_factor == 0:
             p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
@@ -308,6 +305,8 @@ class InferenceAndGeneration(torch.nn.Module):
             prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
         else:
             raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+        print("logit_grid min,max -->", torch.min(unet_output.logit).detach().item(),
+              torch.max(unet_output.logit).detach().item())
 
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=logit_grid_corrected.shape[-2],
@@ -347,6 +346,8 @@ class InferenceAndGeneration(torch.nn.Module):
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
         # Gather all relevant quantities from the selected boxes
+        logit_kb = torch.gather(convert_to_box_list(logit_grid_corrected).squeeze(-1),
+                                dim=0, index=nms_output.indices_kb)
         prob_kb = torch.gather(convert_to_box_list(prob_grid_corrected).squeeze(-1),
                                dim=0, index=nms_output.indices_kb)
         c_detached_kb = torch.gather(convert_to_box_list(c_grid_after_nms_b1wh).squeeze(-1),
@@ -506,10 +507,13 @@ class InferenceAndGeneration(torch.nn.Module):
                     self.geco_loglambda_fgfraction * (2.0 * fgfraction_in_range - 1.0) + \
                     self.geco_loglambda_ncell * (2.0 * ncell_in_range - 1.0)
 
+        # TODO: should lambda_ncell act on all probabilities or only the selected ones?
+        # what about acting on the underlying logits
+        #  should lambda_fgfraction act on small_mask or large_mask?
         loss_vae = cost_overlap + cost_bb_regression + kl_av + \
                    lambda_mse.detach() * mse_av + \
-                   lambda_ncell.detach() * torch.sum(prob_kb) + \
-                   lambda_fgfraction.detach() * torch.sum(out_mask_kb1wh)
+                   lambda_ncell.detach() * torch.sum(logit_kb) / batch_size + \
+                   lambda_fgfraction.detach() * torch.sum(out_mask_kb1wh) / batch_size
 
         loss = loss_vae + loss_geco - loss_geco.detach()
 
