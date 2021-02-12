@@ -934,59 +934,62 @@ def process_one_epoch(model: CompositionalVae,
     n_exact_examples = 0
     wrong_examples = []
 
-    # Start loop over minibatches
-    for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
+    # Anomaly detection is slow but help with debugging
+    with torch.autograd.detect_anomaly():
 
-        # Put data in GPU if available
-        imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
+        # Start loop over minibatches
+        for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
 
-        metrics = model.forward(imgs_in=imgs,
-                                iom_threshold=iom_threshold,
-                                noisy_sampling=noisy_sampling,
-                                draw_image=False,
-                                draw_bg=False,
-                                draw_boxes=False,
-                                draw_boxes_ideal=False).metrics  # the forward function returns metric and other stuff
+            # Put data in GPU if available
+            imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
-        if verbose:
-            print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
+            metrics = model.forward(imgs_in=imgs,
+                                    iom_threshold=iom_threshold,
+                                    noisy_sampling=noisy_sampling,
+                                    draw_image=False,
+                                    draw_bg=False,
+                                    draw_boxes=False,
+                                    draw_boxes_ideal=False).metrics  # the forward function returns metric and other stuff
 
-        # Accumulate metrics over an epoch
+            if verbose:
+                print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
+
+            # Accumulate metrics over an epoch
+            with torch.no_grad():
+                metric_accumulator.accumulate(source=metrics, counter_increment=len(index))
+
+                # special treatment for count_prediction, wrong_example, accuracy
+                metric_accumulator.set_value(key="count_prediction", value=-1 * numpy.ones(1))
+                metric_accumulator.set_value(key="wrong_examples", value=-1 * numpy.ones(1))
+                metric_accumulator.set_value(key="accuracy", value=-1)
+
+                mask_exact = (metrics.count_prediction == labels.cpu().numpy())
+                n_exact_examples += numpy.sum(mask_exact)
+                wrong_examples += list(index[~mask_exact].cpu().numpy())
+
+            # Only if training I apply backward
+            if model.training:
+                optimizer.zero_grad()
+                metrics.loss.backward()  # do back_prop and compute all the gradients
+                optimizer.step()  # update the parameters
+
+                # apply the weight clipper
+                if weight_clipper is not None:
+                    model.__self__.apply(weight_clipper)
+        # End of loop over minibatches
+
+        # Only if training apply the scheduler
+        if model.training and scheduler is not None:
+            scheduler.step()
+
+        # At the end of the loop compute a dictionary with the average of the metrics over one epoch
         with torch.no_grad():
-            metric_accumulator.accumulate(source=metrics, counter_increment=len(index))
+            metric_one_epoch = metric_accumulator.get_average()
+            accuracy = float(n_exact_examples) / (n_exact_examples + len(wrong_examples))
+            metric_one_epoch["accuracy"] = accuracy
+            metric_one_epoch["wrong_examples"] = numpy.array(wrong_examples)
+            metric_one_epoch["count_prediction"] = -1 * numpy.ones(1)
 
-            # special treatment for count_prediction, wrong_example, accuracy
-            metric_accumulator.set_value(key="count_prediction", value=-1 * numpy.ones(1))
-            metric_accumulator.set_value(key="wrong_examples", value=-1 * numpy.ones(1))
-            metric_accumulator.set_value(key="accuracy", value=-1)
-
-            mask_exact = (metrics.count_prediction == labels.cpu().numpy())
-            n_exact_examples += numpy.sum(mask_exact)
-            wrong_examples += list(index[~mask_exact].cpu().numpy())
-
-        # Only if training I apply backward
-        if model.training:
-            optimizer.zero_grad()
-            metrics.loss.backward()  # do back_prop and compute all the gradients
-            optimizer.step()  # update the parameters
-
-            # apply the weight clipper
-            if weight_clipper is not None:
-                model.__self__.apply(weight_clipper)
-    # End of loop over minibatches
-
-    # Only if training apply the scheduler
-    if model.training and scheduler is not None:
-        scheduler.step()
-
-    # At the end of the loop compute a dictionary with the average of the metrics over one epoch
-    with torch.no_grad():
-        metric_one_epoch = metric_accumulator.get_average()
-        accuracy = float(n_exact_examples) / (n_exact_examples + len(wrong_examples))
-        metric_one_epoch["accuracy"] = accuracy
-        metric_one_epoch["wrong_examples"] = numpy.array(wrong_examples)
-        metric_one_epoch["count_prediction"] = -1 * numpy.ones(1)
-
-        # Make a namedtuple out of the OrderDictionary.
-        # Since OrderDictionary preserves the order this preserved order of term.
-        return MetricMiniBatch._make(metric_one_epoch.values())  # is this a robust way to convert dict to namedtuple?
+            # Make a namedtuple out of the OrderDictionary.
+            # Since OrderDictionary preserves the order this preserved order of term.
+            return MetricMiniBatch._make(metric_one_epoch.values())  # is this a robust way to convert dict to namedtuple?

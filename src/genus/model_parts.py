@@ -317,8 +317,11 @@ class InferenceAndGeneration(torch.nn.Module):
         # Note that the logit_warming_loss will keep the unet_output.logit close to
         logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() - unet_output.logit).pow(2).sum()
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
-        print("DEBUG logit_grid min,max -->", torch.min(unet_output.logit).detach().item(),
-              torch.max(unet_output.logit).detach().item())
+        logit_min = torch.min(unet_output.logit).detach()
+        logit_max = torch.max(unet_output.logit).detach()
+        print("DEBUG logit_grid min,max -->", logit_min.item(), logit_max.item())
+        #if torch.isnan(logit_min) or torch.isnan(logit_max):
+        #    raise Exception("logit_unet_is_nan")
 
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
