@@ -133,7 +133,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
     return DIST(sample=sample, kl=kl)
 
 
-def sample_c_grid(logit_grid: torch.Tensor,
+def sample_c_grid(prob_grid: torch.Tensor,
                   similarity_matrix: torch.Tensor,
                   noisy_sampling: bool,
                   sample_from_prior: bool) -> torch.Tensor:
@@ -142,7 +142,7 @@ def sample_c_grid(logit_grid: torch.Tensor,
     from a posterior which is a collection of independent Bernoulli specified by the logit_grid.
 
     Args:
-        logit_grid: torch.Tensor of size :math:`(B,1,W,H)` with the logit specifying the Bernoulli probabilities
+        prob_grid: torch.Tensor of size :math:`(B,1,W,H)` with the probabilities specifying the Bernoulli
         similarity_matrix: torch.Tensor of size :math:`(W x H, W x H)` with the similarity between all grid points
         noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
         sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
@@ -153,27 +153,26 @@ def sample_c_grid(logit_grid: torch.Tensor,
     Note:
         The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`logit_grid` or :attr:`similarity_matrix`)
     """
-    assert len(logit_grid.shape) == 4
-    assert logit_grid.shape[-3] == 1
+    assert len(prob_grid.shape) == 4
+    assert prob_grid.shape[-3] == 1
     assert len(similarity_matrix.shape) == 2
-    assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == logit_grid.shape[-1]*logit_grid.shape[-2]
+    assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == prob_grid.shape[-1]*prob_grid.shape[-2]
 
     with torch.no_grad():
         if sample_from_prior:
             # sample from DPP specified by the similarity kernel
-            batch_size = torch.Size([logit_grid.shape[0]])
+            batch_size = torch.Size([prob_grid.shape[0]])
             s = similarity_matrix.requires_grad_(False)
             c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
             c_reshaped = c_all.transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, batch_size, 1
             c_grid = invert_convert_to_box_list(c_reshaped,
-                                                original_width=logit_grid.shape[-2],
-                                                original_height=logit_grid.shape[-1])
+                                                original_width=prob_grid.shape[-2],
+                                                original_height=prob_grid.shape[-1])
         else:
             # sample from posterior which is a collection of independent Bernoulli variables
-            p_grid = torch.sigmoid(logit_grid)
-            c_grid = (torch.rand_like(p_grid) < p_grid) if noisy_sampling else (0.5 < p_grid)
+            c_grid = (torch.rand_like(prob_grid) < prob_grid) if noisy_sampling else (0.5 < prob_grid)
 
-        return c_grid.float()  # same shape as logit_grid.
+        return c_grid.float()  # same shape as prob_grid.
 
 
 def compute_logp_dpp(c_grid: torch.Tensor,

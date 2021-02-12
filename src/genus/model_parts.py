@@ -265,42 +265,58 @@ class InferenceAndGeneration(torch.nn.Module):
         # Correct probability if necessary
         with torch.no_grad():
             if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
+
+                # Compute the ranking
                 av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
                 ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
-                tmp_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
-                p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
-                                                         original_width=unet_output.logit.shape[-2],
-                                                         original_height=unet_output.logit.shape[-1])
-                p_unet = torch.sigmoid(unet_output.logit)
-                p_target = ((1-prob_corr_factor) * p_unet +
-                            prob_corr_factor * p_corr_b1wh).clamp(min=0.0001, max=0.9999)
-                logit_target = torch.log(p_target) - torch.log1p(-p_target)  # in a small range around zero
+                unit_ranking_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
+                unit_ranking_b1wh = invert_convert_to_box_list(unit_ranking_nb.unsqueeze(-1),
+                                                               original_width=unet_output.logit.shape[-2],
+                                                               original_height=unet_output.logit.shape[-1])
+
+                # Extract the local-maxima from the ranking
+                tmp_pooled_b1wh = F.max_pool2d(unit_ranking_b1wh, kernel_size=3, stride=1,
+                                               padding=1, return_indices=False)
+                local_maxima_mask_b1wh = (tmp_pooled_b1wh == unit_ranking_b1wh)
+
+                # Now select the top k local maxima
+                score_b1wh = local_maxima_mask_b1wh * unit_ranking_b1wh
+                score_nb = convert_to_box_list(score_b1wh).squeeze(-1)
+                index_kb = torch.topk(score_nb, k=k_objects_max, dim=-2, largest=True, sorted=True)[1]
+                k_local_maxima_mask_nb = torch.zeros_like(score_nb).scatter(dim=-2,
+                                                                            index=index_kb,
+                                                                            src=torch.ones_like(score_nb))
+                k_local_maxima_mask_b1wh = invert_convert_to_box_list(k_local_maxima_mask_nb.unsqueeze(-1),
+                                                                      original_width=unet_output.logit.shape[-2],
+                                                                      original_height=unet_output.logit.shape[-1])
+
+                # Now compute the target_probability
+                p_target_b1wh = (k_local_maxima_mask_b1wh * unit_ranking_b1wh).clamp(min=0.0001, max=0.9999)
+                logit_target_b1wh = torch.log(p_target_b1wh) - torch.log1p(-p_target_b1wh)
             elif prob_corr_factor == 0:
-                p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
-                logit_target = unet_output.logit
+                p_target_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+                logit_target_b1wh = unet_output.logit
             else:
                 raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
         # Outside torch.no_grad()
-        # Note that the logit_warming_loss will keep the unet_output.logit close to zero so that the model can learn
-        logit_grid_corrected = unet_output.logit + (logit_target - unet_output.logit).detach()
-        logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
-        prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
+        # Note that the logit_warming_loss will keep the unet_output.logit close to
+        logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() - unet_output.logit).pow(2).sum()
+        unet_prob_b1wh = torch.sigmoid(unet_output.logit)
         print("DEBUG logit_grid min,max -->", torch.min(unet_output.logit).detach().item(),
               torch.max(unet_output.logit).detach().item())
 
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
-
         # NMS + top-K operation
         with torch.no_grad():
-            c_grid_before_nms_b1wh = sample_c_grid(logit_grid=logit_grid_corrected,
+            c_grid_before_nms_b1wh = sample_c_grid(prob_grid=unet_prob_b1wh,
                                                    similarity_matrix=similarity_kernel,
                                                    noisy_sampling=noisy_sampling,
                                                    sample_from_prior=generate_synthetic_data)
 
-            score_nb = convert_to_box_list(c_grid_before_nms_b1wh + prob_grid_corrected).squeeze(-1)
+            score_nb = convert_to_box_list(c_grid_before_nms_b1wh + unet_prob_b1wh).squeeze(-1)
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_nb=score_nb,
                                                                              bounding_box_nb=bounding_box_nb,
@@ -323,7 +339,7 @@ class InferenceAndGeneration(torch.nn.Module):
         c_grid_logp_prior_b = compute_logp_dpp(c_grid=c_grid_after_nms_b1wh.detach(),
                                                similarity_matrix=similarity_kernel)
         c_grid_logp_posterior_b = compute_logp_bernoulli(c_grid=c_grid_after_nms_b1wh.detach(),
-                                                         logit_grid=logit_grid_corrected)
+                                                         logit_grid=unet_output.logit)
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
         # Gather all relevant quantities from the selected boxes
@@ -332,7 +348,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bw=torch.gather(bounding_box_nb.bw, dim=0, index=nms_output.indices_kb),
                                  bh=torch.gather(bounding_box_nb.bh, dim=0, index=nms_output.indices_kb))
 
-        prob_kb = torch.gather(convert_to_box_list(prob_grid_corrected).squeeze(-1),
+        prob_kb = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1),
                                dim=0, index=nms_output.indices_kb)
         c_detached_kb = torch.gather(convert_to_box_list(c_grid_after_nms_b1wh).squeeze(-1),
                                      dim=0, index=nms_output.indices_kb)
@@ -421,9 +437,9 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("self.mask_overlap_type not valid")
 
-        inference = Inference(logit_grid=logit_grid_corrected,
+        inference = Inference(logit_grid=unet_output.logit,
                               logit_grid_unet=unet_output.logit,
-                              logit_grid_correction=torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh),
+                              prob_grid_target=p_target_b1wh,
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
                               sum_c_times_mask_b1wh=c_differentiable_times_mask_kb1wh.sum(dim=-5),
@@ -491,7 +507,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #  should lambda_ncell act on logit or probabilities?
         loss_vae = cost_overlap + cost_bb_regression + kl_av + \
                    lambda_mse.detach() * mse_av + \
-                   lambda_ncell.detach() * torch.mean(logit_grid_corrected) + \
+                   lambda_ncell.detach() * torch.mean(unet_output.logit) + \
                    lambda_fgfraction.detach() * torch.mean(out_mask_kb1wh)
 
         loss = loss_vae + loss_geco - loss_geco.detach()

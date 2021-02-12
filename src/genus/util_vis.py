@@ -474,13 +474,13 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet_grid"+postfix)
-    fig_h = show_batch(torch.sigmoid(output.inference.logit_grid_correction),
+    fig_h = show_batch(output.inference.prob_grid_target,
                        n_col=4,
                        n_padding=4,
                        normalize=False,
                        title='prob_grid, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
-                       neptune_name=prefix+"prob_correction_grid"+postfix)
+                       neptune_name=prefix+"prob_grid_target"+postfix)
     fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=4,
                        n_padding=4,
