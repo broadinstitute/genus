@@ -307,6 +307,7 @@ class InferenceAndGeneration(torch.nn.Module):
                 p_target_b1wh = (k_local_maxima_mask_b1wh * unit_ranking_b1wh).clamp(min=0.0001, max=0.9999)
                 logit_target_b1wh = torch.log(p_target_b1wh) - torch.log1p(-p_target_b1wh)
             elif prob_corr_factor == 0:
+                unit_ranking_b1wh = 0.5 * torch.ones_like(unet_output.logit)
                 p_target_b1wh = 0.5 * torch.ones_like(unet_output.logit)
                 logit_target_b1wh = unet_output.logit
             else:
