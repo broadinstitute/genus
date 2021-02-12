@@ -193,6 +193,7 @@ class Inference(NamedTuple):
     logit_grid: torch.Tensor
     logit_grid_unet: torch.Tensor  # for debug
     prob_grid_target: torch.Tensor  # for debug
+    prob_unit_ranking: torch.Tensor  # for debug
     background_bcwh: torch.Tensor
     foreground_kbcwh: torch.Tensor
     sum_c_times_mask_b1wh: torch.Tensor

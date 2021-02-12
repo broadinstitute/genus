@@ -453,6 +453,7 @@ class InferenceAndGeneration(torch.nn.Module):
         inference = Inference(logit_grid=unet_output.logit,
                               logit_grid_unet=unet_output.logit,
                               prob_grid_target=p_target_b1wh,
+                              prob_unit_ranking=unit_ranking_b1wh,
                               background_bcwh=out_background_bcwh,
                               foreground_kbcwh=out_img_kbcwh,
                               sum_c_times_mask_b1wh=c_differentiable_times_mask_kb1wh.sum(dim=-5),
