@@ -256,7 +256,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           noisy_sampling=noisy_sampling,
                                                           sample_from_prior=generate_synthetic_data)
 
-        bounding_box_nb: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere_grid.sample)),
+        decoded_zwhere = torch.sigmoid(self.decoder_zwhere(zwhere_grid.sample))
+        bounding_box_nb: BB = tgrid_to_bb(t_grid=decoded_zwhere,
                                           width_input_image=width_raw_image,
                                           height_input_image=height_raw_image,
                                           min_box_size=self.min_box_size,
@@ -267,7 +268,13 @@ class InferenceAndGeneration(torch.nn.Module):
             if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
 
                 # Compute the ranking
-                av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
+                stupid_bb_nb: BB = tgrid_to_bb(t_grid=0.5*torch.ones_like(decoded_zwhere),
+                                               width_input_image=width_raw_image,
+                                               height_input_image=height_raw_image,
+                                               min_box_size=self.min_box_size,
+                                               max_box_size=self.max_box_size)
+
+                av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), stupid_bb_nb)
                 ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
                 unit_ranking_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
                 unit_ranking_b1wh = invert_convert_to_box_list(unit_ranking_nb.unsqueeze(-1),
@@ -280,12 +287,18 @@ class InferenceAndGeneration(torch.nn.Module):
                 local_maxima_mask_b1wh = (tmp_pooled_b1wh == unit_ranking_b1wh)
 
                 # Now select the top k local maxima
-                score_b1wh = local_maxima_mask_b1wh * unit_ranking_b1wh
+                score_b1wh = unit_ranking_b1wh * local_maxima_mask_b1wh + 0.001 * torch.rand_like(unit_ranking_b1wh)
                 score_nb = convert_to_box_list(score_b1wh).squeeze(-1)
-                index_kb = torch.topk(score_nb, k=k_objects_max, dim=-2, largest=True, sorted=True)[1]
+                values_kb, index_kb = torch.topk(score_nb, k=k_objects_max, dim=-2, largest=True, sorted=True)
                 k_local_maxima_mask_nb = torch.zeros_like(score_nb).scatter(dim=-2,
                                                                             index=index_kb,
                                                                             src=torch.ones_like(score_nb))
+                # For debug
+                # tmp_kb = torch.sort(score_nb*k_local_maxima_mask_nb, dim=-2, descending=True)[0][:k_objects_max]
+                # print(tmp_kb.shape, values_kb.shape)
+                # print(tmp_kb[:,0])
+                # print(values_kb[:,0])
+
                 k_local_maxima_mask_b1wh = invert_convert_to_box_list(k_local_maxima_mask_nb.unsqueeze(-1),
                                                                       original_width=unet_output.logit.shape[-2],
                                                                       original_height=unet_output.logit.shape[-1])

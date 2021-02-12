@@ -379,9 +379,11 @@ def compute_average_in_box(delta_imgs_bcwh: torch.Tensor, bounding_box_nb: BB) -
     y3_nb = (bounding_box_nb.by + 0.5 * bounding_box_nb.bh).long().clamp(min=0, max=delta_imgs_bcwh.shape[-1])
 
     # compute the area
-    # Note that this way penalizes boxes that go out-of-bound
-    # This is in contrast to area = (x3-x1)*(y3-y1) which does NOT penalize boxes out of bound
-    area_nb = bounding_box_nb.bw * bounding_box_nb.bh
+    # There are 2 ways of computing the area:
+    # AREA_1 = (x3-x1)*(y3-y1)
+    # AREA_2 = bounding_box_nb.bw * bounding_box_nb.bh
+    # The difference is that for out-of-bound boxes AREA_1 < AREA_2
+    area_nb = (x3_nb - x1_nb) * (y3_nb - y1_nb)
 
     # compute the total intensity in each box
     index_nb = torch.arange(start=0, end=x1_nb.shape[-1], step=1, device=x1_nb.device,
