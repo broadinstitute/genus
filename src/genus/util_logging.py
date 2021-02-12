@@ -97,6 +97,9 @@ def log_many_metrics(metrics: Union[dict, tuple],
 
     def log_internal(_exp, _key, _value):
         if isinstance(_value, float) or isinstance(_value, int):
+            if _value != _value:
+                print(metrics)
+                raise Exception("found nan in",_key)
             _exp.log_metric(_key, _value)
         elif isinstance(_value, numpy.ndarray):
             for i, x in enumerate(_value):
