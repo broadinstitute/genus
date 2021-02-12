@@ -272,7 +272,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
                 p_unet = torch.sigmoid(unet_output.logit)
-                p_target = ((1-prob_corr_factor) * p_unet + prob_corr_factor * p_corr_b1wh).clamp(min=0.1, max=0.9)
+                p_target = ((1-prob_corr_factor) * p_unet +
+                            prob_corr_factor * p_corr_b1wh).clamp(min=0.0001, max=0.9999)
                 logit_target = torch.log(p_target) - torch.log1p(-p_target)  # in a small range around zero
             elif prob_corr_factor == 0:
                 p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
