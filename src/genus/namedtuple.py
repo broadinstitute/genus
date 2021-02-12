@@ -224,6 +224,10 @@ class MetricMiniBatch(NamedTuple):
     logit_warming_loss: float
     mse_av: float
     kl_av: float
+    kl_logit: float
+    kl_zinstance: float
+    kl_zbg: float
+    kl_zwhere: float
     cost_mask_overlap_av: float
     cost_bb_regression_av: float
     ncell_av: float
@@ -239,7 +243,6 @@ class MetricMiniBatch(NamedTuple):
     # I am learning the right things?
     similarity_l: float
     similarity_w: float
-    kl_logit_av: float
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, kl={3:.3f}, mask_overlap={4:.3f}, \

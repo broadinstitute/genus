@@ -8,7 +8,7 @@ from .encoders_decoders import EncoderConv, DecoderConv, Decoder1by1Linear, Deco
 from .util import convert_to_box_list, invert_convert_to_box_list
 from .util import compute_ranking, compute_average_in_box
 from .util_ml import sample_and_kl_diagonal_normal, sample_c_grid
-from .util_ml import compute_kl_bernoulli #, compute_logp_dpp, compute_logp_bernoulli, SimilarityKernel
+from .util_ml import compute_logp_dpp, compute_logp_bernoulli, SimilarityKernel
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, ZZ, DIST, MetricMiniBatch
 from .non_max_suppression import NonMaxSuppression
 
@@ -136,6 +136,11 @@ class InferenceAndGeneration(torch.nn.Module):
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
         # modules
+        self.similarity_kernel_dpp = SimilarityKernel(length_scale=config["input_image"]["similarity_DPP_l"],
+                                                      length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
+                                                      weight=config["input_image"]["similarity_DPP_w"],
+                                                      weight_min_max=config["input_image"]["similarity_DPP_w_min_max"])
+
         self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
                                level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
                                level_background_output=config["architecture"]["n_max_pool_unet"],
@@ -147,12 +152,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                ch_raw_image=config["architecture"]["n_ch_img"],
                                concatenate_raw_image_to_fmap=True)
 
-        # Decoders
+        # Encoder-Decoders
         self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
                                                                 ch_out=config["architecture"]["n_ch_img"])
 
         self.decoder_zwhere: Decoder1by1Linear = Decoder1by1Linear(dim_z=config["architecture"]["dim_zwhere"],
-                                                                   ch_out=4)
+                                                                   ch_out=4,
+                                                                   groups=4)
 
         self.decoder_logit: Decoder1by1Linear = Decoder1by1Linear(dim_z=1,
                                                                   ch_out=1)
@@ -161,7 +167,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           dim_z=config["architecture"]["dim_zinstance"],
                                                           ch_out=config["architecture"]["n_ch_img"] + 1)
 
-        # Encoders
         self.encoder_zinstance: EncoderConv = EncoderConv(size=config["architecture"]["glimpse_size"],
                                                           ch_in=config["architecture"]["n_ch_output_features"],
                                                           dim_z=config["architecture"]["dim_zinstance"])
@@ -193,26 +198,26 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_max,
                                                                        dtype=torch.float), requires_grad=True)
 
-    @staticmethod
-    def _compute_logit_corrected(logit_praw: torch.Tensor,
-                                 p_correction: torch.Tensor,
-                                 prob_corr_factor: float):
-        """
-        In log space computes the probability correction:
-        1. p = (1-a) * p_raw + a * p_corr
-        2. (1-p) = (1-a) * (1-p_raw) + a * (1-p_corr)
-        3. logit_p = log_p - log_1_m_p
-        It returns the logit of the corrected probability
-        """
-
-        log_praw = F.logsigmoid(logit_praw)
-        log_1_m_praw = F.logsigmoid(-logit_praw)
-        log_a = torch.tensor(prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
-        log_1_m_a = torch.tensor(1 - prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
-        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_correction) + log_a)
-        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log1p(-p_correction) + log_a)
-        logit_corrected = log_p_corrected - log_1_m_p_corrected
-        return logit_corrected
+##    @staticmethod
+##    def _compute_logit_corrected(logit_praw: torch.Tensor,
+##                                 p_correction: torch.Tensor,
+##                                 prob_corr_factor: float):
+##        """
+##        In log space computes the probability correction:
+##        1. p = (1-a) * p_raw + a * p_corr
+##        2. (1-p) = (1-a) * (1-p_raw) + a * (1-p_corr)
+##        3. logit_p = log_p - log_1_m_p
+##        It returns the logit of the corrected probability
+##        """
+##
+##        log_praw = F.logsigmoid(logit_praw)
+##        log_1_m_praw = F.logsigmoid(-logit_praw)
+##        log_a = torch.tensor(prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
+##        log_1_m_a = torch.tensor(1 - prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
+##        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_correction) + log_a)
+##        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log1p(-p_correction) + log_a)
+##        logit_corrected = log_p_corrected - log_1_m_p_corrected
+##        return logit_corrected
 
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
@@ -258,40 +263,41 @@ class InferenceAndGeneration(torch.nn.Module):
                                           max_box_size=self.max_box_size)
 
         # Correct probability if necessary
-        if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-            with torch.no_grad():
+        with torch.no_grad():
+            if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
                 av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), bounding_box_nb)
                 ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
                 tmp_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
                 p_corr_b1wh = invert_convert_to_box_list(tmp_nb.pow(10).unsqueeze(-1),
                                                          original_width=unet_output.logit.shape[-2],
                                                          original_height=unet_output.logit.shape[-1])
-                logit_corr_b1wh = torch.log(p_corr_b1wh) - torch.log1p(-p_corr_b1wh)
-            # Outside torch.no_grad()
-            logit_warming_loss = (logit_corr_b1wh.detach() - unet_output.logit).pow(2).sum()
-            logit_grid_corrected = InferenceAndGeneration._compute_logit_corrected(logit_praw=unet_output.logit,
-                                                                                   p_correction=p_corr_b1wh,
-                                                                                   prob_corr_factor=prob_corr_factor)
-        elif prob_corr_factor == 0:
-            p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
-            logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
-            logit_grid_corrected = unet_output.logit
-        else:
-            raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+                p_unet = torch.sigmoid(unet_output.logit)
+                p_target = ((1-prob_corr_factor) * p_unet + prob_corr_factor * p_corr_b1wh).clamp(min=0.1, max=0.9)
+                logit_target = torch.log(p_target) - torch.log1p(-p_target)  # in a small range around zero
+            elif prob_corr_factor == 0:
+                p_corr_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+                logit_target = unet_output.logit
+            else:
+                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
+        # Outside torch.no_grad()
+        # Note that the logit_warming_loss will keep the unet_output.logit close to zero so that the model can learn
+        logit_grid_corrected = unet_output.logit + (logit_target - unet_output.logit).detach()
+        logit_warming_loss = (logit_grid_corrected.detach() - unet_output.logit).pow(2).sum()
+        prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
         print("DEBUG logit_grid min,max -->", torch.min(unet_output.logit).detach().item(),
               torch.max(unet_output.logit).detach().item())
 
-        # Compute KL between two Bernoulli distributions
-        prob_grid_corrected = torch.sigmoid(logit_grid_corrected)
-        prior_prob = float(self.geco_target_ncell_min) / torch.numel(logit_grid_corrected[0, 0])
-        prior_logit = numpy.log(prior_prob) - numpy.log1p(-prior_prob)
-        kl_logit_grid = compute_kl_bernoulli(logit_posterior=logit_grid_corrected,
-                                             logit_prior=prior_logit * torch.ones_like(logit_grid_corrected))
+        # Sample the probability map from prior or posterior
+        similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
+                                                               n_height=unet_output.logit.shape[-1])
 
         # NMS + top-K operation
         with torch.no_grad():
-            c_grid_before_nms_b1wh = (torch.rand_like(logit_grid_corrected) < prob_grid_corrected).float()
+            c_grid_before_nms_b1wh = sample_c_grid(logit_grid=logit_grid_corrected,
+                                                   similarity_matrix=similarity_kernel,
+                                                   noisy_sampling=noisy_sampling,
+                                                   sample_from_prior=generate_synthetic_data)
 
             score_nb = convert_to_box_list(c_grid_before_nms_b1wh + prob_grid_corrected).squeeze(-1)
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
@@ -308,6 +314,16 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         original_width=c_grid_before_nms_b1wh.shape[-2],
                                                         original_height=c_grid_before_nms_b1wh.shape[-1])
             c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * mask_grid_b1wh
+
+        # Compute KL divergence between the DPP prior and the posterior: KL = logp(c|logit) - logp(c|similarity)
+        # The effect of this term should be:
+        # 1. DECREASE logit where c=1, INCREASE logit where c=0 (i.e. make the posterior distribution more entropic)
+        # 2. Make the DPP parameters adjust to the seen configurations
+        c_grid_logp_prior_b = compute_logp_dpp(c_grid=c_grid_after_nms_b1wh.detach(),
+                                               similarity_matrix=similarity_kernel)
+        c_grid_logp_posterior_b = compute_logp_bernoulli(c_grid=c_grid_after_nms_b1wh.detach(),
+                                                         logit_grid=logit_grid_corrected)
+        kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_kb: BB = BB(bx=torch.gather(bounding_box_nb.bx, dim=0, index=nms_output.indices_kb),
@@ -354,7 +370,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                     dim=-3)
 
         # 7. Compute the mixing
-        # Note that mixing are multiplied by the max between max(p, c).
+        # TODO: think hard about this part with Mehrtash
+        #   There are many ways to make c differentiable
+        #   Should I detach the denominator?
+        #   Should I introduce z_depth?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
         # c_differentiable_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         # c_detached_times_mask_kb1wh = c_detached_kb[..., None, None, None] * out_mask_kb1wh
@@ -364,7 +383,6 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_b1wh = mixing_kb1wh.sum(dim=-5)  # sum over boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
-        # TODO: think hard about this part with Mehrtash
         # c_or_p_attached_kb = prob_kb - prob_kb.detach() + torch.max(prob_kb, c_detached_kb).detach()
         # c_or_p_times_mask_kb1wh = out_mask_kb1wh * c_or_p_attached_kb[..., None, None, None]
         # mixing_kb1wh = c_or_p_times_mask_kb1wh / out_mask_kb1wh.sum(dim=-5).clamp(min=1.0)  # softplus-like
@@ -424,16 +442,16 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_av = ((mixing_kb1wh * mse_fg_kbcwh).sum(dim=-5) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
         # 2. KL divergence
+        # TODO should I divide by n_boxes?
         # Note that I compute the mean over batch, latent_dimensions and n_object.
         # This means that latent_dim can effectively control the complexity of the reconstruction,
         # i.e. more latent more capacity.
-        # TODO: kl should act only on filled boxes, i.e. c=1
         c_detached_kb1 = c_detached_kb[..., None]
         non_zero_c = c_detached_kb1.sum()
         kl_zbg = torch.mean(zbg.kl)  # mean over: batch, latent_dim
         kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / (non_zero_c * zinstance_few.kl.shape[-3])
         kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / (non_zero_c * zwhere_kl_nbz.shape[-3])
-        kl_logit = torch.mean(kl_logit_grid)
+        kl_logit = torch.mean(kl_logit_b)
         kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
         with torch.no_grad():
@@ -462,9 +480,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # Loss geco (i.e. makes loglambda increase or decrease)
         # I want to implement: increase slowly, decrease rapidly
         loss_geco = logit_warming_loss + \
-                    self.geco_loglambda_mse * (1.0 * mse_in_range - 0.5 * ~mse_in_range) + \
-                    self.geco_loglambda_fgfraction * (1.0 * fgfraction_in_range - 0.5 * ~fgfraction_in_range) + \
-                    self.geco_loglambda_ncell * (1.0 * ncell_in_range - 0.5 * ~ncell_in_range)
+                    self.geco_loglambda_mse * (1.0 * mse_in_range - 1.0 * ~mse_in_range) + \
+                    self.geco_loglambda_fgfraction * (1.0 * fgfraction_in_range - 1.0 * ~fgfraction_in_range) + \
+                    self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
 
         # TODO: should lambda_ncell act on all probabilities or only the selected ones?
         #  what about acting on the underlying logits
@@ -477,14 +495,17 @@ class InferenceAndGeneration(torch.nn.Module):
 
         loss = loss_vae + loss_geco - loss_geco.detach()
 
-        # similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
-        similarity_l, similarity_w = torch.zeros_like(logit_warming_loss), torch.zeros_like(logit_warming_loss)
+        similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
         # add everything you want as long as there is one loss
         metric = MetricMiniBatch(loss=loss,
                                  logit_warming_loss=logit_warming_loss.detach().item(),
                                  mse_av=mse_av.detach().item(),
                                  kl_av=kl_av.detach().item(),
+                                 kl_logit=kl_logit.detach().item(),
+                                 kl_zinstance=kl_zinstance.detach().item(),
+                                 kl_zbg=kl_zbg.detach().item(),
+                                 kl_zwhere=kl_zwhere.detach().item(),
                                  cost_mask_overlap_av=cost_overlap.detach().item(),
                                  cost_bb_regression_av=cost_bb_regression.detach().item(),
                                  ncell_av=ncell_av.detach().item(),
@@ -496,7 +517,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0,
                                  similarity_l=similarity_l.detach().item(),
-                                 similarity_w=similarity_w.detach().item(),
-                                 kl_logit_av=kl_logit.detach().item())
+                                 similarity_w=similarity_w.detach().item())
 
         return inference, metric

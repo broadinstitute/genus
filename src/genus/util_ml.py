@@ -176,159 +176,71 @@ def sample_c_grid(logit_grid: torch.Tensor,
         return c_grid.float()  # same shape as logit_grid.
 
 
-####def OLD_compute_logp_dpp(c_grid: torch.Tensor,
-####                     similarity_matrix: torch.Tensor):
-####    """
-####    Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
-####    :attr:`similarity_matrix`.
-####
-####    Args:
-####        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-####        similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
-####
-####    Returns:
-####        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
-####        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
-####    """
-####    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
-####    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
-####    return log_prob_prior
-####
-####
-####def OLD_compute_logp_bernoulli(c_grid: torch.Tensor,
-####                           logit_grid: torch.Tensor):
-####    """
-####    Compute the log_probability of the :attr:`c_grid` configuration under the collection
-####    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
-####
-####    Args:
-####        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-####        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
-####
-####    Returns:
-####        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
-####        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
-####    """
-####    log_p_grid = F.logsigmoid(logit_grid)
-####    log_1_m_p_grid = F.logsigmoid(-logit_grid)
-####    log_prob_bernoulli = (c_grid * log_p_grid +
-####                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
-####    return log_prob_bernoulli
-
-
-def compute_kl_bernoulli(logit_prior: torch.Tensor,
-                         logit_posterior: torch.Tensor):
+def compute_logp_dpp(c_grid: torch.Tensor,
+                     similarity_matrix: torch.Tensor):
     """
-    Compute the KL divergence between two Bernoulli distributions.
+    Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
+    :attr:`similarity_matrix`.
 
     Args:
-        logit_prior: Logit of the prior Bernoulli distributions
-        logit_posterior: Logit of the posterior Bernoulli distributions
+        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
+        similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
 
     Returns:
-        :math:`KL= p * log(p/q) + (1-p) * log((1-p)/(1-q)) where p is the posterior and q is the prior probability
-        of the Bernoulli distributions. The shape is equal to the broadcasting of :attr:`logit_prior' and
-        :attr:`logit_posterior`.
+        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
+        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
     """
-    logit_p, logit_q = broadcast_all(logit_posterior, logit_prior)
-    log_p = F.logsigmoid(logit_p)
-    log_q = F.logsigmoid(logit_q)
-    log_1_m_p = F.logsigmoid(-logit_p)
-    log_1_m_q = F.logsigmoid(-logit_q)
-    one_m_p = torch.sigmoid(-logit_p)
-    p = torch.sigmoid(logit_p)
-    return p * (log_p - log_q) + one_m_p * (log_1_m_p - log_1_m_q)
+    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
+    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
+    return log_prob_prior
+
+
+def compute_logp_bernoulli(c_grid: torch.Tensor,
+                           logit_grid: torch.Tensor):
+    """
+    Compute the log_probability of the :attr:`c_grid` configuration under the collection
+    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
+
+    Args:
+        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
+        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
+
+    Returns:
+        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
+        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
+    """
+    log_p_grid = F.logsigmoid(logit_grid)
+    log_1_m_p_grid = F.logsigmoid(-logit_grid)
+    log_prob_bernoulli = (c_grid * log_p_grid +
+                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
+    return log_prob_bernoulli
+
+
+###def compute_kl_bernoulli(logit_prior: torch.Tensor,
+###                         logit_posterior: torch.Tensor):
+###    """
+###    Compute the KL divergence between two Bernoulli distributions.
+###
+###    Args:
+###        logit_prior: Logit of the prior Bernoulli distributions
+###        logit_posterior: Logit of the posterior Bernoulli distributions
+###
+###    Returns:
+###        :math:`KL= p * log(p/q) + (1-p) * log((1-p)/(1-q)) where p is the posterior and q is the prior probability
+###        of the Bernoulli distributions. The shape is equal to the broadcasting of :attr:`logit_prior' and
+###        :attr:`logit_posterior`.
+###    """
+###    logit_p, logit_q = broadcast_all(logit_posterior, logit_prior)
+###    log_p = F.logsigmoid(logit_p)
+###    log_q = F.logsigmoid(logit_q)
+###    log_1_m_p = F.logsigmoid(-logit_p)
+###    log_1_m_q = F.logsigmoid(-logit_q)
+###    one_m_p = torch.sigmoid(-logit_p)
+###    p = torch.sigmoid(logit_p)
+###    return p * (log_p - log_q) + one_m_p * (log_1_m_p - log_1_m_q)
 
 
 class SimilarityKernel(torch.nn.Module):
-    """ Similarity based on sum of gaussian kernels of different strength and length_scales """
-    def __init__(self, n_kernels: int = 4,
-                 pbc: bool = False,
-                 eps: float = 1E-4,
-                 length_scales: Optional[torch.Tensor] = None,
-                 kernel_weights: Optional[torch.Tensor] = None):
-        """ It is safer to set pbc=False b/c the matrix might become ill-conditioned otherwise """
-        super().__init__()
-
-        self.n_kernels = n_kernels
-        self.eps = eps
-        self.pbc = pbc
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-        if length_scales is None:
-            LENGTH_2 = 10.0
-            length_scales = torch.linspace(LENGTH_2/self.n_kernels, LENGTH_2,
-                                           steps=self.n_kernels,
-                                           device=self.device,
-                                           dtype=torch.float)
-        else:
-            length_scales = self._invertsoftplus(length_scales.float().to(self.device))
-        assert length_scales.shape[0] == self.n_kernels
-        self.similarity_length = torch.nn.Parameter(data=length_scales, requires_grad=True)
-
-        if kernel_weights is None:
-            kernel_weights = torch.ones(self.n_kernels,
-                                        device=self.device,
-                                        dtype=torch.float)/self.n_kernels
-        else:
-            kernel_weights = self._invertsoftplus(kernel_weights.float().to(self.device))
-        assert kernel_weights.shape[0] == self.n_kernels
-        self.similarity_w = torch.nn.Parameter(data=kernel_weights, requires_grad=True)
-
-        # Initialization
-        self.n_width = -1
-        self.n_height = -1
-        self.d2 = None
-        self.diag = None
-
-    @staticmethod
-    def _invertsoftplus(x):
-        return torch.log(torch.exp(x)-1.0)
-
-    def _compute_d2_diag(self, n_width: int, n_height: int):
-        with torch.no_grad():
-            ix_array = torch.arange(start=0, end=n_width, dtype=torch.int, device=self.device)
-            iy_array = torch.arange(start=0, end=n_height, dtype=torch.int, device=self.device)
-            ix_grid, iy_grid = torch.meshgrid([ix_array, iy_array])
-            map_points = torch.stack((ix_grid, iy_grid), dim=-1)  # n_width, n_height, 2
-            locations = map_points.flatten(start_dim=0, end_dim=-2)  # (n_width*n_height, 2)
-            d = (locations.unsqueeze(-2) - locations.unsqueeze(-3)).abs()  # (n_width*n_height, n_width*n_height, 2)
-            if self.pbc:
-                d_pbc = d.clone()
-                d_pbc[..., 0] = -d[..., 0] + n_width
-                d_pbc[..., 1] = -d[..., 1] + n_height
-                d2 = torch.min(d, d_pbc).pow(2).sum(dim=-1).float()
-            else:
-                d2 = d.pow(2).sum(dim=-1).float()
-
-            values = self.eps * torch.ones(d2.shape[-2], dtype=torch.float, device=self.device)
-            diag = torch.diag_embed(values, offset=0, dim1=-2, dim2=-1)
-            return d2, diag
-
-    def sample_2_mask(self, sample):
-        independent_dims = list(sample.shape[:-1])
-        mask = sample.view(independent_dims + [self.n_width, self.n_height])
-        return mask
-
-    def get_l_w(self):
-        return F.softplus(self.similarity_length)+1.0, F.softplus(self.similarity_w)+1E-2
-
-    def forward(self, n_width: int, n_height: int):
-        """ Implement L = sum_i a_i exp[-b_i d2] """
-        l, w = self.get_l_w()
-        l2 = l.pow(2)
-
-        if (n_width != self.n_width) or (n_height != self.n_height):
-            self.n_width = n_width
-            self.n_height = n_height
-            self.d2, self.diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
-
-        likelihood_kernel = (w[..., None, None] *
-                             torch.exp(-0.5*self.d2/l2[..., None, None])).sum(dim=-3) + self.diag
-        return likelihood_kernel  # shape (n_width*n_height, n_width*n_height)
-
-
-class NEW_SimilarityKernel(torch.nn.Module):
     """
     Square gaussian kernel with learnable parameters (weight and lenght_scale).
     """
