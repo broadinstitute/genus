@@ -477,16 +477,14 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_av = ((mixing_kb1wh * mse_fg_kbcwh).sum(dim=-5) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
         # 2. KL divergence
-        # TODO should I divide by n_boxes?
-        # Note that I compute the mean over batch, latent_dimensions and n_object.
-        # This means that latent_dim can effectively control the complexity of the reconstruction,
-        # i.e. more latent more capacity.
+        # Note that divide by batch_size only.
+        # I could divide by latent dimension.
+        # I can not divide by number of object b/c that could become zero
         c_detached_kb1 = c_detached_kb[..., None]
-        non_zero_c = c_detached_kb1.sum()
-        kl_zbg = torch.mean(zbg.kl)  # mean over: batch, latent_dim
-        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / (non_zero_c * zinstance_few.kl.shape[-3])
-        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / (non_zero_c * zwhere_kl_nbz.shape[-3])
-        kl_logit = torch.mean(kl_logit_b)
+        kl_zbg = torch.sum(zbg.kl) / batch_size
+        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / batch_size
+        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / batch_size
+        kl_logit = torch.mean(kl_logit_b) / batch_size
         kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
         with torch.no_grad():
