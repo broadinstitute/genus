@@ -935,7 +935,7 @@ def process_one_epoch(model: CompositionalVae,
     wrong_examples = []
 
     # Anomaly detection is slow but help with debugging
-    with torch.autograd.detect_anomaly():
+    with torch.autograd.set_detect_anomaly(mode=False):
 
         # Start loop over minibatches
         for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):

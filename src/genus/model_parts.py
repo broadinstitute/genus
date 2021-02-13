@@ -481,9 +481,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # I could divide by latent dimension.
         # I can not divide by number of object b/c that could become zero
         c_detached_kb1 = c_detached_kb[..., None]
-        kl_zbg = torch.sum(zbg.kl) / batch_size
-        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / batch_size
-        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / batch_size
+        kl_zbg = torch.sum(zbg.kl) / (batch_size * zbg.kl.shape[-1])
+        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / (batch_size * zinstance_few.kl.shape[-1])
+        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / (batch_size * zwhere_kl_kbz.shape[-1])
         kl_logit = torch.mean(kl_logit_b) / batch_size
         kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
