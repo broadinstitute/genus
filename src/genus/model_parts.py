@@ -315,6 +315,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Outside torch.no_grad()
         # Note that the logit_warming_loss will keep the unet_output.logit close to
+        # TODO: should divide by batch_size
         logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() - unet_output.logit).pow(2).sum()
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
         logit_min = torch.min(unet_output.logit).detach()
@@ -485,7 +486,7 @@ class InferenceAndGeneration(torch.nn.Module):
         kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / (batch_size * zinstance_few.kl.shape[-1])
         kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / (batch_size * zwhere_kl_kbz.shape[-1])
         kl_logit = torch.mean(kl_logit_b) / batch_size
-        kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
+        kl_av = 0.1 * (kl_zbg + kl_zinstance + kl_zwhere + kl_logit)
 
         with torch.no_grad():
             ncell_av = torch.sum(c_detached_kb) / batch_size
