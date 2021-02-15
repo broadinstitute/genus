@@ -268,7 +268,9 @@ class InferenceAndGeneration(torch.nn.Module):
             if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
 
                 # Compute the ranking
-                stupid_bb_nb: BB = tgrid_to_bb(t_grid=0.5*torch.ones_like(decoded_zwhere),
+                t_grid_smallest_centered_box = torch.zeros_like(decoded_zwhere)
+                t_grid_smallest_centered_box[:, :2, :, :] = 0.5
+                stupid_bb_nb: BB = tgrid_to_bb(t_grid=t_grid_smallest_centered_box,
                                                width_input_image=width_raw_image,
                                                height_input_image=height_raw_image,
                                                min_box_size=self.min_box_size,
@@ -315,8 +317,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Outside torch.no_grad()
         # Note that the logit_warming_loss will keep the unet_output.logit close to
-        # TODO: should divide by batch_size
-        logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() - unet_output.logit).pow(2).sum()
+        logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() -
+                                                 unet_output.logit).pow(2).sum() / batch_size
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
         logit_min = torch.min(unet_output.logit).detach()
         logit_max = torch.max(unet_output.logit).detach()
@@ -482,11 +484,11 @@ class InferenceAndGeneration(torch.nn.Module):
         # I could divide by latent dimension.
         # I can not divide by number of object b/c that could become zero
         c_detached_kb1 = c_detached_kb[..., None]
-        kl_zbg = torch.sum(zbg.kl) / (batch_size * zbg.kl.shape[-1])
-        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / (batch_size * zinstance_few.kl.shape[-1])
-        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / (batch_size * zwhere_kl_kbz.shape[-1])
+        kl_zbg = torch.sum(zbg.kl) / batch_size
+        kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / batch_size
+        kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / batch_size
         kl_logit = torch.mean(kl_logit_b) / batch_size
-        kl_av = 0.1 * (kl_zbg + kl_zinstance + kl_zwhere + kl_logit)
+        kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
         with torch.no_grad():
             ncell_av = torch.sum(c_detached_kb) / batch_size

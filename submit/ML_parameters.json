@@ -18,7 +18,7 @@
    "dim_zbg" : 20,
    "glimpse_size" : 28,
    "n_max_pool_unet" : 4,
-   "level_zwherelogit_unet" : 3,
+   "level_zwherelogit_unet" : 2,
    "n_ch_img" : 1,
    "n_ch_output_features" : 32,
    "n_ch_after_preprocessing" : 32,

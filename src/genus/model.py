@@ -976,7 +976,7 @@ def process_one_epoch(model: CompositionalVae,
                 # apply the weight clipper
                 if weight_clipper is not None:
                     model.__self__.apply(weight_clipper)
-                    torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
+                    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
 
         # End of loop over minibatches
 
