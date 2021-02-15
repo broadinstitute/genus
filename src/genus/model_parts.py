@@ -268,9 +268,10 @@ class InferenceAndGeneration(torch.nn.Module):
             if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
 
                 # Compute the ranking
-                t_grid_smallest_centered_box = torch.zeros_like(decoded_zwhere)
-                t_grid_smallest_centered_box[:, :2, :, :] = 0.5
-                stupid_bb_nb: BB = tgrid_to_bb(t_grid=t_grid_smallest_centered_box,
+                # t_grid_smallest_centered_box = torch.zeros_like(decoded_zwhere)
+                # t_grid_smallest_centered_box[:, :2, :, :] = 0.5
+
+                stupid_bb_nb: BB = tgrid_to_bb(t_grid=decoded_zwhere,
                                                width_input_image=width_raw_image,
                                                height_input_image=height_raw_image,
                                                min_box_size=self.min_box_size,
