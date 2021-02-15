@@ -487,7 +487,8 @@ class InferenceAndGeneration(torch.nn.Module):
         kl_zbg = torch.sum(zbg.kl) / batch_size
         kl_zinstance = torch.sum(zinstance_few.kl * c_detached_kb1) / batch_size
         kl_zwhere = torch.sum(zwhere_kl_kbz * c_detached_kb1) / batch_size
-        kl_logit = torch.mean(kl_logit_b) / batch_size
+        # kl_logit = torch.sum(kl_logit_b) / batch_size
+        kl_logit = torch.zeros_like(kl_zwhere)
         kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
         with torch.no_grad():
