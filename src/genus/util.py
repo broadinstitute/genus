@@ -5,6 +5,8 @@ import dill
 import skimage.measure
 from typing import Union, Optional
 from .namedtuple import BB, ConcordanceIntMask
+import torch.nn.functional as F
+
 
 """ This modules has many low-level utilities such as saving and loading files, flatten dictionary to list, 
     reshape of tensor and so on. """
@@ -342,7 +344,58 @@ def append_to_dict(source: Union[tuple, dict],
     return destination
 
 
+@torch.no_grad()
 def compute_ranking(x_nb: torch.Tensor) -> torch.Tensor:
+    """ Given a vector of shape: n, batch_size
+        For each batch dimension it ranks the n elements. """
+    assert len(x_nb.shape) == 2
+    n, batch_size = x_nb.shape
+    _, order = torch.sort(x_nb, dim=-2, descending=False)
+
+    # this is the fast way which uses indexing on the left
+    rank_nb = torch.zeros_like(order)
+    batch_index = torch.arange(batch_size, dtype=order.dtype, device=order.device).view(1, -1).expand(n, batch_size)
+    rank_nb[order, batch_index] = torch.arange(n,
+                                               dtype=order.dtype,
+                                               device=order.device).view(-1, 1).expand(n, batch_size)
+
+    return rank_nb
+
+
+@torch.no_grad()
+def select_topK_2D(values_b1wh: torch.Tensor, k: int) -> torch.Tensor:
+    """
+    Given a vector of shape (B,1,W,H) it returns a boolean mask with the location of K
+    maxima across the last two spatial dimensions """
+
+    # Now select the top k maxima across the last two spatial dimensions
+    assert values_b1wh.shape[-3] == 1
+    assert len(values_b1wh.shape) == 4
+
+    values_nb = convert_to_box_list(values_b1wh).squeeze(-1)
+    index_kb = torch.topk(values_nb, k=k, dim=-2, largest=True, sorted=True)[1]
+    k_local_maxima_mask_nb = torch.zeros_like(values_nb).scatter(dim=-2,
+                                                                 index=index_kb,
+                                                                 src=torch.ones_like(values_nb))
+    k_local_maxima_mask_b1wh = invert_convert_to_box_list(k_local_maxima_mask_nb.unsqueeze(-1),
+                                                          original_width=values_b1wh.shape[-2],
+                                                          original_height=values_b1wh.shape[-1])
+    return k_local_maxima_mask_b1wh
+
+
+@torch.no_grad()
+def get_local_maxima_mask(values_b1wh: torch.Tensor) -> torch.Tensor:
+    """ Given a vector of shape (B,1,W,H) it returns a boolean mask with the location of the local-maxima """
+    assert values_b1wh.shape[-3] == 1
+    assert len(values_b1wh.shape) == 4
+    values_b1wh_pooled = F.max_pool2d(values_b1wh, kernel_size=3, stride=1,
+                                      padding=1, return_indices=False)
+    mask_b1wh = (values_b1wh_pooled == values_b1wh)
+    return mask_b1wh
+
+
+@torch.no_grad()
+def compute_tensor_ranking(x_nb: torch.Tensor) -> torch.Tensor:
     """ Given a vector of shape: n, batch_size
         For each batch dimension it ranks the n elements. """
     assert len(x_nb.shape) == 2

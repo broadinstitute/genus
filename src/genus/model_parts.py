@@ -6,7 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
 from .encoders_decoders import EncoderConv, DecoderConv, Decoder1by1Linear, DecoderBackground
 from .util import convert_to_box_list, invert_convert_to_box_list
-from .util import compute_ranking, compute_average_in_box
+from .util import get_local_maxima_mask, select_topK_2D, compute_average_in_box, compute_ranking
 from .util_ml import sample_and_kl_diagonal_normal, sample_c_grid
 from .util_ml import compute_logp_dpp, compute_logp_bernoulli, SimilarityKernel
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, ZZ, DIST, MetricMiniBatch
@@ -198,27 +198,6 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_max,
                                                                        dtype=torch.float), requires_grad=True)
 
-##    @staticmethod
-##    def _compute_logit_corrected(logit_praw: torch.Tensor,
-##                                 p_correction: torch.Tensor,
-##                                 prob_corr_factor: float):
-##        """
-##        In log space computes the probability correction:
-##        1. p = (1-a) * p_raw + a * p_corr
-##        2. (1-p) = (1-a) * (1-p_raw) + a * (1-p_corr)
-##        3. logit_p = log_p - log_1_m_p
-##        It returns the logit of the corrected probability
-##        """
-##
-##        log_praw = F.logsigmoid(logit_praw)
-##        log_1_m_praw = F.logsigmoid(-logit_praw)
-##        log_a = torch.tensor(prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
-##        log_1_m_a = torch.tensor(1 - prob_corr_factor, device=logit_praw.device, dtype=logit_praw.dtype).log()
-##        log_p_corrected = torch.logaddexp(log_praw + log_1_m_a, torch.log(p_correction) + log_a)
-##        log_1_m_p_corrected = torch.logaddexp(log_1_m_praw + log_1_m_a, torch.log1p(-p_correction) + log_a)
-##        logit_corrected = log_p_corrected - log_1_m_p_corrected
-##        return logit_corrected
-
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
                 prob_corr_factor: float,
@@ -263,73 +242,16 @@ class InferenceAndGeneration(torch.nn.Module):
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
-        # Correct probability if necessary
-        with torch.no_grad():
-            if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-
-                # Compute the ranking
-                # t_grid_smallest_centered_box = torch.zeros_like(decoded_zwhere)
-                # t_grid_smallest_centered_box[:, :2, :, :] = 0.5
-
-                stupid_bb_nb: BB = tgrid_to_bb(t_grid=decoded_zwhere,
-                                               width_input_image=width_raw_image,
-                                               height_input_image=height_raw_image,
-                                               min_box_size=self.min_box_size,
-                                               max_box_size=self.max_box_size)
-
-                av_intensity_nb = compute_average_in_box((imgs_bcwh - out_background_bcwh).abs(), stupid_bb_nb)
-                ranking_nb = compute_ranking(av_intensity_nb)  # It is in [0,n-1]
-                unit_ranking_nb = (ranking_nb + 1).float() / (ranking_nb.shape[-2]+1)  # strictly inside (0,1) range
-                unit_ranking_b1wh = invert_convert_to_box_list(unit_ranking_nb.unsqueeze(-1),
-                                                               original_width=unet_output.logit.shape[-2],
-                                                               original_height=unet_output.logit.shape[-1])
-
-                # Extract the local-maxima from the ranking
-                tmp_pooled_b1wh = F.max_pool2d(unit_ranking_b1wh, kernel_size=3, stride=1,
-                                               padding=1, return_indices=False)
-                local_maxima_mask_b1wh = (tmp_pooled_b1wh == unit_ranking_b1wh)
-
-                # Now select the top k local maxima
-                score_b1wh = unit_ranking_b1wh * local_maxima_mask_b1wh + 0.001 * torch.rand_like(unit_ranking_b1wh)
-                score_nb = convert_to_box_list(score_b1wh).squeeze(-1)
-                values_kb, index_kb = torch.topk(score_nb, k=k_objects_max, dim=-2, largest=True, sorted=True)
-                k_local_maxima_mask_nb = torch.zeros_like(score_nb).scatter(dim=-2,
-                                                                            index=index_kb,
-                                                                            src=torch.ones_like(score_nb))
-                # For debug
-                # tmp_kb = torch.sort(score_nb*k_local_maxima_mask_nb, dim=-2, descending=True)[0][:k_objects_max]
-                # print(tmp_kb.shape, values_kb.shape)
-                # print(tmp_kb[:,0])
-                # print(values_kb[:,0])
-
-                k_local_maxima_mask_b1wh = invert_convert_to_box_list(k_local_maxima_mask_nb.unsqueeze(-1),
-                                                                      original_width=unet_output.logit.shape[-2],
-                                                                      original_height=unet_output.logit.shape[-1])
-
-                # Now compute the target_probability
-                p_target_b1wh = (k_local_maxima_mask_b1wh * unit_ranking_b1wh).clamp(min=0.0001, max=0.9999)
-                logit_target_b1wh = torch.log(p_target_b1wh) - torch.log1p(-p_target_b1wh)
-            elif prob_corr_factor == 0:
-                unit_ranking_b1wh = 0.5 * torch.ones_like(unet_output.logit)
-                p_target_b1wh = 0.5 * torch.ones_like(unet_output.logit)
-                logit_target_b1wh = unet_output.logit
-            else:
-                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
-
-        # Outside torch.no_grad()
-        # Note that the logit_warming_loss will keep the unet_output.logit close to
-        logit_warming_loss = prob_corr_factor * (logit_target_b1wh.detach() -
-                                                 unet_output.logit).pow(2).sum() / batch_size
+        # Probabilities
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
         logit_min = torch.min(unet_output.logit).detach()
         logit_max = torch.max(unet_output.logit).detach()
         print("DEBUG logit_grid min,max -->", logit_min.item(), logit_max.item())
-        #if torch.isnan(logit_min) or torch.isnan(logit_max):
-        #    raise Exception("logit_unet_is_nan")
 
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
+
         # NMS + top-K operation
         with torch.no_grad():
             c_grid_before_nms_b1wh = sample_c_grid(prob_grid=unet_prob_b1wh,
@@ -337,21 +259,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                                    noisy_sampling=noisy_sampling,
                                                    sample_from_prior=generate_synthetic_data)
 
-            score_nb = convert_to_box_list(c_grid_before_nms_b1wh + unet_prob_b1wh).squeeze(-1)
+            score_b1wh = c_grid_before_nms_b1wh + unet_prob_b1wh
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
-            nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_nb=score_nb,
+            nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_b1wh=score_b1wh,
                                                                              bounding_box_nb=bounding_box_nb,
                                                                              iom_threshold=iom_threshold,
                                                                              k_objects_max=k_objects_max,
                                                                              topk_only=combined_topk_only)
-            # Mask with all zero except 1s in the locations specified by the indices
-            mask_nb = torch.zeros_like(score_nb).scatter(dim=0,
-                                                         index=nms_output.indices_kb,
-                                                         src=torch.ones_like(score_nb))
-            mask_grid_b1wh = invert_convert_to_box_list(mask_nb.unsqueeze(-1),
-                                                        original_width=c_grid_before_nms_b1wh.shape[-2],
-                                                        original_height=c_grid_before_nms_b1wh.shape[-1])
-            c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * mask_grid_b1wh
+            c_grid_after_nms_b1wh = c_grid_before_nms_b1wh * nms_output.k_mask_b1wh
 
         # Compute KL divergence between the DPP prior and the posterior: KL = logp(c|logit) - logp(c|similarity)
         # The effect of this term should be:
@@ -435,7 +350,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
         # TODO: should I multiply this by c_detached_kb
-        #   if I multiply bu c_attached then the nounding boxes with smaller bb_regression cost are favored
+        #   if I multiply by c_attached then the bounding boxes with smaller bb_regression cost are favored
         cost_bb_regression = self.bb_regression_strength * torch.sum(c_detached_kb * bb_regression_kb)/batch_size
 
         # 9. Compute the mask overlap penalty using c_detached so that this penalty changes
@@ -458,8 +373,50 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("self.mask_overlap_type not valid")
 
+        # 10. Compute the pretraining loss to encourage netwrok to focus on object poorly explained by the background
+        if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
+            with torch.no_grad():
+                delta_nb = compute_average_in_box(delta_imgs_bcwh=(imgs_bcwh - out_background_bcwh).abs(),
+                                                  bounding_box_nb=bounding_box_nb)
+                unit_ranking_nb = (compute_ranking(delta_nb) + 1).float() / (delta_nb.shape[-2] + 1)  # in (0,1)
+                unit_ranking_b1wh = invert_convert_to_box_list(unit_ranking_nb.unsqueeze(-1),
+                                                               original_width=unet_output.logit.shape[-2],
+                                                               original_height=unet_output.logit.shape[-1])
+
+                # Find the K-peaks using NMS + top_K
+                nms_pretraining: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_b1wh=unit_ranking_b1wh,
+                                                                                      bounding_box_nb=bounding_box_nb,
+                                                                                      iom_threshold=iom_threshold,
+                                                                                      k_objects_max=k_objects_max,
+                                                                                      topk_only=combined_topk_only)
+                p_target_b1wh = (nms_pretraining.k_mask_b1wh * unit_ranking_b1wh).clamp(min=0.0001, max=0.9999)
+                logit_target_b1wh = torch.log(p_target_b1wh) - torch.log1p(-p_target_b1wh)
+
+                # Find the K-peaks using local_maxima
+                # local_maxima_mask_b1wh = get_local_maxima_mask(values_b1wh=unit_ranking_b1wh)
+                # noisy_unit_ranking_b1wh = unit_ranking_b1wh * local_maxima_mask_b1wh + \
+                #                           0.0001 * torch.rand_like(unit_ranking_b1wh)
+                # k_local_maxima_mask_b1wh = select_topK_2D(values_b1wh=noisy_unit_ranking_b1wh,
+                #                                           k=k_objects_max)
+                # p_target_b1wh = (k_local_maxima_mask_b1wh * unit_ranking_b1wh).clamp(min=0.0001, max=0.9999)
+                # logit_target_b1wh = torch.log(p_target_b1wh) - torch.log1p(-p_target_b1wh)
+
+
+            # Outside torch.no_grad():
+            # Note that this regularization is acting only on the k_local maxima and it is pushing the probability up.
+            # The pushing down will be achieved by geco
+            # TODO: Should this act on the probability or the logit?
+            logit_warming_loss = prob_corr_factor * torch.sum(nms_pretraining.k_mask_b1wh *
+                                                              (logit_target_b1wh.detach() -
+                                                               unet_output.logit).pow(2)) / batch_size
+        elif prob_corr_factor == 0:
+            unit_ranking_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+            p_target_b1wh = 0.5 * torch.ones_like(unet_output.logit)
+            logit_warming_loss = torch.zeros(1, dtype=imgs_bcwh.dtype, device=imgs_bcwh.device)
+        else:
+            raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+
         inference = Inference(logit_grid=unet_output.logit,
-                              logit_grid_unet=unet_output.logit,
                               prob_grid_target=p_target_b1wh,
                               prob_unit_ranking=unit_ranking_b1wh,
                               background_bcwh=out_background_bcwh,
@@ -493,7 +450,10 @@ class InferenceAndGeneration(torch.nn.Module):
         kl_av = kl_zbg + kl_zinstance + kl_zwhere + kl_logit
 
         with torch.no_grad():
-            ncell_av = torch.sum(c_detached_kb) / batch_size
+            # TODO: Maybe I should normalize the area under the probability curve.
+            #   not the number of selected cells?
+            # ncell_av = torch.sum(c_detached_kb) / batch_size
+            ncell_av = torch.sum(unet_prob_b1wh) / batch_size
             fgfraction_av = torch.mean(mixing_fg_b1wh)
 
             mse_in_range = (mse_av > self.geco_target_mse_min) & (mse_av < self.geco_target_mse_max)
@@ -523,17 +483,24 @@ class InferenceAndGeneration(torch.nn.Module):
                     self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
 
         # TODO: should lambda_ncell act on all probabilities or only the selected ones?
-        #  what about acting on the underlying logits
+        #  what about acting on the underlying logits (logit will keep become more and more negative.
+        #  Probably I should act on probabilities)
         #  should lambda_fgfraction act on small_mask or large_mask?
         #  should lambda_ncell act on logit or probabilities?
         loss_vae = cost_overlap + cost_bb_regression + kl_av + \
                    lambda_mse.detach() * mse_av + \
-                   lambda_ncell.detach() * torch.mean(unet_output.logit) + \
+                   lambda_ncell.detach() * torch.mean(unet_prob_b1wh) + \
                    lambda_fgfraction.detach() * torch.mean(out_mask_kb1wh)
 
         loss = loss_vae + loss_geco - loss_geco.detach()
 
         similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
+
+        # Measure the average occupacy of the bounding boxes
+        area_mask_kb = torch.sum(mixing_kb1wh, dim=(-1, -2, -3))
+        area_bb_kb = bounding_box_kb.bw * bounding_box_kb.bh
+        ratio_kb = c_detached_kb * area_mask_kb / area_bb_kb
+        area_mask_over_area_bb_av = torch.sum(ratio_kb) / c_detached_kb.sum().clamp(min=1.0)
 
         # add everything you want as long as there is one loss
         metric = MetricMiniBatch(loss=loss,
@@ -548,6 +515,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  cost_bb_regression_av=cost_bb_regression.detach().item(),
                                  ncell_av=ncell_av.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
+                                 area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
                                  lambda_mse=lambda_mse.detach().item(),
                                  lambda_ncell=lambda_ncell.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),

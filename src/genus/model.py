@@ -902,6 +902,11 @@ def instantiate_scheduler(optimizer: torch.optim.Optimizer, config_scheduler: di
                                                     step_size=config_scheduler["step_size"],
                                                     gamma=config_scheduler["gamma"],
                                                     last_epoch=-1)
+    elif config_scheduler["type"] == "MultiStepLR":
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
+                                                         milestones=config_scheduler["milestones"],
+                                                         gamma=config_scheduler["gamma"],
+                                                         last_epoch=-1)
     else:
         raise Exception("scheduler type is not recognized")
     return scheduler

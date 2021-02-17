@@ -1,4 +1,5 @@
 import torch
+from .util import invert_convert_to_box_list, convert_to_box_list
 from .namedtuple import BB, NmsOutput
 
 
@@ -72,7 +73,8 @@ class NonMaxSuppression(object):
         return intersection_area / min_area
 
     @staticmethod
-    def compute_mask_and_index(score_nb: torch.Tensor,
+    @torch.no_grad()
+    def compute_mask_and_index(score_b1wh: torch.Tensor,
                                bounding_box_nb: BB,
                                iom_threshold: float,
                                k_objects_max: int,
@@ -80,7 +82,7 @@ class NonMaxSuppression(object):
         """ Filter the proposals according to their score and their Intersection over Minimum.
 
             Args:
-                score_nb: score used to sort the proposals
+                score_b1wh: score used to sort the proposals
                 bounding_box_nb: bounding boxes for the proposals
                 iom_threshold: threshold of Intersection over Minimum. If IoM is larger than this value the boxes
                     will be suppressed during NMS. It is imporatant only if :attr:`topk_only` is False.
@@ -93,6 +95,7 @@ class NonMaxSuppression(object):
                 The container of type :class:`NmsOutput` with the value of the selected score and their
                 indices of shape :math:`(K,B)`
         """
+        score_nb = convert_to_box_list(score_b1wh).squeeze(-1)
         assert score_nb.shape == bounding_box_nb.bx.shape
         n_boxes, batch_size = score_nb.shape
 
@@ -114,7 +117,13 @@ class NonMaxSuppression(object):
         assert chosen_nms_mask_nb.shape == score_nb.shape
         masked_score_nb = chosen_nms_mask_nb * score_nb
         k = min(k_objects_max, n_boxes)
-        masked_score_kb, indices_kb = torch.topk(masked_score_nb, k=k, dim=-2, largest=True, sorted=True)
+        indices_kb = torch.topk(masked_score_nb, k=k, dim=-2, largest=True, sorted=True)[1]
 
-        return NmsOutput(score_kb=masked_score_kb, indices_kb=indices_kb)
+        k_mask_nb = torch.zeros_like(masked_score_nb).scatter(dim=-2,
+                                                              index=indices_kb,
+                                                              src=torch.ones_like(masked_score_nb))
+        k_mask_b1wh = invert_convert_to_box_list(k_mask_nb.unsqueeze(-1),
+                                                 original_width=score_b1wh.shape[-2],
+                                                 original_height=score_b1wh.shape[-1])
 
+        return NmsOutput(k_mask_b1wh=k_mask_b1wh, indices_kb=indices_kb)

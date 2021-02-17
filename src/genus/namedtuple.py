@@ -163,7 +163,7 @@ class BB(NamedTuple):
 
 
 class NmsOutput(NamedTuple):
-    score_kb: torch.Tensor  # shape k, batch_size
+    k_mask_b1wh: torch.Tensor  # mask with exactly k ones
     indices_kb: torch.Tensor
 
 
@@ -191,7 +191,6 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
-    logit_grid_unet: torch.Tensor  # for debug
     prob_grid_target: torch.Tensor  # for debug
     prob_unit_ranking: torch.Tensor  # for debug
     background_bcwh: torch.Tensor
@@ -233,6 +232,7 @@ class MetricMiniBatch(NamedTuple):
     cost_bb_regression_av: float
     ncell_av: float
     fgfraction_av: float
+    area_mask_over_area_bb_av: float
     # geco
     lambda_mse: float
     lambda_ncell: float
