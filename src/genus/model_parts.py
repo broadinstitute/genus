@@ -191,11 +191,13 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_loglambda_ncell_min = numpy.log(config["loss"]["geco_lambda_ncell"][0])
         self.geco_loglambda_ncell_max = numpy.log(config["loss"]["geco_lambda_ncell"][1])
 
-        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(0.0, dtype=torch.float),
+        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(0,  # self.geco_target_fgfraction_min,
+                                                                              dtype=torch.float),
                                                             requires_grad=True)
-        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(0.0, dtype=torch.float),
+        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(0,  # self.geco_loglambda_ncell_max,
+                                                                         dtype=torch.float),
                                                        requires_grad=True)
-        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_max,
+        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_mse_max,
                                                                        dtype=torch.float), requires_grad=True)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -405,10 +407,10 @@ class InferenceAndGeneration(torch.nn.Module):
             # Outside torch.no_grad():
             # Note that this regularization is acting only on the k_local maxima and it is pushing the probability up.
             # The pushing down will be achieved by geco
-            # TODO: Should this act on the probability or the logit?
-            logit_warming_loss = prob_corr_factor * torch.sum(nms_pretraining.k_mask_b1wh *
-                                                              (logit_target_b1wh.detach() -
-                                                               unet_output.logit).pow(2)) / batch_size
+            # TODO: Should this act on the probability or the logit? Probably logit is a bit more direct way.
+            logit_warming_loss = prob_corr_factor * torch.mean(nms_pretraining.k_mask_b1wh *
+                                                               (logit_target_b1wh.detach() -
+                                                                unet_output.logit).pow(2))
         elif prob_corr_factor == 0:
             unit_ranking_b1wh = 0.5 * torch.ones_like(unet_output.logit)
             p_target_b1wh = 0.5 * torch.ones_like(unet_output.logit)
