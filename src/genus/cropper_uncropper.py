@@ -16,7 +16,7 @@ class Cropper(object):
 
         # Prepare the shapes
         large_dependent_dim = list(big_stuff.shape[-3:])  # ch, width, height
-        independent_dim = list(big_stuff.shape[:-3])  # this extract n_boxes, batch
+        independent_dim = list(big_stuff.shape[:-3])  # this extract mc_samples, batch, k_boxes
         ch, width_raw, height_raw = big_stuff.shape[-3:]
         small_dependent_dim = [ch, width_small, height_small]
         assert independent_dim == list(bounding_box.bx.shape)
@@ -80,7 +80,7 @@ class Uncropper(object):
 
         # Check and prepare the sizes
         ch = small_stuff.shape[-3]  # this is the channels
-        independent_dim = list(small_stuff.shape[:-3])  # this includes: boxes, batch
+        independent_dim = list(small_stuff.shape[:-3])  # this includes: mc_samples, batch, k_boxes
         small_dependent_dim = list(small_stuff.shape[-3:])  # this includes: ch, small_width, small_height
         large_dependent_dim = [ch, width_big, height_big]  # these are the dependent dimensions
         assert independent_dim == list(bounding_box.bx.shape)

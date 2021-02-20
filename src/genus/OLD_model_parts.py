@@ -243,8 +243,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # 2. Make the DPP parameters adjust to the seen configurations
         c_grid_logp_prior_b = compute_logp_dpp(c_grid=c_grid_after_nms_b1wh.detach(),
                                                similarity_matrix=similarity_kernel)
-        c_grid_logp_posterior_b = compute_logp_bernoulli(c_grid=c_grid_after_nms_b1wh.detach(),
-                                                         logit_grid=logit_grid_corrected)
+        c_grid_logp_posterior_b = compute_logp_bernoulli(c=c_grid_after_nms_b1wh.detach(),
+                                                         logit=logit_grid_corrected)
         kl_logit_b = c_grid_logp_posterior_b - c_grid_logp_prior_b
 
         # Gather all relevant quantities from the selected boxes

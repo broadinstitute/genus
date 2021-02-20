@@ -37,6 +37,7 @@ class Encoder1by1(nn.Module):
 
 
 class Decoder1by1Linear(nn.Module):
+    """ Decode z with 1x1 convolutions. z can have any number of leading dimensions """
     def __init__(self, dim_z: int, ch_out: int, groups: int = 1):
         super().__init__()
         # if groups=1 all inputs convolved to produce all outputs
@@ -49,8 +50,9 @@ class Decoder1by1Linear(nn.Module):
                                  bias=True,
                                  groups=groups)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.predict(x)
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        x = self.predict(z.flatten(end_dim=-4))
+        return x.view(list(z.shape[:-3]) + list(x.shape[-3:]))
 
 
 class EncoderBackground(nn.Module):
@@ -92,11 +94,10 @@ class EncoderBackground(nn.Module):
 
 
 class DecoderBackground(nn.Module):
-    """ Encode x -> z_mu, z_std
-        INPUT  x of shape: ..., ch_raw_image, width, height
-        OUTPUT z_mu, z_std of shape: ..., latent_dim
-        where ... are all the independent dimensions, i.e. box, batch_size, enumeration_dim etc.
+    """
+    Decode z to background
 
+    Note:
         Observation ConvTranspose2D with:
         1. k=4, s=2, p=1 -> double the spatial dimension
     """
@@ -116,10 +117,23 @@ class DecoderBackground(nn.Module):
         )
 
     def forward(self, z: torch.Tensor, high_resolution: tuple) -> torch.Tensor:
-        # From (B, dim_z) to (B, ch_out, 28, 28) to (B, ch_out, w_raw, h_raw)
-        x0 = self.upsample(z).view(-1, CH_BG_MAP, LOW_RESOLUTION_BG[0], LOW_RESOLUTION_BG[0])
-        x1 = self.decoder(x0)  # B, ch_out, 80, 80
-        return F.interpolate(x1, size=high_resolution, mode='bilinear', align_corners=True)
+        """
+        Args:
+            z: tensor of shape (*, latent_dim)
+            high_resolution: tuple with the width and height of the background
+
+        Returns:
+            background of shape (*, self.ch_out, high_resolution[0], high_resolution[1])
+
+        Note:
+            Works for any number of leading dimensions
+        """
+        independent_dim = list(z.shape[:-1])
+        x0 = self.upsample(z.flatten(end_dim=-2)).view(-1, CH_BG_MAP, LOW_RESOLUTION_BG[0], LOW_RESOLUTION_BG[1])
+        x1 = self.decoder(x0)
+        x2 = F.interpolate(x1, size=high_resolution, mode='bilinear', align_corners=True)
+        dependent_dim = list(x2.shape[-3:])
+        return x2.view(independent_dim + dependent_dim)
 
 
 class DecoderConv(nn.Module):

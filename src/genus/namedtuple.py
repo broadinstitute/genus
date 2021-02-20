@@ -163,8 +163,8 @@ class BB(NamedTuple):
 
 
 class NmsOutput(NamedTuple):
-    k_mask_b1wh: torch.Tensor  # mask with exactly k ones
-    indices_kb: torch.Tensor
+    k_mask_n: torch.Tensor  # mask with exactly k ones
+    indices_k: torch.Tensor
 
 
 class SparseSimilarity(NamedTuple):

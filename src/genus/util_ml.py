@@ -3,11 +3,10 @@ import numpy
 import torch.nn.functional as F
 from torch.distributions.utils import broadcast_all
 from typing import Union, Optional, Tuple
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from torch.distributions.distribution import Distribution
 from torch.distributions import constraints
-from collections import deque
-from .util import invert_convert_to_box_list, convert_to_box_list
+from .util import invert_convert_to_box_list, convert_to_box_list, are_broadcastable
 from .util_vis import plot_img_and_seg
 from .namedtuple import DIST
 
@@ -79,17 +78,13 @@ class MetricsAccumulator(object):
         self._dict_accumulate[key] = value
 
 
-def are_broadcastable(a: torch.Tensor, b: torch.Tensor) -> bool:
-    """ Returns True if the two tensor are broadcastable to each other, False otherwise. """
-    return all((m == n) or (m == 1) or (n == 1) for m, n in zip(a.shape[::-1], b.shape[::-1]))
-
-
 def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
                                   posterior_std: torch.Tensor,
                                   prior_mu: torch.Tensor,
                                   prior_std: torch.Tensor,
                                   noisy_sampling: bool,
-                                  sample_from_prior: bool) -> DIST:
+                                  sample_from_prior: bool,
+                                  mc_samples: int = 1) -> DIST:
     """
     Analytically computes KL divergence between two gaussian distributions
     and draw a sample from either the prior or posterior depending of the values of :attr:`sample_from_prior`.
@@ -103,6 +98,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
             if False the mode of the distribution (i.e. the mean) is returned.
         sample_from_prior: if True the sample is drawn from the prior distribution, if False the posterior distribution
             is used.
+        mc_samples: number of monte_carlo samples
 
     Returns:
         :class:`DIST` with the KL divergence and the sample from either the prior or posterior
@@ -118,17 +114,20 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
         The KL divergence is :math:`KL = \\int dz q(z) \\log \\left(p(z)/q(z)\\right)` where
         :math:`q(z)` is the posterior and :math:`p(z)` is the prior.
     """
-    # Compute the KL divergence
     post_mu, post_std, pr_mu, pr_std = broadcast_all(posterior_mu, posterior_std, prior_mu, prior_std)
-    tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
-    kl = tmp / (2 * pr_std * pr_std) - post_std.log() + pr_std.log()
+    random = torch.rand([mc_samples] + list(post_mu.shape), device=post_mu.device, dtype=post_mu.dtype)
 
+    # Compute the KL divergence
+    tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
+    kl = (tmp / (2 * pr_std * pr_std) - post_std.log() + pr_std.log()).expand_as(random)
+
+    # Sample
     if sample_from_prior:
         # working with the prior
-        sample = pr_mu + pr_std * torch.randn_like(pr_mu) if noisy_sampling else pr_mu
+        sample = pr_mu + pr_std * random if noisy_sampling else pr_mu.expand_as(random)
     else:
         # working with the posterior
-        sample = post_mu + post_std * torch.randn_like(post_mu) if noisy_sampling else post_mu
+        sample = post_mu + post_std * random if noisy_sampling else post_mu.expand_as(random)
 
     return DIST(sample=sample, kl=kl)
 
@@ -136,7 +135,8 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
 def sample_c_grid(prob_grid: torch.Tensor,
                   similarity_matrix: torch.Tensor,
                   noisy_sampling: bool,
-                  sample_from_prior: bool) -> torch.Tensor:
+                  sample_from_prior: bool,
+                  mc_samples: int = 1) -> torch.Tensor:
     """
     Sample c_grid either from a Determinental Point Process (DPP) prior specified by a similarity matrix or
     from a posterior which is a collection of independent Bernoulli specified by the logit_grid.
@@ -146,12 +146,13 @@ def sample_c_grid(prob_grid: torch.Tensor,
         similarity_matrix: torch.Tensor of size :math:`(W x H, W x H)` with the similarity between all grid points
         noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
         sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
+        mc_samples: number of monte_carlos samples to draw from the posterior or prior
 
     Returns:
-        Binarized torch.Tensor with c_grid which has the same size as :attr:`logit_grid`.
+        Binarized torch.Tensor with c_grid with size :math:`(mc_samples, prob_grid.shape)`.
 
     Note:
-        The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`logit_grid` or :attr:`similarity_matrix`)
+        The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`prob_grid` or :attr:`similarity_matrix`)
     """
     assert len(prob_grid.shape) == 4
     assert prob_grid.shape[-3] == 1
@@ -161,82 +162,77 @@ def sample_c_grid(prob_grid: torch.Tensor,
     with torch.no_grad():
         if sample_from_prior:
             # sample from DPP specified by the similarity kernel
-            batch_size = torch.Size([prob_grid.shape[0]])
+            independet_dim = torch.Size([mc_samples, prob_grid.shape[0]])
             s = similarity_matrix.requires_grad_(False)
-            c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
-            c_reshaped = c_all.transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, batch_size, 1
+            c_all = FiniteDPP(L=s).sample(sample_shape=independet_dim)  # shape: mc_samples, batch_size, n_points
+            c_reshaped = c_all.flatten(start_dim=0,
+                                       end_dim=-2).transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, (n_mc_samples x batch_size), 1
+            print("c_reshaped.shape", c_reshaped.shape)
             c_grid = invert_convert_to_box_list(c_reshaped,
                                                 original_width=prob_grid.shape[-2],
                                                 original_height=prob_grid.shape[-1])
+            print("c_grid.shape", c_grid.shape)
+            c_grid = c_grid.view([mc_samples] + list(prob_grid.shape))
+            print("c_grid.shape", c_grid.shape)
+            assert 1==2
         else:
             # sample from posterior which is a collection of independent Bernoulli variables
-            c_grid = (torch.rand_like(prob_grid) < prob_grid) if noisy_sampling else (0.5 < prob_grid)
+            random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
+            print(random.shape, random.shape)
+            c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
 
-        return c_grid.float()  # same shape as prob_grid.
+        return c_grid.float()
+
+
+
+
+def compute_entropy_bernoulli(logit: torch.Tensor):
+    """ Compute the negative entropy of the bernoulli distribution, i.e. H= - [p * log(p) + (1-p) * log(1-p)] """
+    p = torch.sigmoid(logit)
+    one_m_p = torch.sigmoid(-logit)
+    log_p = F.logsigmoid(logit)
+    log_one_m_p = F.logsigmoid(-logit)
+    entropy = - (p * log_p + one_m_p * log_one_m_p)
+    return entropy
+
+
+def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
+    """
+     Compute the log_probability of the :attr:`c` configuration under the Bernoulli distribution specified by
+     :attr:`logit`.
+
+     Args:
+         c: Binarized configuration`
+         logit: Logit of the Bernoulli distributions`
+
+     Returns:
+         :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of the same shape as :attr:`c`.
+         This value is differentiable w.r.t. the :attr:`logit` but not differentiable w.r.t. :attr:`c`.
+     """
+
+    log_p = F.logsigmoid(logit)
+    log_one_m_p = F.logsigmoid(-logit)
+    log_prob_bernoulli = (c.detach() * log_p + (c - 1).detach() * log_one_m_p)
+    return log_prob_bernoulli
 
 
 def compute_logp_dpp(c_grid: torch.Tensor,
-                     similarity_matrix: torch.Tensor):
+                         similarity_matrix: torch.Tensor):
     """
     Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
     :attr:`similarity_matrix`.
 
     Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
+        c_grid: Binarized configuration of shape :math:`(*, 1, W, H)`
         similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
 
     Returns:
-        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
+        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(*)`.
+        This value is differentiable w.r.t. the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
     """
-    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
-    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
-    return log_prob_prior
-
-
-def compute_logp_bernoulli(c_grid: torch.Tensor,
-                           logit_grid: torch.Tensor):
-    """
-    Compute the log_probability of the :attr:`c_grid` configuration under the collection
-    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
-
-    Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
-
-    Returns:
-        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
-    """
-    log_p_grid = F.logsigmoid(logit_grid)
-    log_1_m_p_grid = F.logsigmoid(-logit_grid)
-    log_prob_bernoulli = (c_grid * log_p_grid +
-                          (c_grid - 1) * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
-    return log_prob_bernoulli
-
-
-###def compute_kl_bernoulli(logit_prior: torch.Tensor,
-###                         logit_posterior: torch.Tensor):
-###    """
-###    Compute the KL divergence between two Bernoulli distributions.
-###
-###    Args:
-###        logit_prior: Logit of the prior Bernoulli distributions
-###        logit_posterior: Logit of the posterior Bernoulli distributions
-###
-###    Returns:
-###        :math:`KL= p * log(p/q) + (1-p) * log((1-p)/(1-q)) where p is the posterior and q is the prior probability
-###        of the Bernoulli distributions. The shape is equal to the broadcasting of :attr:`logit_prior' and
-###        :attr:`logit_posterior`.
-###    """
-###    logit_p, logit_q = broadcast_all(logit_posterior, logit_prior)
-###    log_p = F.logsigmoid(logit_p)
-###    log_q = F.logsigmoid(logit_q)
-###    log_1_m_p = F.logsigmoid(-logit_p)
-###    log_1_m_q = F.logsigmoid(-logit_q)
-###    one_m_p = torch.sigmoid(-logit_p)
-###    p = torch.sigmoid(logit_p)
-###    return p * (log_p - log_q) + one_m_p * (log_1_m_p - log_1_m_q)
+    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape *, n_points
+    log_prob_dpp = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad)  # shape: *
+    return log_prob_dpp
 
 
 class SimilarityKernel(torch.nn.Module):

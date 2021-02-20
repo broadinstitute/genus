@@ -12,6 +12,11 @@ import torch.nn.functional as F
     reshape of tensor and so on. """
 
 
+def are_broadcastable(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """ Returns True if the two tensor are broadcastable to each other, False otherwise. """
+    return all((m == n) or (m == 1) or (n == 1) for m, n in zip(a.shape[::-1], b.shape[::-1]))
+
+
 def roller_2d(a: torch.tensor, b: Optional[torch.tensor] = None, radius: int = 2, shape: str = "circle"):
     """
     Performs rolling of the last two dimensions of the tensor.
@@ -60,23 +65,19 @@ def roller_2d(a: torch.tensor, b: Optional[torch.tensor] = None, radius: int = 2
 
 
 def convert_to_box_list(x: torch.Tensor) -> torch.Tensor:
-    """ takes input of shape: (batch, ch, width, height)
-        and returns output of shape: (n_list, batch, ch)
+    """ takes input of shape: (*, ch, width, height)
+        and returns output of shape: (*, n_list, ch)
         where n_list = width x height
     """
-    assert len(x.shape) == 4
-    batch_size, ch, width, height = x.shape
-    return x.permute(2, 3, 0, 1).view(width*height, batch_size, ch)
+    return x.flatten(start_dim=-2).transpose(dim0=-1, dim1=-2)
 
 
 def invert_convert_to_box_list(x: torch.Tensor, original_width: int, original_height: int) -> torch.Tensor:
-    """ takes input of shape: (width x height, batch, ch)
-        and return shape: (batch, ch, width, height)
+    """ takes input of shape: (*, width x height, ch)
+        and return shape: (*, ch, width, height)
     """
-    assert len(x.shape) == 3
-    n_list, batch_size, ch = x.shape
-    assert n_list == original_width * original_height
-    return x.permute(1, 2, 0).view(batch_size, ch, original_width, original_height)
+    assert x.shape[-2] == original_width * original_height
+    return x.transpose(dim0=-1, dim1=-2).view(list(x.shape[:-2]) + [x.shape[-1], original_width, original_height])
 
 
 def linear_interpolation(t: Union[numpy.array, float], values: tuple, times: tuple) -> Union[numpy.array, float]:
@@ -345,21 +346,19 @@ def append_to_dict(source: Union[tuple, dict],
 
 
 @torch.no_grad()
-def compute_ranking(x_nb: torch.Tensor) -> torch.Tensor:
-    """ Given a vector of shape: n, batch_size
-        For each batch dimension it ranks the n elements. """
-    assert len(x_nb.shape) == 2
-    n, batch_size = x_nb.shape
-    _, order = torch.sort(x_nb, dim=-2, descending=False)
+def compute_ranking(x: torch.Tensor) -> torch.Tensor:
+    """ Given a vector of shape: (*, n) compute the ranking along the last dimension.
+
+        Note:
+            It works for arbitrary leading dimension. Each leading dimension will be treated independently.
+    """
+    indices = torch.sort(x, dim=-1, descending=False)[1]
 
     # this is the fast way which uses indexing on the left
-    rank_nb = torch.zeros_like(order)
-    batch_index = torch.arange(batch_size, dtype=order.dtype, device=order.device).view(1, -1).expand(n, batch_size)
-    rank_nb[order, batch_index] = torch.arange(n,
-                                               dtype=order.dtype,
-                                               device=order.device).view(-1, 1).expand(n, batch_size)
-
-    return rank_nb
+    src = torch.arange(start=0, end=x.shape[-1], step=1, dtype=indices.dtype, device=indices.device).expand_as(indices)
+    rank = torch.zeros_like(indices)
+    rank.scatter_(dim=-1, index=indices, src=src)
+    return rank
 
 
 @torch.no_grad()
@@ -411,43 +410,50 @@ def compute_tensor_ranking(x_nb: torch.Tensor) -> torch.Tensor:
     return rank_nb
 
 
-def compute_average_in_box(delta_imgs_bcwh: torch.Tensor, bounding_box_nb: BB) -> torch.Tensor:
+def compute_average_in_box(delta_imgs: torch.Tensor, bounding_box: BB) -> torch.Tensor:
     """
     Compute the average of the input tensor in each bounding box.
 
     Args:
-        delta_imgs_bcwh: The quantity to average of shape :math:`(B, C, W, H)`
-        bounding_box_nb: The bounding box of :class:`BB` of shape :math:`(N, B)`
+        delta_imgs: The quantity to average of shape :math:`(*, C, W, H)`
+        bounding_box: The bounding box of :class:`BB` of shape :math:`(*, K)`
 
     Returns:
-        A tensor of shape :math:`(N, B)` with the average value of :attr:`delta_imgs_bcwh` in each bounding box.
-    """
-    # cumulative sum in width and height, standard sum in channels
-    cum_sum_bwh = torch.cumsum(torch.cumsum(delta_imgs_bcwh.sum(dim=-3), dim=-1), dim=-2)
+        A tensor of shape :math:`(*, K)` with the average value of :attr:`delta_imgs` in each bounding box.
 
-    # compute the x1,y1,x3,y3
-    x1_nb = (bounding_box_nb.bx - 0.5 * bounding_box_nb.bw).long().clamp(min=0, max=delta_imgs_bcwh.shape[-2])
-    x3_nb = (bounding_box_nb.bx + 0.5 * bounding_box_nb.bw).long().clamp(min=0, max=delta_imgs_bcwh.shape[-2])
-    y1_nb = (bounding_box_nb.by - 0.5 * bounding_box_nb.bh).long().clamp(min=0, max=delta_imgs_bcwh.shape[-1])
-    y3_nb = (bounding_box_nb.by + 0.5 * bounding_box_nb.bh).long().clamp(min=0, max=delta_imgs_bcwh.shape[-1])
+    Note:
+        This works for any number of leading dimensions. Each leading dimension will be analyzed independently.
+    """
+    assert delta_imgs.shape[:-3] == bounding_box.bx.shape[:-1]
+
+    # cumulative sum in width and height, standard sum in channels of shape (-1, w, h)
+    cum_sum_wh = torch.cumsum(torch.cumsum(delta_imgs.sum(dim=-3), dim=-1), dim=-2).flatten(end_dim=-3)
+
+    # compute the x1,y1,x3,y3 of shape (-1, K)
+    x1 = (bounding_box.bx - 0.5 * bounding_box.bw).long().clamp(min=0, max=delta_imgs.shape[-2]).flatten(end_dim=-2)
+    x3 = (bounding_box.bx + 0.5 * bounding_box.bw).long().clamp(min=0, max=delta_imgs.shape[-2]).flatten(end_dim=-2)
+    y1 = (bounding_box.by - 0.5 * bounding_box.bh).long().clamp(min=0, max=delta_imgs.shape[-1]).flatten(end_dim=-2)
+    y3 = (bounding_box.by + 0.5 * bounding_box.bh).long().clamp(min=0, max=delta_imgs.shape[-1]).flatten(end_dim=-2)
 
     # compute the area
     # There are 2 ways of computing the area:
     # AREA_1 = (x3-x1)*(y3-y1)
     # AREA_2 = bounding_box_nb.bw * bounding_box_nb.bh
     # The difference is that for out-of-bound boxes AREA_1 < AREA_2
-    area_nb = (x3_nb - x1_nb) * (y3_nb - y1_nb)
+    area = (x3 - x1) * (y3 - y1)
 
-    # compute the total intensity in each box
-    index_nb = torch.arange(start=0, end=x1_nb.shape[-1], step=1, device=x1_nb.device,
-                            dtype=x1_nb.dtype).view(1, -1).expand(x1_nb.shape[-2], -1)
+    # compute the average intensity
+    index_independent_dim = torch.arange(start=0, end=x1.shape[0], step=1,
+                                         device=x1.device, dtype=x1.dtype).view(-1, 1).expand_as(x1)
 
-    x1_ge_1 = (x1_nb >= 1).float()
-    x3_ge_1 = (x3_nb >= 1).float()
-    y1_ge_1 = (y1_nb >= 1).float()
-    y3_ge_1 = (y3_nb >= 1).float()
-    tot_intensity_nb = cum_sum_bwh[index_nb, x3_nb-1, y3_nb-1] * x3_ge_1 * y3_ge_1 + \
-                       cum_sum_bwh[index_nb, x1_nb-1, y1_nb-1] * x1_ge_1 * y1_ge_1 - \
-                       cum_sum_bwh[index_nb, x1_nb-1, y3_nb-1] * x1_ge_1 * y3_ge_1 - \
-                       cum_sum_bwh[index_nb, x3_nb-1, y1_nb-1] * x3_ge_1 * y1_ge_1
-    return tot_intensity_nb / area_nb
+    x1_ge_1 = (x1 >= 1).float()
+    x3_ge_1 = (x3 >= 1).float()
+    y1_ge_1 = (y1 >= 1).float()
+    y3_ge_1 = (y3 >= 1).float()
+    tot_intensity = cum_sum_wh[index_independent_dim, x3-1, y3-1] * x3_ge_1 * y3_ge_1 + \
+                    cum_sum_wh[index_independent_dim, x1-1, y1-1] * x1_ge_1 * y1_ge_1 - \
+                    cum_sum_wh[index_independent_dim, x1-1, y3-1] * x1_ge_1 * y3_ge_1 - \
+                    cum_sum_wh[index_independent_dim, x3-1, y1-1] * x3_ge_1 * y1_ge_1
+
+    av_intensity = (tot_intensity / area).view_as(bounding_box.bx)
+    return av_intensity
