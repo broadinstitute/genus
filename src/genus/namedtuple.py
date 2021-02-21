@@ -194,15 +194,15 @@ class Inference(NamedTuple):
     prob_grid_target: torch.Tensor  # for debug
     prob_unit_ranking: torch.Tensor  # for debug
     background_bcwh: torch.Tensor
-    foreground_kbcwh: torch.Tensor
+    foreground_bkcwh: torch.Tensor
     sum_c_times_mask_b1wh: torch.Tensor
-    mixing_kb1wh: torch.Tensor
+    mixing_bk1wh: torch.Tensor
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor
     sample_c_grid_after_nms: torch.Tensor
-    sample_c_kb: torch.Tensor
-    sample_bb_kb: BB
-    sample_bb_ideal_kb: BB
+    sample_c_bk: torch.Tensor
+    sample_bb_bk: BB
+    sample_bb_ideal_bk: BB
 
 
 class MetricMiniBatch(NamedTuple):
