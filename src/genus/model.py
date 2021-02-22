@@ -132,8 +132,8 @@ class CompositionalVae(torch.nn.Module):
         This method is called internally by the method :meth:`process_batch_imgs` which is exposed to the user.
 
         Args:
-            mixing_k: Tensor of shape :math:`(N_{max_instances}, B, 1, W, H)` containing the mixing probabilities.
-            batch_of_index: Tensor of shape :math:`(B, 1, W, H)` with a unique integer identifying each pixel IDs.
+            mixing_k: Tensor of shape :math:`(*, K, 1, W, H)` containing the mixing probabilities.
+            batch_of_index: Tensor of shape :math:`(*, 1, W, H)` with a unique integer identifying each pixel IDs.
                 Valid pixel IDs are >= 0. Pixel with ID value less than 0 will be ignored.
             max_index: The maximum pixel ID. This is necessary b/c a sparse matrix can only be constructed if the
                 largest possible row and col ID is known.
@@ -145,6 +145,9 @@ class CompositionalVae(torch.nn.Module):
             is O(max_index) not O(max_index^2) as for dense matrices.
 
         Note:
+            It works for any number of leading dimensions. Any leading dimensions will be treated independently.
+
+        Note:
             This function is a thin wrapper around a dot product. For each displacement
             (let's say +1 in the x direction) all pixel pairs are computed simultaneously.
             Unfortunately there is no way to compute all displacement without using a for-loop.
@@ -154,7 +157,7 @@ class CompositionalVae(torch.nn.Module):
         """
         with torch.no_grad():
             # start_time = time.time()
-            n_boxes, batch_shape, ch_in, w, h = mixing_k.shape
+            batch_shape, n_boxes, ch_in, w, h = mixing_k.shape
             assert ch_in == 1
             assert (batch_shape, 1, w, h) == batch_of_index.shape
 
@@ -171,7 +174,7 @@ class CompositionalVae(torch.nn.Module):
                                                                      b=pad_index,
                                                                      radius=radius_nn):
                 v = (pad_mixing_k *
-                     pad_mixing_k_shifted).sum(dim=-5)[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
+                     pad_mixing_k_shifted).sum(dim=-4)[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
                 col = pad_index_shifted[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
 
                 # check that pixel IDs are valid and connectivity larger than threshold
@@ -278,6 +281,9 @@ class CompositionalVae(torch.nn.Module):
 
         # start_time = time.time()
 
+        raise NotImplementedError
+
+
         with torch.no_grad():
 
             inference: Inference
@@ -291,18 +297,18 @@ class CompositionalVae(torch.nn.Module):
                                                               noisy_sampling=noisy_sampling)
 
             # Now compute fg_prob, integer_segmentation_mask, similarity
-            most_likely_mixing, index = torch.max(inference.mixing_kb1wh, dim=-5, keepdim=True)  # 1, batch_size, 1, w, h
-            integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-5).to(dtype=torch.int32)  # bg=0 fg=1,2,.
-            fg_prob = torch.sum(inference.mixing_kb1wh, dim=-5)  # sum over instances
+            most_likely_mixing, index = torch.max(inference.mixing_k1wh, dim=-4, keepdim=True)  # *, 1, 1, w, h
+            integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
+            fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-            bounding_boxes = draw_bounding_boxes(c_kb=inference.sample_c_kb,
-                                                 bounding_box_kb=inference.sample_bb_kb,
+            bounding_boxes = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                                 bounding_box_k=inference.sample_bb_k,
                                                  width=integer_mask.shape[-2],
                                                  height=integer_mask.shape[-1],
                                                  color='red') if draw_boxes else None
 
-            bounding_boxes_ideal = draw_bounding_boxes(c_kb=inference.sample_c_kb,
-                                                       bounding_box_kb=inference.sample_bb_ideal_kb,
+            bounding_boxes_ideal = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                                       bounding_box_k=inference.sample_bb_ideal_k,
                                                        width=integer_mask.shape[-2],
                                                        height=integer_mask.shape[-1],
                                                        color='blue') if draw_boxes_ideal else None

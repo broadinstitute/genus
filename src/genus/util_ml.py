@@ -165,20 +165,16 @@ def sample_c_grid(prob_grid: torch.Tensor,
             independet_dim = torch.Size([mc_samples, prob_grid.shape[0]])
             s = similarity_matrix.requires_grad_(False)
             c_all = FiniteDPP(L=s).sample(sample_shape=independet_dim)  # shape: mc_samples, batch_size, n_points
-            c_reshaped = c_all.flatten(start_dim=0,
-                                       end_dim=-2).transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, (n_mc_samples x batch_size), 1
-            print("c_reshaped.shape", c_reshaped.shape)
-            c_grid = invert_convert_to_box_list(c_reshaped,
+            print("c_all.shape", c_all.shape)
+            c_grid = invert_convert_to_box_list(c_all.unsqueeze(-1),
                                                 original_width=prob_grid.shape[-2],
                                                 original_height=prob_grid.shape[-1])
             print("c_grid.shape", c_grid.shape)
-            c_grid = c_grid.view([mc_samples] + list(prob_grid.shape))
-            print("c_grid.shape", c_grid.shape)
+            print("p_grid.shape", prob_grid.shape)
             assert 1==2
         else:
             # sample from posterior which is a collection of independent Bernoulli variables
             random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
-            print(random.shape, random.shape)
             c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
 
         return c_grid.float()

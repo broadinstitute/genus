@@ -139,7 +139,7 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                         experiment: Optional[neptune.experiments.Experiment] = None,
                         neptune_name: Optional[str] = None):
     assert len(label.shape) == 2
-    assert len(image.shape) == 2 or len(image.shape)==3
+    assert len(image.shape) == 2 or len(image.shape) == 3
     
     assert len(label.shape) == 2
     if torch.is_tensor(label):
@@ -189,23 +189,24 @@ def draw_img(inference: Inference,
              draw_bg: bool,
              draw_boxes: bool,
              draw_ideal_boxes: bool):
+    """ Draw the image. It works for any number of leading dimensions """
 
-    rec_imgs_no_bb = (inference.mixing_kb1wh * inference.foreground_kbcwh).sum(dim=-5)  # sum over boxes
-    fg_mask = inference.mixing_kb1wh.sum(dim=-5)  # sum over boxes
-    background = (1 - fg_mask) * inference.background_bcwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
+    rec_imgs_no_bb = (inference.mixing_k1wh * inference.foreground_kcwh).sum(dim=-4)  # sum over boxes
+    fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
+    background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
 
-    bb = draw_bounding_boxes(bounding_box_kb=inference.sample_bb_kb,
+    bb = draw_bounding_boxes(bounding_box_k=inference.sample_bb_k,
                              width=rec_imgs_no_bb.shape[-2],
                              height=rec_imgs_no_bb.shape[-1],
-                             c_kb=inference.sample_c_kb,
+                             c_k=inference.sample_c_k,
                              color="red") if draw_boxes else torch.zeros_like(fg_mask)
 
     if draw_ideal_boxes:
         print("drawing_real_boxes")
-        bb_ideal = draw_bounding_boxes(bounding_box_kb=inference.sample_bb_ideal_kb,
+        bb_ideal = draw_bounding_boxes(bounding_box_k=inference.sample_bb_ideal_k,
                                        width=rec_imgs_no_bb.shape[-2],
                                        height=rec_imgs_no_bb.shape[-1],
-                                       c_kb=inference.sample_c_kb,
+                                       c_k=inference.sample_c_k,
                                        color="green")
     else:
         bb_ideal = torch.zeros_like(fg_mask)
@@ -215,41 +216,64 @@ def draw_img(inference: Inference,
     return mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * (bb + bb_ideal)
 
 
-def draw_bounding_boxes(bounding_box_kb: BB,
+def draw_bounding_boxes(bounding_box_k: BB,
                         width: int,
                         height: int,
-                        c_kb: torch.Tensor,
+                        c_k: torch.Tensor,
                         color: str = 'red') -> torch.Tensor:
+    """
+    Draw the bounbing boxes.
+
+    Args:
+        bounding_box_k: BB of shape (*,K)
+        width: width in pixel of the canvas
+        height: height in pixel of the canvas
+        c_k: is the box occupaid or not of shape (*,K)
+        color: color to use to draw the bounding box
+
+    Returns:
+        An image of size (*,3,:attr:`width`,:attr:`height`)
+
+    Note:
+        Works for any number of leading dimensions. Each leading dimension will be processed independently
+    """
 
     # prepare the storage
-    assert bounding_box_kb.bx.shape == c_kb.shape
-    assert len(bounding_box_kb.bx.shape) == 2
-    n_boxes, batch_size = bounding_box_kb.bx.shape
-    batch_bb_numpy = numpy.zeros((batch_size, width, height, 3))  # black canvas
+    assert bounding_box_k.bx.shape == c_k.shape
+    independet_dim = list(c_k.shape[:-1])
+    canvas_numpy = torch.zeros(independet_dim + [height, width, 3]).flatten(end_dim=-4).numpy()  # black canvas
 
     # compute the coordinates of the bounding boxes and the probability of each box
-    x1 = bounding_box_kb.bx - 0.5 * bounding_box_kb.bw
-    x3 = bounding_box_kb.bx + 0.5 * bounding_box_kb.bw
-    y1 = bounding_box_kb.by - 0.5 * bounding_box_kb.bh
-    y3 = bounding_box_kb.by + 0.5 * bounding_box_kb.bh
+    x1 = bounding_box_k.bx - 0.5 * bounding_box_k.bw
+    x3 = bounding_box_k.bx + 0.5 * bounding_box_k.bw
+    y1 = bounding_box_k.by - 0.5 * bounding_box_k.bh
+    y3 = bounding_box_k.by + 0.5 * bounding_box_k.bh
     x1y1x3y3 = torch.stack((x1, y1, x3, y3), dim=-1)
-    bxby = torch.stack((bounding_box_kb.bx, bounding_box_kb.by), dim=-1)
+    bxby = torch.stack((bounding_box_k.bx, bounding_box_k.by), dim=-1)
+
+    # Reshape
+    bxby = bxby.flatten(end_dim=-3)
+    x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)
+    c_k = c_k.flatten(end_dim=-2)
+    print("bxby.shape", bxby.shape)
+    print("x1y1x3y3.shape", x1y1x3y3.shape)
+    print("c_k.shape", c_k.shape)
+    print("canvas_numpy.shape", canvas_numpy.shape)
 
     # draw the bounding boxes
-    for batch in range(batch_size):
-
+    for n in range(c_k.shape[0]):
         # Draw on PIL
         img = PIL.Image.new(mode='RGB', size=(width, height), color=0)  # black canvas
         draw = PIL.ImageDraw.Draw(img)
-        for box in range(n_boxes):
-            if c_kb[box, batch] > 0.5:
-                draw.rectangle(x1y1x3y3[box, batch, :].cpu().numpy(), outline=color, fill=None)
-                draw.point(bxby[box, batch, :].cpu().numpy(), fill=color)
-        batch_bb_numpy[batch, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((width, height, 3))
+        for k in range(c_k.shape[1]):
+            if c_k[n, k] > 0.5:
+                draw.rectangle(x1y1x3y3[n, k, :].cpu().numpy(), outline=color, fill=None)
+                draw.point(bxby[n, k, :].cpu().numpy(), fill=color)
+        canvas_numpy[n, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((height, width, 3))
 
     # Transform np to torch, rescale from [0,255] to (0,1)
-    batch_bb_torch = torch.from_numpy(batch_bb_numpy).permute(0, 3, 2, 1).float() / 255  # permute(0,3,2,1) is CORRECT
-    return batch_bb_torch.to(bounding_box_kb.bx.device)
+    tmp = torch.from_numpy(canvas_numpy).permute(0, 3, 2, 1).float() / 255  # permute(0,3,2,1) is CORRECT
+    return tmp.view(independet_dim + [3, width, height]).to(bounding_box_k.bx.device)
 
 
 def plot_grid(img,
@@ -321,9 +345,12 @@ def show_batch(images: torch.Tensor,
                figsize: Optional[Tuple[float, float]] = None,
                experiment: Optional[neptune.experiments.Experiment] = None,
                neptune_name: Optional[str] = None):
-
-    """Visualize a torch tensor of shape: (batch x ch x width x height) """
-    assert len(images.shape) == 4  # batch, ch, width, height
+    """
+    Visualize a torch tensor of shape: (*,  ch, width, height)
+    It works for any number of leading dimensions
+    """
+    assert len(images.shape) >= 4  # *, ch, width, height
+    images = images.flatten(end_dim=-4)  # -1, ch, width, height
     if images.device != "cpu":
         images = images.cpu()
 
@@ -475,7 +502,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet"+postfix)
-    fig_e = show_batch(output.inference.prob_unit_ranking,
+    fig_e = show_batch(output.inference.prob_grid_unit_ranking,
                        n_col=4,
                        n_padding=4,
                        normalize=False,
@@ -490,14 +517,14 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"prob_grid_target"+postfix)
 
-    fig_g = show_batch(output.inference.background_bcwh.clamp(min=0.0, max=1.0),
+    fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
                        normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
-    fig_h = show_batch(output.inference.sum_c_times_mask_b1wh,
+    fig_h = show_batch(output.inference.sum_c_times_mask_1wh,
                        n_col=4,
                        n_padding=4,
                        normalize=True,
@@ -562,4 +589,3 @@ def plot_concordance(concordance,
         log_img_only(name=neptune_name, fig=fig, experiment=experiment)
     plt.close(fig)
     return fig
-

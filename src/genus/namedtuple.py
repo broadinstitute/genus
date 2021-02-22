@@ -192,17 +192,17 @@ class UNEToutput(NamedTuple):
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
     prob_grid_target: torch.Tensor  # for debug
-    prob_unit_ranking: torch.Tensor  # for debug
-    background_bcwh: torch.Tensor
-    foreground_bkcwh: torch.Tensor
-    sum_c_times_mask_b1wh: torch.Tensor
-    mixing_bk1wh: torch.Tensor
+    prob_grid_unit_ranking: torch.Tensor  # for debug
+    background_cwh: torch.Tensor
+    foreground_kcwh: torch.Tensor
+    sum_c_times_mask_1wh: torch.Tensor
+    mixing_k1wh: torch.Tensor
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor
     sample_c_grid_after_nms: torch.Tensor
-    sample_c_bk: torch.Tensor
-    sample_bb_bk: BB
-    sample_bb_ideal_bk: BB
+    sample_c_k: torch.Tensor
+    sample_bb_k: BB
+    sample_bb_ideal_k: BB
 
 
 class MetricMiniBatch(NamedTuple):
@@ -221,7 +221,7 @@ class MetricMiniBatch(NamedTuple):
     """
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
-    logit_warming_loss: float
+    pretraining_loss: float
     mse_av: float
     kl_av: float
     kl_logit: float
