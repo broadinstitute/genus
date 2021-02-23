@@ -455,8 +455,9 @@ class InferenceAndGeneration(torch.nn.Module):
         cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
 
         # Pretraining
-        pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
-                                                           (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
+        # pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
+        #                                                    (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
+        pretraining_loss_mb = prob_corr_factor * torch.sum((p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
 
         # KL acts only on full boxes
         # TODO: use c_smooth or c_detached?
@@ -464,7 +465,7 @@ class InferenceAndGeneration(torch.nn.Module):
         zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_smooth_mbk.detach(), dim=-1)
 
         loss_vae_mb = logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
-                      lambda_mse.detach() * mse_av_mb  # + \
+                      lambda_mse.detach() * mse_av_mb + pretraining_loss_mb  # + \
                       # pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
                       # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
                       # lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
