@@ -333,14 +333,14 @@ class SimilarityKernel(torch.nn.Module):
         return mask
 
     def get_l_w(self):
-        """ Returns the current value of lenght scale and weight of the similarity kernel """
-        return self.length_scale_value.data, self.weight_value.data
+        """ Returns the current value of length scale and weight of the similarity kernel """
+        return self.length_scale_value, self.weight_value
 
     def _clamp_and_get_l_w(self):
         """ Clamps the parameters before they are used to compute the similarity matrix. """
-        l_clamped = self.length_scale_value.data.clamp_(min=self.length_scale_min, max=self.length_scale_max)
-        w_clamped = self.weight_value.data.clamp_(min=self.weight_min, max=self.weight_max)
-        return l_clamped, w_clamped
+        self.length_scale_value.data.clamp_(min=self.length_scale_min, max=self.length_scale_max)
+        self.weight_value.data.clamp_(min=self.weight_min, max=self.weight_max)
+        return self.length_scale_value, self.weight_value
 
     def forward(self, n_width: int, n_height: int) -> torch.Tensor:
         """

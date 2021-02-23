@@ -246,6 +246,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           noisy_sampling=noisy_sampling,
                                                           sample_from_prior=generate_synthetic_data,
                                                           mc_samples=1 if generate_synthetic_data else self.n_mc_samples)
+        print("DEBUG zhere_gird.kl min, max",
+              torch.min(zwhere_grid.kl).detach().item(),
+              torch.max(zwhere_grid.kl).detach().item())
+
         bounding_box_mbn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere_grid.sample)),
                                            width_input_image=width_raw_image,
                                            height_input_image=height_raw_image,
@@ -325,9 +329,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             noisy_sampling=noisy_sampling,
                                                             sample_from_prior=generate_synthetic_data,
                                                             mc_samples=1)
+        print("DEBUG zinstance_few.kl min, max",
+              torch.min(zinstance_few.kl).detach().item(),
+              torch.max(zinstance_few.kl).detach().item())
         # Squeezing the extra mc_sample and computing the mean over the z latent dimension
         zinstance_kl_mbk = zinstance_few.kl.squeeze(dim=0).mean(dim=-1)
-        zinstance_kl_mb =  torch.sum(zinstance_kl_mbk * c_detached_mbk, dim=-1)
+        zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_detached_mbk, dim=-1)
 
 
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
