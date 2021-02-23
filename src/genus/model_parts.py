@@ -130,7 +130,6 @@ class InferenceAndGeneration(torch.nn.Module):
         # variables
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
-        self.mask_overlap_type = config["loss"]["mask_overlap_penalty_type"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
 
         self.min_box_size = config["input_image"]["range_object_size"][0]
