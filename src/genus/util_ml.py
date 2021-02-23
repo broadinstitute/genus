@@ -134,7 +134,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
 
 @torch.no_grad()
 def sample_c_grid(prob_grid: torch.Tensor,
-                  similarity_matrix: torch.Tensor,
+                  similarity_matrix: Optional[torch.Tensor],
                   noisy_sampling: bool,
                   sample_from_prior: bool,
                   mc_samples: int = 1) -> torch.Tensor:
@@ -143,7 +143,7 @@ def sample_c_grid(prob_grid: torch.Tensor,
     from a posterior which is a collection of independent Bernoulli specified by the logit_grid.
 
     Args:
-        prob_grid: torch.Tensor of size :math:`(B,1,W,H)` with the probabilities specifying the Bernoulli
+        prob_grid: torch.Tensor of size :math:`(*,1,W,H)` with the probabilities specifying the Bernoulli
         similarity_matrix: torch.Tensor of size :math:`(W x H, W x H)` with the similarity between all grid points
         noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
         sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
@@ -153,18 +153,20 @@ def sample_c_grid(prob_grid: torch.Tensor,
         Binarized torch.Tensor with c_grid with size :math:`(mc_samples, prob_grid.shape)`.
 
     Note:
+        The algorithm works for any number of leading dimensions. Each leading dimension will be treated independently.
+
+    Note:
         The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`prob_grid` or :attr:`similarity_matrix`)
     """
-    assert len(prob_grid.shape) == 4
-    assert prob_grid.shape[-3] == 1
-    assert len(similarity_matrix.shape) == 2
-    assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == prob_grid.shape[-1]*prob_grid.shape[-2]
 
     if sample_from_prior:
         # sample from DPP specified by the similarity kernel
-        independet_dim = torch.Size([mc_samples, prob_grid.shape[0]])
+        assert similarity_matrix is not None
+        assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == prob_grid.shape[-1] * prob_grid.shape[-2]
+
+        independent_dim = [mc_samples] + list(prob_grid.shape[:-3])
         s = similarity_matrix.requires_grad_(False)
-        c_all = FiniteDPP(L=s).sample(sample_shape=independet_dim)  # shape: mc_samples, batch_size, n_points
+        c_all = FiniteDPP(L=s).sample(sample_shape=torch.Size(independent_dim))  # shape: mc_samples, *, n_points
         c_grid = invert_convert_to_box_list(c_all.unsqueeze(-1),
                                             original_width=prob_grid.shape[-2],
                                             original_height=prob_grid.shape[-1])

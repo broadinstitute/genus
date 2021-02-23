@@ -270,8 +270,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
             score_mb1wh = c_grid_before_nms_mb1wh + unet_prob_b1wh
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
-            nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_n=convert_to_box_list(score_mb1wh).squeeze(dim=-1),
-                                                                             bounding_box_n=bounding_box_mbn,
+            nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_mb1wh).squeeze(dim=-1),
+                                                                             bounding_box=bounding_box_mbn,
                                                                              iom_threshold=iom_threshold,
                                                                              k_objects_max=k_objects_max,
                                                                              topk_only=combined_topk_only)
@@ -291,12 +291,14 @@ class InferenceAndGeneration(torch.nn.Module):
         # The maximization of II w.r.t. a makes the posterior have more weight on configuration which are likely under
         # the prior
         entropy_mb = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_dpp_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
-                                       similarity_matrix=similarity_kernel)
-        logp_ber_mb = compute_logp_bernoulli(c=c_grid_after_nms_mb1wh.detach(),
-                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        reinforce_mb = logp_ber_mb * (logp_dpp_mb - logp_dpp_mb.mean(dim=-2)).detach()
-        logit_kl_mb = - entropy_mb - logp_dpp_mb - reinforce_mb + reinforce_mb.detach()
+        logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
+                                                  similarity_matrix=similarity_kernel)
+        logp_dpp_after_nms_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
+                                                 similarity_matrix=similarity_kernel)
+        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
+                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
+        logit_kl_mb = - entropy_mb - logp_dpp_after_nms_mb - reinforce_mb + reinforce_mb.detach()
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_mbn.bx, dim=-1, index=nms_output.indices_k),
@@ -353,13 +355,13 @@ class InferenceAndGeneration(torch.nn.Module):
         #   Should I introduce z_depth?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
         # c_differentiable_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
+        # c_smooth_mbk = prob_mbk
         c_smooth_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach()
         c_smooth_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None] * out_mask_mbk1wh
         mixing_mbk1wh = c_smooth_times_mask_mbk1wh / torch.sum(c_smooth_times_mask_mbk1wh,
                                                                dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
-
 
         # Compute the pretraining loss to encourage network to focus on object poorly explained by the background
         with torch.no_grad():
@@ -368,8 +370,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                    bounding_box=bounding_box_mbn)
                 unit_ranking_mbn = (compute_ranking(delta_mbn) + 1).float() / (delta_mbn.shape[-1] + 1)  # in (0,1)
 
-                nms_pretraining: NmsOutput = NonMaxSuppression.compute_mask_and_index(score_n=unit_ranking_mbn,
-                                                                                      bounding_box_n=bounding_box_mbn,
+                nms_pretraining: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=unit_ranking_mbn,
+                                                                                      bounding_box=bounding_box_mbn,
                                                                                       iom_threshold=iom_threshold,
                                                                                       k_objects_max=k_objects_max,
                                                                                       topk_only=combined_topk_only)
@@ -387,7 +389,6 @@ class InferenceAndGeneration(torch.nn.Module):
                 k_mask_pretraining_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
             else:
                 raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
-
 
         # Compute mse
         mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
@@ -438,6 +439,8 @@ class InferenceAndGeneration(torch.nn.Module):
         #  Should I use the binarycrossentropy for pretraining?
 
         # Loss for non-overlapping masks
+        # TODO: Use c_smooth or c_detached?
+        # c_smooth_detached_times_mask_mbk1wh = c_detached_mbk[..., None, None, None].detach() * out_mask_mbk1wh
         c_smooth_detached_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None].detach() * out_mask_mbk1wh
         mask_overlap_mb1wh = c_smooth_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
                              c_smooth_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
@@ -456,15 +459,16 @@ class InferenceAndGeneration(torch.nn.Module):
                                                            (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
 
         # KL acts only on full boxes
+        # TODO: use c_smooth or c_detached?
         zwhere_kl_mb = torch.sum(zwhere_kl_mbk * c_smooth_mbk.detach(), dim=-1)
         zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_smooth_mbk.detach(), dim=-1)
 
-        loss_vae_mb = pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
-                      logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
-                      lambda_mse.detach() * mse_av_mb + \
-                      lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
-                      lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
-                                                             out_mask_mbk1wh, dim=(-1, -2, -3, -4))
+        loss_vae_mb = logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
+                      lambda_mse.detach() * mse_av_mb  # + \
+                      # pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
+                      # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
+                      # lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
+                      #                                        out_mask_mbk1wh, dim=(-1, -2, -3, -4))
 
         loss = loss_vae_mb.mean() + loss_geco - loss_geco.detach()
 

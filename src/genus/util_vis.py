@@ -6,6 +6,7 @@ import neptune
 import skimage.color
 import skimage.morphology
 from typing import Tuple, Optional, Union
+from torch.distributions.utils import broadcast_all
 from torchvision import utils
 from matplotlib import pyplot as plt
 from IPython.display import HTML
@@ -195,18 +196,18 @@ def draw_img(inference: Inference,
     fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
     background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
 
-    bb = draw_bounding_boxes(bounding_box_k=inference.sample_bb_k,
+    bb = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
                              width=rec_imgs_no_bb.shape[-2],
                              height=rec_imgs_no_bb.shape[-1],
-                             c_k=inference.sample_c_k,
+                             c=inference.sample_c_k,
                              color="red") if draw_boxes else torch.zeros_like(fg_mask)
 
     if draw_ideal_boxes:
         print("drawing_real_boxes")
-        bb_ideal = draw_bounding_boxes(bounding_box_k=inference.sample_bb_ideal_k,
+        bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
                                        width=rec_imgs_no_bb.shape[-2],
                                        height=rec_imgs_no_bb.shape[-1],
-                                       c_k=inference.sample_c_k,
+                                       c=inference.sample_c_k,
                                        color="green")
     else:
         bb_ideal = torch.zeros_like(fg_mask)
@@ -216,19 +217,19 @@ def draw_img(inference: Inference,
     return mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * (bb + bb_ideal)
 
 
-def draw_bounding_boxes(bounding_box_k: BB,
+def draw_bounding_boxes(bounding_box: BB,
                         width: int,
                         height: int,
-                        c_k: torch.Tensor,
+                        c: torch.Tensor,
                         color: str = 'red') -> torch.Tensor:
     """
     Draw the bounbing boxes.
 
     Args:
-        bounding_box_k: BB of shape (*,K)
+        bounding_box: BB of shape (*,K)
         width: width in pixel of the canvas
         height: height in pixel of the canvas
-        c_k: is the box occupaid or not of shape (*,K)
+        c: is the box occupaid or not of shape (*,K)
         color: color to use to draw the bounding box
 
     Returns:
@@ -238,42 +239,39 @@ def draw_bounding_boxes(bounding_box_k: BB,
         Works for any number of leading dimensions. Each leading dimension will be processed independently
     """
 
-    # prepare the storage
-    assert bounding_box_k.bx.shape == c_k.shape
-    independet_dim = list(c_k.shape[:-1])
-    canvas_numpy = torch.zeros(independet_dim + [height, width, 3]).flatten(end_dim=-4).numpy()  # black canvas
+    c_n, bx_n, by_n, bw_n, bh_n = broadcast_all(c,
+                                                bounding_box.bx, bounding_box.by,
+                                                bounding_box.bw, bounding_box.bh)
 
     # compute the coordinates of the bounding boxes and the probability of each box
-    x1 = bounding_box_k.bx - 0.5 * bounding_box_k.bw
-    x3 = bounding_box_k.bx + 0.5 * bounding_box_k.bw
-    y1 = bounding_box_k.by - 0.5 * bounding_box_k.bh
-    y3 = bounding_box_k.by + 0.5 * bounding_box_k.bh
+    x1 = bx_n - 0.5 * bw_n
+    x3 = bx_n + 0.5 * bw_n
+    y1 = by_n - 0.5 * bh_n
+    y3 = by_n + 0.5 * bh_n
     x1y1x3y3 = torch.stack((x1, y1, x3, y3), dim=-1)
-    bxby = torch.stack((bounding_box_k.bx, bounding_box_k.by), dim=-1)
+    bxby = torch.stack((bx_n, by_n), dim=-1)
 
     # Reshape
-    bxby = bxby.flatten(end_dim=-3)
-    x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)
-    c_k = c_k.flatten(end_dim=-2)
-    # print("bxby.shape", bxby.shape)
-    # print("x1y1x3y3.shape", x1y1x3y3.shape)
-    # print("c_k.shape", c_k.shape)
-    # print("canvas_numpy.shape", canvas_numpy.shape)
+    independet_dim = list(c_n.shape[:-1])
+    canvas_numpy = torch.zeros(independet_dim + [height, width, 3]).flatten(end_dim=-4).numpy()  # shape (*,w,h,3)
+    bxby = bxby.flatten(end_dim=-3)          # (m,b,k,2) -> (*,k,2)
+    x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)  # (m,b,k,4) -> (*,k,2)
+    c_n = c_n.flatten(end_dim=-2)            # (m,b,k)   -> (*,k)
 
     # draw the bounding boxes
-    for n in range(c_k.shape[0]):
+    for n in range(c_n.shape[0]):
         # Draw on PIL
         img = PIL.Image.new(mode='RGB', size=(width, height), color=0)  # black canvas
         draw = PIL.ImageDraw.Draw(img)
-        for k in range(c_k.shape[1]):
-            if c_k[n, k] > 0.5:
+        for k in range(c_n.shape[1]):
+            if c_n[n, k] > 0.5:
                 draw.rectangle(x1y1x3y3[n, k, :].cpu().numpy(), outline=color, fill=None)
                 draw.point(bxby[n, k, :].cpu().numpy(), fill=color)
         canvas_numpy[n, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((height, width, 3))
 
     # Transform np to torch, rescale from [0,255] to (0,1)
     tmp = torch.from_numpy(canvas_numpy).permute(0, 3, 2, 1).float() / 255  # permute(0,3,2,1) is CORRECT
-    return tmp.view(independet_dim + [3, width, height]).to(bounding_box_k.bx.device)
+    return tmp.view(independet_dim + [3, width, height]).to(bounding_box.bx.device)
 
 
 def plot_grid(img,
