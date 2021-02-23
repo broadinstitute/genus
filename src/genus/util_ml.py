@@ -176,16 +176,13 @@ def sample_c_grid(prob_grid: torch.Tensor,
     return c_grid.float()
 
 
-
-
 def compute_entropy_bernoulli(logit: torch.Tensor):
-    """ Compute the negative entropy of the bernoulli distribution, i.e. H= - [p * log(p) + (1-p) * log(1-p)] """
+    """ Compute the entropy of the bernoulli distribution, i.e. H= - [p * log(p) + (1-p) * log(1-p)] """
     p = torch.sigmoid(logit)
     one_m_p = torch.sigmoid(-logit)
     log_p = F.logsigmoid(logit)
     log_one_m_p = F.logsigmoid(-logit)
     entropy = - (p * log_p + one_m_p * log_one_m_p)
-    print("debug entropy", entropy.min(), entropy.max())
     return entropy
 
 
@@ -195,8 +192,8 @@ def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
      :attr:`logit`.
 
      Args:
-         c: Binarized configuration`
-         logit: Logit of the Bernoulli distributions`
+         c: Binarized configuration
+         logit: Logit of the Bernoulli distributions
 
      Returns:
          :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of the same shape as :attr:`c`.

@@ -338,6 +338,7 @@ def plot_img_and_seg(img: torch.Tensor,
 def show_batch(images: torch.Tensor,
                n_col: int = 4,
                n_padding: int = 10,
+               n_mc_samples: Optional[int] = None,
                title: Optional[str] = None,
                pad_value: int = 1,
                normalize: bool = False,
@@ -350,7 +351,12 @@ def show_batch(images: torch.Tensor,
     It works for any number of leading dimensions
     """
     assert len(images.shape) >= 4  # *, ch, width, height
-    images = images.flatten(end_dim=-4)  # -1, ch, width, height
+
+    if n_mc_samples is not None and len(images.shape) == 5:
+        images = images[:n_mc_samples].flatten(end_dim=-4)
+    else:
+        images = images.flatten(end_dim=-4)  # -1, ch, width, height
+
     if images.device != "cpu":
         images = images.cpu()
 
@@ -430,28 +436,28 @@ def plot_generation(output: Output,
         print("in plot_reconstruction_and_inference")
 
     fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
                        normalize=False,
                        title='imgs, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "imgs" + postfix)
     fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
                        normalize=False,
                        title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "c_grid_before_nms" + postfix)
     fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
                        normalize=False,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "c_grid_after_nms" + postfix)
     fig_d = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
                        normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
@@ -473,60 +479,71 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
+    # mc_samples = output.inference.sample_c_grid_before_nms.shape[-5]
+    # batch_size = output.inference.sample_c_grid_before_nms.shape[-4]
+
     fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='imgs, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"imgs"+postfix)
     fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_before_nms"+postfix)
     fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_after_nms"+postfix)
 
     fig_d = show_batch(torch.sigmoid(output.inference.logit_grid),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet"+postfix)
     fig_e = show_batch(output.inference.prob_grid_unit_ranking,
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='prob_grid, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unit_ranking"+postfix)
     fig_f = show_batch(output.inference.prob_grid_target,
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='prob_grid, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_grid_target"+postfix)
 
     fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
     fig_h = show_batch(output.inference.sum_c_times_mask_1wh,
-                       n_col=4,
+                       n_col=5,
                        n_padding=4,
+                       n_mc_samples=2,
                        normalize=True,
                        normalize_range=(0.0, 2.0),
                        title='overlap, epoch= {0:6d}'.format(epoch),
