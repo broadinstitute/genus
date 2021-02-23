@@ -459,6 +459,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #  Probably I should act on probabilities)
         #  should lambda_fgfraction act on small_mask or large_mask?
         #  should lambda_ncell act on logit or probabilities?
+        logit_kl_mb = torch.zeros_like(logit_kl_mb)
         loss_vae_mb = pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
                       logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
                       lambda_mse.detach() * mse_av_mb + \
