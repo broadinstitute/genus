@@ -118,8 +118,8 @@ class CompositionalVae(torch.nn.Module):
 
         return ckpt
 
-
     @staticmethod
+    @torch.no_grad()
     def _compute_sparse_similarity_matrix(mixing_k: torch.tensor,
                                           batch_of_index: torch.tensor,
                                           max_index: int,
@@ -257,6 +257,7 @@ class CompositionalVae(torch.nn.Module):
                                       max_index=None,
                                       radius_nn=10)
 
+    @torch.no_grad()
     def _segment_internal(self,
                           batch_imgs: torch.tensor,
                           k_objects_max: int,
@@ -281,62 +282,57 @@ class CompositionalVae(torch.nn.Module):
 
         # start_time = time.time()
 
-        raise NotImplementedError
+        inference: Inference
+        metrics: MetricMiniBatch
+        inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
+                                                          generate_synthetic_data=False,
+                                                          prob_corr_factor=prob_corr_factor,
+                                                          iom_threshold=iom_threshold,
+                                                          k_objects_max=k_objects_max,
+                                                          topk_only=topk_only,
+                                                          noisy_sampling=noisy_sampling)
 
+        # Now compute fg_prob, integer_segmentation_mask, similarity
+        most_likely_mixing, index = torch.max(inference.mixing_k1wh, dim=-4, keepdim=True)  # *, 1, 1, w, h
+        integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
+        fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        with torch.no_grad():
+        bounding_boxes = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                             bounding_box_k=inference.sample_bb_k,
+                                             width=integer_mask.shape[-2],
+                                             height=integer_mask.shape[-1],
+                                             color='red') if draw_boxes else None
 
-            inference: Inference
-            metrics: MetricMiniBatch
-            inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
-                                                              generate_synthetic_data=False,
-                                                              prob_corr_factor=prob_corr_factor,
-                                                              iom_threshold=iom_threshold,
-                                                              k_objects_max=k_objects_max,
-                                                              topk_only=topk_only,
-                                                              noisy_sampling=noisy_sampling)
+        bounding_boxes_ideal = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                                   bounding_box_k=inference.sample_bb_ideal_k,
+                                                   width=integer_mask.shape[-2],
+                                                   height=integer_mask.shape[-1],
+                                                   color='blue') if draw_boxes_ideal else None
 
-            # Now compute fg_prob, integer_segmentation_mask, similarity
-            most_likely_mixing, index = torch.max(inference.mixing_k1wh, dim=-4, keepdim=True)  # *, 1, 1, w, h
-            integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
-            fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
+        # print("inference time", time.time()-start_time)
 
-            bounding_boxes = draw_bounding_boxes(c_k=inference.sample_c_k,
-                                                 bounding_box_k=inference.sample_bb_k,
-                                                 width=integer_mask.shape[-2],
-                                                 height=integer_mask.shape[-1],
-                                                 color='red') if draw_boxes else None
+        if batch_of_index is None:
+            return Segmentation(raw_image=batch_imgs,
+                                fg_prob=fg_prob,
+                                integer_mask=integer_mask,
+                                bounding_boxes=bounding_boxes,
+                                bounding_boxes_ideal=bounding_boxes_ideal,
+                                similarity=None)
 
-            bounding_boxes_ideal = draw_bounding_boxes(c_k=inference.sample_c_k,
-                                                       bounding_box_k=inference.sample_bb_ideal_k,
-                                                       width=integer_mask.shape[-2],
-                                                       height=integer_mask.shape[-1],
-                                                       color='blue') if draw_boxes_ideal else None
-
-            # print("inference time", time.time()-start_time)
-
-            if batch_of_index is None:
-                return Segmentation(raw_image=batch_imgs,
-                                    fg_prob=fg_prob,
-                                    integer_mask=integer_mask,
-                                    bounding_boxes=bounding_boxes,
-                                    bounding_boxes_ideal=bounding_boxes_ideal,
-                                    similarity=None)
-
-            else:
-                max_index = torch.max(batch_of_index) if max_index is None else max_index
-                similarity_matrix = CompositionalVae._compute_sparse_similarity_matrix(mixing_k=inference.mixing_kb1wh,
-                                                                                       batch_of_index=batch_of_index,
-                                                                                       max_index=max_index,
-                                                                                       radius_nn=radius_nn,
-                                                                                       min_threshold=0.1)
-                return Segmentation(raw_image=batch_imgs,
-                                    fg_prob=fg_prob,
-                                    integer_mask=integer_mask,
-                                    bounding_boxes=bounding_boxes,
-                                    bounding_boxes_ideal=bounding_boxes_ideal,
-                                    similarity=SparseSimilarity(sparse_matrix=similarity_matrix,
-                                                                index_matrix=None))
+        else:
+            max_index = torch.max(batch_of_index) if max_index is None else max_index
+            similarity_matrix = CompositionalVae._compute_sparse_similarity_matrix(mixing_k=inference.mixing_k1wh,
+                                                                                   batch_of_index=batch_of_index,
+                                                                                   max_index=max_index,
+                                                                                   radius_nn=radius_nn,
+                                                                                   min_threshold=0.1)
+            return Segmentation(raw_image=batch_imgs,
+                                fg_prob=fg_prob,
+                                integer_mask=integer_mask,
+                                bounding_boxes=bounding_boxes,
+                                bounding_boxes_ideal=bounding_boxes_ideal,
+                                similarity=SparseSimilarity(sparse_matrix=similarity_matrix,
+                                                            index_matrix=None))
 
     def segment_with_tiling(self,
                             single_img: torch.Tensor,

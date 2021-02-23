@@ -393,7 +393,7 @@ class InferenceAndGeneration(torch.nn.Module):
         elif prob_corr_factor == 0:
             unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
             p_target_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-            pretraining_loss_mb = torch.zeros_like(kl_logit_mb)
+            pretraining_loss_mb = torch.zeros_like(logit_kl_mb)
         else:
             raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 

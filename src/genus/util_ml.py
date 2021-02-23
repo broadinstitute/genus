@@ -132,6 +132,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
     return DIST(sample=sample, kl=kl)
 
 
+@torch.no_grad()
 def sample_c_grid(prob_grid: torch.Tensor,
                   similarity_matrix: torch.Tensor,
                   noisy_sampling: bool,
@@ -159,25 +160,20 @@ def sample_c_grid(prob_grid: torch.Tensor,
     assert len(similarity_matrix.shape) == 2
     assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == prob_grid.shape[-1]*prob_grid.shape[-2]
 
-    with torch.no_grad():
-        if sample_from_prior:
-            # sample from DPP specified by the similarity kernel
-            independet_dim = torch.Size([mc_samples, prob_grid.shape[0]])
-            s = similarity_matrix.requires_grad_(False)
-            c_all = FiniteDPP(L=s).sample(sample_shape=independet_dim)  # shape: mc_samples, batch_size, n_points
-            print("c_all.shape", c_all.shape)
-            c_grid = invert_convert_to_box_list(c_all.unsqueeze(-1),
-                                                original_width=prob_grid.shape[-2],
-                                                original_height=prob_grid.shape[-1])
-            print("c_grid.shape", c_grid.shape)
-            print("p_grid.shape", prob_grid.shape)
-            assert 1==2
-        else:
-            # sample from posterior which is a collection of independent Bernoulli variables
-            random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
-            c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
+    if sample_from_prior:
+        # sample from DPP specified by the similarity kernel
+        independet_dim = torch.Size([mc_samples, prob_grid.shape[0]])
+        s = similarity_matrix.requires_grad_(False)
+        c_all = FiniteDPP(L=s).sample(sample_shape=independet_dim)  # shape: mc_samples, batch_size, n_points
+        c_grid = invert_convert_to_box_list(c_all.unsqueeze(-1),
+                                            original_width=prob_grid.shape[-2],
+                                            original_height=prob_grid.shape[-1])
+    else:
+        # sample from posterior which is a collection of independent Bernoulli variables
+        random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
+        c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
 
-        return c_grid.float()
+    return c_grid.float()
 
 
 
@@ -189,6 +185,7 @@ def compute_entropy_bernoulli(logit: torch.Tensor):
     log_p = F.logsigmoid(logit)
     log_one_m_p = F.logsigmoid(-logit)
     entropy = - (p * log_p + one_m_p * log_one_m_p)
+    print("debug entropy", entropy.min(), entropy.max())
     return entropy
 
 
@@ -212,8 +209,7 @@ def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
     return log_prob_bernoulli
 
 
-def compute_logp_dpp(c_grid: torch.Tensor,
-                         similarity_matrix: torch.Tensor):
+def compute_logp_dpp(c_grid: torch.Tensor, similarity_matrix: torch.Tensor):
     """
     Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
     :attr:`similarity_matrix`.
@@ -224,7 +220,9 @@ def compute_logp_dpp(c_grid: torch.Tensor,
 
     Returns:
         :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(*)`.
-        This value is differentiable w.r.t. the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
+
+    Note:
+        This output is differentiable w.r.t. the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
     """
     c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape *, n_points
     log_prob_dpp = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad)  # shape: *

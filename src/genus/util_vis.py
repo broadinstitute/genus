@@ -255,10 +255,10 @@ def draw_bounding_boxes(bounding_box_k: BB,
     bxby = bxby.flatten(end_dim=-3)
     x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)
     c_k = c_k.flatten(end_dim=-2)
-    print("bxby.shape", bxby.shape)
-    print("x1y1x3y3.shape", x1y1x3y3.shape)
-    print("c_k.shape", c_k.shape)
-    print("canvas_numpy.shape", canvas_numpy.shape)
+    # print("bxby.shape", bxby.shape)
+    # print("x1y1x3y3.shape", x1y1x3y3.shape)
+    # print("c_k.shape", c_k.shape)
+    # print("canvas_numpy.shape", canvas_numpy.shape)
 
     # draw the bounding boxes
     for n in range(c_k.shape[0]):
@@ -450,7 +450,7 @@ def plot_generation(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "c_grid_after_nms" + postfix)
-    fig_d = show_batch(output.inference.background_bcwh.clamp(min=0.0, max=1.0),
+    fig_d = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=4,
                        n_padding=4,
                        normalize=False,
