@@ -309,7 +309,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                       dim=-1, index=nms_output.indices_k)
         zwhere_kl_mbk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),  # mean over latent dimension
                                      dim=-1, index=nms_output.indices_k)
-        zwhere_kl_mb = torch.sum(zwhere_kl_mbk * c_detached_mbk, dim=-1)
 
         # Crop the unet_features according to the selected boxes
         mc_samples, batch_size, k_boxes = bounding_box_mbk.bx.shape
@@ -334,8 +333,6 @@ class InferenceAndGeneration(torch.nn.Module):
               torch.max(zinstance_few.kl).detach().item())
         # Squeezing the extra mc_sample and computing the mean over the z latent dimension
         zinstance_kl_mbk = zinstance_few.kl.squeeze(dim=0).mean(dim=-1)
-        zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_detached_mbk, dim=-1)
-
 
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
@@ -355,22 +352,14 @@ class InferenceAndGeneration(torch.nn.Module):
         #   Should I detach the denominator?
         #   Should I introduce z_depth?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
-        c_differentiable_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
-        # c_differentiable_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach()
-        c_differentiable_times_mask_mbk1wh = c_differentiable_mbk[..., None, None, None] * out_mask_mbk1wh
-        c_nondiff_times_mask_mbk1wh = c_detached_mbk[..., None, None, None] * out_mask_mbk1wh
-        mixing_mbk1wh = c_differentiable_times_mask_mbk1wh / torch.sum(c_differentiable_times_mask_mbk1wh,
-                                                                       dim=-4,
-                                                                       keepdim=True).clamp(min=1.0)
+        # c_differentiable_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
+        c_smooth_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach()
+        c_smooth_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None] * out_mask_mbk1wh
+        mixing_mbk1wh = c_smooth_times_mask_mbk1wh / torch.sum(c_smooth_times_mask_mbk1wh,
+                                                               dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
 
-        # Measure the average occupancy of the bounding boxes
-        with torch.no_grad():
-            area_mask_mbk = torch.sum(mixing_mbk1wh, dim=(-1, -2, -3))
-            area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
-            ratio_mbk = area_mask_mbk / area_bb_mbk
-            area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
 
         # Compute the pretraining loss to encourage network to focus on object poorly explained by the background
         with torch.no_grad():
@@ -399,27 +388,12 @@ class InferenceAndGeneration(torch.nn.Module):
             else:
                 raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
-        # Compute the ideal bounding boxes
-        bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
-                                                                               bounding_boxes_k=bounding_box_mbk,
-                                                                               pad_size=self.pad_size_bb,
-                                                                               min_box_size=self.min_box_size,
-                                                                               max_box_size=self.max_box_size)
-
-        # Compute the overlap (note that I use c_detached so that overlap changes mask not probabilities)
-        mask_overlap_mb1wh = c_nondiff_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
-                             c_nondiff_times_mask_mbk1wh.pow(2).sum(dim=-4)
-        mask_overlap_mb = torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3))
 
         # Compute mse
         mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_mbcwh = ((out_background_mbcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av_mb = torch.mean((mixing_mbk1wh * mse_fg_mbkcwh).sum(dim=-4) +
                                mixing_bg_mb1wh * mse_bg_mbcwh, dim=(-1, -2, -3))
-
-        # Additional losses
-        cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
-        cost_overlap_mb = self.mask_overlap_strength * mask_overlap_mb
 
         # GECO
         with torch.no_grad():
@@ -462,17 +436,46 @@ class InferenceAndGeneration(torch.nn.Module):
         #  should lambda_fgfraction act on small_mask or large_mask?
         #  should lambda_ncell act on logit or probabilities?
         #  Should I use the binarycrossentropy for pretraining?
+
+        # Loss for non-overlapping masks
+        c_smooth_detached_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None].detach() * out_mask_mbk1wh
+        mask_overlap_mb1wh = c_smooth_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
+                             c_smooth_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
+        cost_overlap_mb = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3))
+
+        # Loss to ideal bounding boxes
+        bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
+                                                                               bounding_boxes_k=bounding_box_mbk,
+                                                                               pad_size=self.pad_size_bb,
+                                                                               min_box_size=self.min_box_size,
+                                                                               max_box_size=self.max_box_size)
+        cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
+
+        # Pretraining
         pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
                                                            (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
+
+        # KL acts only on full boxes
+        zwhere_kl_mb = torch.sum(zwhere_kl_mbk * c_smooth_mbk.detach(), dim=-1)
+        zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_smooth_mbk.detach(), dim=-1)
+
         loss_vae_mb = pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
                       logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
                       lambda_mse.detach() * mse_av_mb + \
                       lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
-                      lambda_fgfraction.detach() * out_mask_mbk1wh.sum(dim=(-1, -2, -3, -4))
+                      lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
+                                                             out_mask_mbk1wh, dim=(-1, -2, -3, -4))
 
         loss = loss_vae_mb.mean() + loss_geco - loss_geco.detach()
 
-        similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
+        # Other stuff I want to monitor
+        with torch.no_grad():
+            area_mask_mbk = torch.sum(mixing_mbk1wh, dim=(-1, -2, -3))
+            area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
+            ratio_mbk = area_mask_mbk / area_bb_mbk
+            area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
+
+            similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
@@ -480,7 +483,8 @@ class InferenceAndGeneration(torch.nn.Module):
                               prob_grid_unit_ranking=unit_ranking_mb1wh,
                               background_cwh=out_background_mbcwh,
                               foreground_kcwh=out_img_mbkcwh,
-                              sum_c_times_mask_1wh=c_differentiable_times_mask_mbk1wh.sum(dim=-4),
+                              sum_c_times_mask_1wh=torch.sum(c_detached_mbk[..., None, None, None] * out_mask_mbk1wh,
+                                                             dim=-4),
                               mixing_k1wh=mixing_mbk1wh,
                               sample_c_grid_before_nms=c_grid_before_nms_mb1wh,
                               sample_c_grid_after_nms=c_grid_after_nms_mb1wh,

@@ -507,6 +507,15 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_after_nms"+postfix)
 
+    fig_d = show_batch(output.inference.logit_grid,
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=True,
+                       normalize_range=(-3, 3),
+                       title='logit_unet, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"logit_unet"+postfix)
     fig_d = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=5,
                        n_padding=4,
@@ -520,7 +529,7 @@ def plot_reconstruction_and_inference(output: Output,
                        n_padding=4,
                        n_mc_samples=2,
                        normalize=False,
-                       title='prob_grid, epoch= {0:6d}'.format(epoch),
+                       title='prob_grid_unit_ranking, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unit_ranking"+postfix)
     fig_f = show_batch(output.inference.prob_grid_target,
@@ -528,7 +537,7 @@ def plot_reconstruction_and_inference(output: Output,
                        n_padding=4,
                        n_mc_samples=2,
                        normalize=False,
-                       title='prob_grid, epoch= {0:6d}'.format(epoch),
+                       title='prob_grid_target, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_grid_target"+postfix)
 
