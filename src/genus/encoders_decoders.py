@@ -182,10 +182,7 @@ class EncoderConv(nn.Module):
     def forward(self, x: torch.Tensor) -> ZZ:  # this is right
 
         independent_dim = list(x.shape[:-3])  # this might includes: enumeration, n_boxes, batch_size
-        dependent_dim = list(x.shape[-3:])  # this includes: ch, width, height
-        # assert dependent_dim == [self.ch_raw_image, self.width, self.width]
-        x1 = x.view([-1] + dependent_dim)  # flatten the independent dimensions
-        x2 = self.conv(x1).view(-1, 64 * 7 * 7)  # flatten the dependent dimension
-        mu = self.compute_mu(x2).view(independent_dim + [self.dim_z])
-        std = F.softplus(self.compute_std(x2)).view(independent_dim + [self.dim_z])
+        x1 = self.conv(x.flatten(end_dim=-4)).view(-1, 64 * 7 * 7)  # flatten the dependent dimension
+        mu = self.compute_mu(x1).view(independent_dim + [self.dim_z])
+        std = F.softplus(self.compute_std(x1)).view(independent_dim + [self.dim_z])
         return ZZ(mu=mu, std=std + EPS_STD)
