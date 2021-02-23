@@ -307,8 +307,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                      dim=-1, index=nms_output.indices_k)
         zwhere_kl_mb = torch.sum(zwhere_kl_mbk * c_detached_mbk, dim=-1)
 
-
-        # 5. Crop the unet_features according to the selected boxes
+        # Crop the unet_features according to the selected boxes
         mc_samples, batch_size, k_boxes = bounding_box_mbk.bx.shape
         unet_features_expanded = unet_output.features.unsqueeze(-4).expand(mc_samples, batch_size, k_boxes, -1, -1, -1)
         cropped_feature_map = Cropper.crop(bounding_box=bounding_box_mbk,
@@ -367,8 +366,8 @@ class InferenceAndGeneration(torch.nn.Module):
             area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
 
         # Compute the pretraining loss to encourage network to focus on object poorly explained by the background
-        if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-            with torch.no_grad():
+        with torch.no_grad():
+            if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
                 delta_mbn = compute_average_in_box(delta_imgs=(imgs_bcwh - out_background_mbcwh).abs(),
                                                    bounding_box=bounding_box_mbn)
                 unit_ranking_mbn = (compute_ranking(delta_mbn) + 1).float() / (delta_mbn.shape[-1] + 1)  # in (0,1)
@@ -386,15 +385,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                       original_height=unet_output.logit.shape[-1])
                 p_target_mb1wh = unit_ranking_mb1wh * k_mask_pretraining_mb1wh
 
-            # Outside torch.no_grad()
-            pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
-                                                              (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
-        elif prob_corr_factor == 0:
-            unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-            p_target_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-            pretraining_loss_mb = torch.zeros_like(logit_kl_mb)
-        else:
-            raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+            elif prob_corr_factor == 0:
+                unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
+                p_target_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
+                k_mask_pretraining_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
+            else:
+                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
         # Compute the ideal bounding boxes
         bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
@@ -458,7 +454,9 @@ class InferenceAndGeneration(torch.nn.Module):
         #  Probably I should act on probabilities)
         #  should lambda_fgfraction act on small_mask or large_mask?
         #  should lambda_ncell act on logit or probabilities?
-        logit_kl_mb = torch.zeros_like(logit_kl_mb)
+        #  Should I use the binarycrossentropy for pretraining?
+        pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
+                                                           (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
         loss_vae_mb = pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
                       logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
                       lambda_mse.detach() * mse_av_mb + \
