@@ -293,17 +293,17 @@ class InferenceAndGeneration(torch.nn.Module):
         # the prior
         entropy_mb = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
 
-        # logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
-        #                                           similarity_matrix=similarity_kernel)
-        # logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
-        #                                                 logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        # reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
+        logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
+                                                  similarity_matrix=similarity_kernel)
+        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
+                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
 
         logp_dpp_after_nms_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
                                                  similarity_matrix=similarity_kernel)
-        logp_ber_after_nms_mb = compute_logp_bernoulli(c=c_grid_after_nms_mb1wh.detach(),
-                                                       logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        reinforce_mb = logp_ber_after_nms_mb * (logp_dpp_after_nms_mb - logp_dpp_after_nms_mb.mean(dim=-2)).detach()
+        # logp_ber_after_nms_mb = compute_logp_bernoulli(c=c_grid_after_nms_mb1wh.detach(),
+        #                                                logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        # reinforce_mb = logp_ber_after_nms_mb * (logp_dpp_after_nms_mb - logp_dpp_after_nms_mb.mean(dim=-2)).detach()
         logit_kl_mb = - entropy_mb - logp_dpp_after_nms_mb - reinforce_mb + reinforce_mb.detach()
 
         # Gather all relevant quantities from the selected boxes
@@ -446,12 +446,12 @@ class InferenceAndGeneration(torch.nn.Module):
         #  Should I use the binarycrossentropy for pretraining?
 
         # Loss for non-overlapping masks
-        # TODO: Use c_smooth or c_detached?
+        # TODO: Use c_smooth or c_detached or 1?
         # c_smooth_detached_times_mask_mbk1wh = c_detached_mbk[..., None, None, None].detach() * out_mask_mbk1wh
         c_smooth_detached_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None].detach() * out_mask_mbk1wh
         mask_overlap_mb1wh = c_smooth_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
                              c_smooth_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
-        cost_overlap_mb = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3))
+        cost_mask_overlap_mb = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3))
 
         # Loss to ideal bounding boxes
         bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
@@ -466,14 +466,15 @@ class InferenceAndGeneration(torch.nn.Module):
         #                                                    (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
         pretraining_loss_mb = prob_corr_factor * torch.sum((p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
 
-        # KL acts only on full boxes
-        # TODO: use c_smooth or c_detached?
-        zwhere_kl_mb = torch.sum(zwhere_kl_mbk * c_smooth_mbk.detach(), dim=-1)
-        zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_smooth_mbk.detach(), dim=-1)
+        # KL acts only on full boxes.
+        # Note that I use a smoothed version of c which is non-zero so that zwhere and zinstance remain stable.
+        indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        zwhere_kl_mb = torch.sum(zwhere_kl_mbk * indicator_mbk, dim=-1)
+        zinstance_kl_mb = torch.sum(zinstance_kl_mbk * indicator_mbk, dim=-1)
 
         loss_vae_mb = logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
                       lambda_mse.detach() * mse_av_mb + pretraining_loss_mb  # + \
-                      # pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
+                      # cost_mask_overlap_mb + cost_bb_regression_mb + \
                       # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
                       # lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
                       #                                        out_mask_mbk1wh, dim=(-1, -2, -3, -4))
@@ -512,7 +513,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  kl_zinstance=(zinstance_kl_mb.sum()/c_detached_mbk.sum()).detach().item(),
                                  kl_zbg=zbg_kl_mb.mean().detach().item(),
                                  kl_zwhere=(zwhere_kl_mb.sum() / c_detached_mbk.sum()).detach().item(),
-                                 cost_mask_overlap_av=cost_overlap_mb.mean().detach().item(),
+                                 cost_mask_overlap_av=cost_mask_overlap_mb.mean().detach().item(),
                                  cost_bb_regression_av=cost_bb_regression_mb.mean().detach().item(),
                                  ncell_av=value_ncell_av.detach().item(),
                                  fgfraction_av=value_fgfraction_av.detach().item(),
