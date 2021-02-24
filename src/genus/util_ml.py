@@ -115,7 +115,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
         :math:`q(z)` is the posterior and :math:`p(z)` is the prior.
     """
     post_mu, post_std, pr_mu, pr_std = broadcast_all(posterior_mu, posterior_std, prior_mu, prior_std)
-    random = torch.rand([mc_samples] + list(post_mu.shape), device=post_mu.device, dtype=post_mu.dtype)
+    random = torch.randn([mc_samples] + list(post_mu.shape), device=post_mu.device, dtype=post_mu.dtype)
 
     # Compute the KL divergence
     tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
