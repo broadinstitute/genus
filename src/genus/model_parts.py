@@ -466,9 +466,12 @@ class InferenceAndGeneration(torch.nn.Module):
         #                                                    (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
         pretraining_loss_mb = prob_corr_factor * torch.sum((p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
 
-        # KL acts only on full boxes.
-        # Note that I use a smoothed version of c which is non-zero so that zwhere and zinstance remain stable.
-        indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        # KL should act only on full boxes.
+        # However, there could be transient time at the beginning of training in which the code
+        # predicts all empty boxes. Multiplying by c is very dangerous b/c when not regularized by kl both
+        # zwhere and zinstance can become unstable.
+        # indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        indicator_mbk = torch.ones_like(prob_mbk)
         zwhere_kl_mb = torch.sum(zwhere_kl_mbk * indicator_mbk, dim=-1)
         zinstance_kl_mb = torch.sum(zinstance_kl_mbk * indicator_mbk, dim=-1)
 
