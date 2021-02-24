@@ -158,7 +158,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                 times=config["shortcut_prob_corr_factor"]["times"])
     exp.log_metric("prob_corr_factor", vae.prob_corr_factor)
 
-    with torch.autograd.set_detect_anomaly(False):
+    with torch.autograd.set_detect_anomaly(True):
         with torch.enable_grad():
             vae.train()
             # print("process one epoch train")
