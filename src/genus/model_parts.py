@@ -292,13 +292,18 @@ class InferenceAndGeneration(torch.nn.Module):
         # The maximization of II w.r.t. a makes the posterior have more weight on configuration which are likely under
         # the prior
         entropy_mb = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
-                                                  similarity_matrix=similarity_kernel)
+
+        # logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
+        #                                           similarity_matrix=similarity_kernel)
+        # logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
+        #                                                 logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        # reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
+
         logp_dpp_after_nms_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
                                                  similarity_matrix=similarity_kernel)
-        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
-                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
+        logp_ber_after_nms_mb = compute_logp_bernoulli(c=c_grid_after_nms_mb1wh.detach(),
+                                                       logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        reinforce_mb = logp_ber_after_nms_mb * (logp_dpp_after_nms_mb - logp_dpp_after_nms_mb.mean(dim=-2)).detach()
         logit_kl_mb = - entropy_mb - logp_dpp_after_nms_mb - reinforce_mb + reinforce_mb.detach()
 
         # Gather all relevant quantities from the selected boxes
