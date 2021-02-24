@@ -407,7 +407,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                        max=self.geco_loglambda_fgfraction_max)
             # From log_lambda to lambda
             value_mse_av = mse_av_mb.mean()
-            value_ncell_av = c_detached_mbk.sum(dim=-1).mean()
+            value_ncell_av = torch.sum(unet_prob_b1wh) / batch_size
             value_fgfraction_av = torch.mean(mixing_fg_mb1wh)
 
             lambda_mse = self.geco_loglambda_mse.data.exp() * \
@@ -465,9 +465,9 @@ class InferenceAndGeneration(torch.nn.Module):
         zinstance_kl_mb = torch.sum(zinstance_kl_mbk * c_smooth_mbk.detach(), dim=-1)
 
         loss_vae_mb = logit_kl_mb + zbg_kl_mb + zwhere_kl_mb + zinstance_kl_mb + \
-                      lambda_mse.detach() * mse_av_mb + pretraining_loss_mb + \
-                      lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3))  # + \
+                      lambda_mse.detach() * mse_av_mb + pretraining_loss_mb  # + \
                       # pretraining_loss_mb + cost_overlap_mb + cost_bb_regression_mb + \
+                      # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)) + \
                       # lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
                       #                                        out_mask_mbk1wh, dim=(-1, -2, -3, -4))
 
