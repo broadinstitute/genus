@@ -246,7 +246,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           noisy_sampling=noisy_sampling,
                                                           sample_from_prior=generate_synthetic_data,
                                                           mc_samples=1 if generate_synthetic_data else self.n_mc_samples)
-        print("DEBUG zhere_gird.kl min, max",
+
+        print("DEBUG zhere_grid.kl min, max",
               torch.min(zwhere_grid.kl).detach().item(),
               torch.max(zwhere_grid.kl).detach().item())
 
@@ -353,10 +354,11 @@ class InferenceAndGeneration(torch.nn.Module):
         #   There are many ways to make c differentiable
         #   Should I detach the denominator?
         #   Should I introduce z_depth?
-        # Ideally I would like to multiply by c. However if c=0 I can not learn anything. Therefore use max(p,c).
-        # c_differentiable_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
-        # c_smooth_mbk = prob_mbk
-        c_smooth_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach()
+        # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
+        # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
+        # c_smooth_mbk = prob_mbk  THIS IS A POSSIBILITY
+        # c_smooth_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
+        c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
         c_smooth_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None] * out_mask_mbk1wh
         mixing_mbk1wh = c_smooth_times_mask_mbk1wh / torch.sum(c_smooth_times_mask_mbk1wh,
                                                                dim=-4, keepdim=True).clamp(min=1.0)
