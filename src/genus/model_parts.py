@@ -291,11 +291,12 @@ class InferenceAndGeneration(torch.nn.Module):
         # The maximization of II w.r.t. DPP makes prior parameters adjust to the seen configurations.
         # The maximization of II w.r.t. a makes the posterior have more weight on configuration which are likely under
         # the prior
+        logp_dpp_after_nms_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
+                                                 similarity_matrix=similarity_kernel)
         entropy_mb = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
 
         logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
                                                   similarity_matrix=similarity_kernel)
-
         # TODO: SHould this be mean or sum?
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
@@ -307,12 +308,14 @@ class InferenceAndGeneration(torch.nn.Module):
               torch.mean(tmp).detach().item(),
               torch.max(tmp).detach().item())
 
-        logp_dpp_after_nms_mb = compute_logp_dpp(c_grid=c_grid_after_nms_mb1wh.detach(),
-                                                 similarity_matrix=similarity_kernel)
         # logp_ber_after_nms_mb = compute_logp_bernoulli(c=c_grid_after_nms_mb1wh.detach(),
         #                                                logit=unet_output.logit).sum(dim=(-1, -2, -3))
         # reinforce_mb = logp_ber_after_nms_mb * (logp_dpp_after_nms_mb - logp_dpp_after_nms_mb.mean(dim=-2)).detach()
-        logit_kl_mb = - entropy_mb - logp_dpp_after_nms_mb - reinforce_mb + reinforce_mb.detach()
+
+        # Early, there is reinforce term meaning that all probs are 0.5 and the model can learn.
+        # Later, sparsity is turned on and most probability flow to zero.
+        # In principle I could make this a dynamical parameter adjusted by geco.
+        logit_kl_mb = - entropy_mb - logp_dpp_after_nms_mb + (1.0 - prob_corr_factor) * (reinforce_mb.detach() - reinforce_mb)
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_mbn.bx, dim=-1, index=nms_output.indices_k),
@@ -378,32 +381,34 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
 
-        # Compute the pretraining loss to encourage network to focus on object poorly explained by the background
-        with torch.no_grad():
-            if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
-                delta_mbn = compute_average_in_box(delta_imgs=(imgs_bcwh - out_background_mbcwh).abs(),
-                                                   bounding_box=bounding_box_mbn)
-                unit_ranking_mbn = (compute_ranking(delta_mbn) + 1).float() / (delta_mbn.shape[-1] + 1)  # in (0,1)
-
-                nms_pretraining: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=unit_ranking_mbn,
-                                                                                      bounding_box=bounding_box_mbn,
-                                                                                      iom_threshold=iom_threshold,
-                                                                                      k_objects_max=k_objects_max,
-                                                                                      topk_only=combined_topk_only)
-                unit_ranking_mb1wh = invert_convert_to_box_list(unit_ranking_mbn.unsqueeze(dim=-1),
-                                                                original_width=unet_output.logit.shape[-2],
-                                                                original_height=unet_output.logit.shape[-1])
-                k_mask_pretraining_mb1wh = invert_convert_to_box_list(nms_pretraining.k_mask_n.unsqueeze(dim=-1),
-                                                                      original_width=unet_output.logit.shape[-2],
-                                                                      original_height=unet_output.logit.shape[-1])
-                p_target_mb1wh = (unit_ranking_mb1wh * k_mask_pretraining_mb1wh).clamp_(min=1E-4, max=0.9999)
-                logit_target_mb1wh = torch.log(p_target_mb1wh) - torch.log1p(-p_target_mb1wh)
-
-            elif prob_corr_factor == 0:
-                unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-                logit_target_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
-            else:
-                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+###        # Compute the pretraining loss to encourage network to focus on object poorly explained by the background
+###        with torch.no_grad():
+###            if (prob_corr_factor > 0) and (prob_corr_factor <= 1.0):
+###                delta_mbn = compute_average_in_box(delta_imgs=(imgs_bcwh - out_background_mbcwh).abs(),
+###                                                   bounding_box=bounding_box_mbn)
+###                unit_ranking_mbn = (compute_ranking(delta_mbn) + 1).float() / (delta_mbn.shape[-1] + 1)  # in (0,1)
+###
+###                nms_pretraining: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=unit_ranking_mbn,
+###                                                                                      bounding_box=bounding_box_mbn,
+###                                                                                      iom_threshold=iom_threshold,
+###                                                                                      k_objects_max=k_objects_max,
+###                                                                                      topk_only=combined_topk_only)
+###                unit_ranking_mb1wh = invert_convert_to_box_list(unit_ranking_mbn.unsqueeze(dim=-1),
+###                                                                original_width=unet_output.logit.shape[-2],
+###                                                                original_height=unet_output.logit.shape[-1])
+###                k_mask_pretraining_mb1wh = invert_convert_to_box_list(nms_pretraining.k_mask_n.unsqueeze(dim=-1),
+###                                                                      original_width=unet_output.logit.shape[-2],
+###                                                                      original_height=unet_output.logit.shape[-1])
+###                p_target_mb1wh = (unit_ranking_mb1wh * k_mask_pretraining_mb1wh).clamp_(min=1E-4, max=0.9999)
+###                logit_target_mb1wh = torch.log(p_target_mb1wh) - torch.log1p(-p_target_mb1wh)
+###
+###            elif prob_corr_factor == 0:
+###                unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
+###                logit_target_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
+###            else:
+###                raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
+        unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
+        logit_target_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
 
         # Compute mse
         mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
@@ -470,7 +475,8 @@ class InferenceAndGeneration(torch.nn.Module):
         cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
 
         # Pretraining
-        pretraining_loss_mb = prob_corr_factor * (logit_target_mb1wh - unet_output.logit).pow(2).sum(dim=(-1, -2, -3))
+        # pretraining_loss_mb = prob_corr_factor * (logit_target_mb1wh - unet_output.logit).pow(2).sum(dim=(-1, -2, -3))
+        pretraining_loss_mb = torch.zeros_like(cost_bb_regression_mb)
 
         # KL should act only on full boxes.
         # However, there could be transient time at the beginning of training in which the code
