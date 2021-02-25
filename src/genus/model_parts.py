@@ -295,6 +295,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms_mb1wh.detach(),
                                                   similarity_matrix=similarity_kernel)
+
+        # TODO: SHould this be mean or sum?
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mb1wh.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
         reinforce_mb = logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - logp_dpp_before_nms_mb.mean(dim=-2)).detach()
@@ -394,12 +396,12 @@ class InferenceAndGeneration(torch.nn.Module):
                 k_mask_pretraining_mb1wh = invert_convert_to_box_list(nms_pretraining.k_mask_n.unsqueeze(dim=-1),
                                                                       original_width=unet_output.logit.shape[-2],
                                                                       original_height=unet_output.logit.shape[-1])
-                p_target_mb1wh = unit_ranking_mb1wh * k_mask_pretraining_mb1wh
+                p_target_mb1wh = (unit_ranking_mb1wh * k_mask_pretraining_mb1wh).clamp_(min=1E-4, max=0.9999)
+                logit_target_mb1wh = torch.log(p_target_mb1wh) - torch.log1p(-p_target_mb1wh)
 
             elif prob_corr_factor == 0:
                 unit_ranking_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-                p_target_mb1wh = 0.5 * torch.ones_like(c_grid_before_nms_mb1wh)
-                k_mask_pretraining_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
+                logit_target_mb1wh = torch.zeros_like(c_grid_before_nms_mb1wh)
             else:
                 raise Exception("prob_corr_factor has an invalid value", prob_corr_factor)
 
@@ -468,14 +470,14 @@ class InferenceAndGeneration(torch.nn.Module):
         cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
 
         # Pretraining
-        # pretraining_loss_mb = prob_corr_factor * torch.sum(k_mask_pretraining_mb1wh *
-        #                                                    (p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
-        pretraining_loss_mb = prob_corr_factor * torch.sum((p_target_mb1wh - unet_prob_b1wh).abs(), dim=(-1, -2, -3))
+        pretraining_loss_mb = prob_corr_factor * (logit_target_mb1wh - unet_output.logit).pow(2).sum(dim=(-1, -2, -3))
 
         # KL should act only on full boxes.
         # However, there could be transient time at the beginning of training in which the code
         # predicts all empty boxes. Multiplying by c is very dangerous b/c when not regularized by kl both
-        # zwhere and zinstance can become unstable.
+        # zwhere and zinstance can become unstable. Therefore I multiply by 1.
+        # If a box is empty, i.e. it is not used for reconstruction, the model will easily put zwhere and zinstance to
+        # the prior value
         # indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
         indicator_mbk = torch.ones_like(prob_mbk)
         zwhere_kl_mb = torch.sum(zwhere_kl_mbk * indicator_mbk, dim=-1)
@@ -501,7 +503,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
-                              prob_grid_target=p_target_mb1wh,
+                              logit_grid_target=logit_target_mb1wh,
                               prob_grid_unit_ranking=unit_ranking_mb1wh,
                               background_cwh=out_background_mbcwh,
                               foreground_kcwh=out_img_mbkcwh,

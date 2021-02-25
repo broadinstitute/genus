@@ -530,7 +530,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_grid_unit_ranking, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unit_ranking"+postfix)
-    fig_f = show_batch(output.inference.prob_grid_target,
+    fig_f = show_batch(torch.sigmoid(output.inference.logit_grid_target),
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,

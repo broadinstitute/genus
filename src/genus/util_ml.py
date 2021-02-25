@@ -28,21 +28,29 @@ class MetricsAccumulator(object):
         self._counter = 0
         self._dict_accumulate = OrderedDict()
 
-    def _accumulate_key_value(self, key, value, counter_increment):
-        if isinstance(value, torch.Tensor):
-            x = value.detach().item() * counter_increment
-        elif isinstance(value, float):
-            x = value * counter_increment
-        elif isinstance(value, numpy.ndarray):
-            x = value * counter_increment
+    def _accumulate_key_value(self, _key, _value, counter_increment):
+
+        if isinstance(_value, torch.Tensor):
+            mask = torch.isfinite(_value)
+            _value[~mask] = 0.0
+            x = _value.detach().item()
+        elif isinstance(_value, float):
+            if numpy.isfinite(_value):
+                x = _value
+            else:
+                x = 0.0
+                print("DEBUG not_finite", _key, _value)
+        elif isinstance(_value, numpy.ndarray):
+            mask = numpy.isfinite(_value)
+            _value[~mask] = 0.0
+            x = _value
         else:
-            print(type(value))
-            raise Exception
+            raise Exception("value of unrecognized type", _key, type(_value))
 
         try:
-            self._dict_accumulate[key] = x + self._dict_accumulate.get(key, 0)
+            self._dict_accumulate[_key] = x * counter_increment + self._dict_accumulate.get(_key, 0)
         except ValueError:
-            # oftent the case if accumulating two numpy array of different sizes
+            # often the case if accumulating two numpy array of different sizes
             pass
 
     def accumulate(self, source: Union[tuple, dict], counter_increment: int = 1):
@@ -70,7 +78,7 @@ class MetricsAccumulator(object):
         """
         tmp = self._dict_accumulate.copy()
         for k, v in self._dict_accumulate.items():
-            tmp[k] = v/self._counter
+            tmp[k] = v / self._counter
         return tmp
 
     def set_value(self, key, value):
