@@ -191,8 +191,6 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
-    logit_grid_target: torch.Tensor  # for debug
-    prob_grid_unit_ranking: torch.Tensor  # for debug
     background_cwh: torch.Tensor
     foreground_kcwh: torch.Tensor
     sum_c_times_mask_1wh: torch.Tensor
@@ -222,8 +220,8 @@ class MetricMiniBatch(NamedTuple):
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
-    kl_av: float
-    kl_logit: float
+    kl_logit_base: float
+    kl_logit_additional: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
@@ -252,19 +250,18 @@ class MetricMiniBatch(NamedTuple):
     prob_max: float
 
     def pretty_print(self, epoch: int = 0) -> str:
-        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, kl={3:.3f}, mask_overlap={4:.3f}, \
-             bb_regression={5:.3f}, fg_fraction_av={6:.3f}, n_cell_av={7:.3f}, lambda_mse={8:.3f}, \
-             lambda_ncell={9:.3f}, lambda_fgfraction={10:.3f}".format(epoch,
-                                                                      self.loss,
-                                                                      self.mse_av,
-                                                                      self.kl_av,
-                                                                      self.cost_mask_overlap_av,
-                                                                      self.cost_bb_regression_av,
-                                                                      self.fgfraction_av,
-                                                                      self.ncell_av,
-                                                                      self.lambda_mse,
-                                                                      self.lambda_ncell,
-                                                                      self.lambda_fgfraction)
+        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
+             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
+             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
+                                                                     self.loss,
+                                                                     self.mse_av,
+                                                                     self.cost_mask_overlap_av,
+                                                                     self.cost_bb_regression_av,
+                                                                     self.fgfraction_av,
+                                                                     self.ncell_av,
+                                                                     self.lambda_mse,
+                                                                     self.lambda_ncell,
+                                                                     self.lambda_fgfraction)
         return s
 
 
