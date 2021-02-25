@@ -221,7 +221,6 @@ class MetricMiniBatch(NamedTuple):
     """
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
-    pretraining_loss: float
     mse_av: float
     kl_av: float
     kl_logit: float

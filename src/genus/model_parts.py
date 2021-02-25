@@ -454,24 +454,25 @@ class InferenceAndGeneration(torch.nn.Module):
                     self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
 
         # Loss for non-overlapping masks
-        # TODO: Use c_smooth or c_detached or 1?
-        # c_smooth_detached_times_mask_mbk1wh = c_detached_mbk[..., None, None, None].detach() * out_mask_mbk1wh
-        c_smooth_detached_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None].detach() * out_mask_mbk1wh
-        mask_overlap_mb1wh = c_smooth_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
-                             c_smooth_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
-        cost_mask_overlap_mb = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3))
+        p_times_mask_mbk1wh = prob_mbk[..., None, None, None].detach() * out_mask_mbk1wh
+        mask_overlap_mb1wh = p_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
+                             p_times_mask_mbk1wh.pow(2).sum(dim=-4)
+        cost_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3)).mean()
 
         # Loss to ideal bounding boxes
+        with torch.no_grad():
+            area_mask_mbk = mixing_mbk1wh.sum(dim=(-1, -2, -3))
+            area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
+            ratio_mbk = area_mask_mbk / area_bb_mbk
+            is_active_mbk = ratio_mbk < 0.8  # this is a trick so that you do not start expanding empty squares
+        # outside torch.no_grad()
         bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
                                                                                bounding_boxes_k=bounding_box_mbk,
                                                                                pad_size=self.pad_size_bb,
                                                                                min_box_size=self.min_box_size,
                                                                                max_box_size=self.max_box_size)
-        cost_bb_regression_mb = self.bb_regression_strength * (c_detached_mbk * bb_regression_mbk).sum(dim=-1)
-
-        # Pretraining
-        # pretraining_loss = prob_corr_factor * (logit_target_mb1wh - unet_output.logit).pow(2).sum(dim=(-1, -2, -3)).mean()
-        pretraining_loss = torch.zeros(1, dtype=cost_bb_regression_mb.dtype, device=cost_bb_regression_mb.device)
+        cost_bb_regression = self.bb_regression_strength * (prob_mbk.detach() * is_active_mbk *
+                                                            bb_regression_mbk).sum(dim=-1).mean()
 
         # KL should act only on full boxes.
         # However, there could be transient time at the beginning of training in which the code
@@ -480,6 +481,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # If a box is empty, i.e. it is not used for reconstruction, the model will easily put zwhere and zinstance to
         # the prior value
         # indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        # TODO: change indicator_mbk to prob_mbk.detach()
         indicator_mbk = torch.ones_like(prob_mbk)
         zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
         zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
@@ -488,19 +490,16 @@ class InferenceAndGeneration(torch.nn.Module):
         #    unet_output.logit.clamp(max=10).sum(dim=(-1, -2, -3)).mean()
 
         loss_vae = logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
-                   lambda_mse.detach() * mse_av + pretraining_loss  # + \
-                   # cost_mask_overlap_mb + cost_bb_regression_mb + \
+                   cost_mask_overlap + cost_bb_regression + \
+                   lambda_mse.detach() * mse_av + \
+                   lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
+                                                 out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean()
                    # lambda_ncell.detach() * com.sum(dim=(-1, -2, -3)) + \
-                   # lambda_fgfraction.detach() * torch.sum(c_smooth_mbk.detach()[..., None, None, None] *
-                   #                                        out_mask_mbk1wh, dim=(-1, -2, -3, -4))
 
         loss = loss_vae + loss_geco - loss_geco.detach()
 
         # Other stuff I want to monitor
         with torch.no_grad():
-            area_mask_mbk = torch.sum(mixing_mbk1wh, dim=(-1, -2, -3))
-            area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
-            ratio_mbk = area_mask_mbk / area_bb_mbk
             area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
 
             similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
@@ -521,15 +520,14 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_bb_ideal_k=bb_ideal_mbk)
 
         metric = MetricMiniBatch(loss=loss,
-                                 pretraining_loss=pretraining_loss.detach().item(),
                                  mse_av=mse_av.detach().item(),
                                  kl_av=(logit_kl + zbg_kl + zwhere_kl + zinstance_kl).detach().item(),
                                  kl_logit=logit_kl.detach().item(),
                                  kl_zinstance=zinstance_kl.detach().item(),
                                  kl_zbg=zbg_kl.detach().item(),
                                  kl_zwhere=zwhere_kl.detach().item(),
-                                 cost_mask_overlap_av=cost_mask_overlap_mb.mean().detach().item(),
-                                 cost_bb_regression_av=cost_bb_regression_mb.mean().detach().item(),
+                                 cost_mask_overlap_av=cost_mask_overlap.detach().item(),
+                                 cost_bb_regression_av=cost_bb_regression.detach().item(),
                                  ncell_av=ncell_av.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
                                  area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
