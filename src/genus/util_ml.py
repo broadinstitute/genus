@@ -92,6 +92,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
                                   prior_std: torch.Tensor,
                                   noisy_sampling: bool,
                                   sample_from_prior: bool,
+                                  squeeze_mc: bool,
                                   mc_samples: int = 1) -> DIST:
     """
     Analytically computes KL divergence between two gaussian distributions
@@ -106,13 +107,16 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
             if False the mode of the distribution (i.e. the mean) is returned.
         sample_from_prior: if True the sample is drawn from the prior distribution, if False the posterior distribution
             is used.
+        squeeze_mc: whether or not to squeeze the leading dimension corresponding to different mc_samples.
+            This has effect only if :attr:`mc_samples` == 1.
         mc_samples: number of monte_carlo samples
 
     Returns:
         :class:`DIST` with the KL divergence and the sample from either the prior or posterior
         depending of the values of :attr:`sample_from_prior`. The shape of the sample and KL divergence is equal to
         the common broadcast shape of the :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu`
-        and :attr:`prior_std`
+        and :attr:`prior_std`. If :attr:`mc_samples` > 1 or :attr:`squeeze_mc` is False a leading dimension is
+        added to the left to represent the different monte carlo samples
 
     Note:
         :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu` and :attr:`prior_std`
@@ -137,6 +141,11 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
         # working with the posterior
         sample = post_mu + post_std * random if noisy_sampling else post_mu.expand_as(random)
 
+    if squeeze_mc:
+        # Note that squeeze has effect only if the squeezed dimension has shape 1
+        sample = sample.squeeze(dim=0)
+        kl = kl.squeeze(dim=0)
+
     return DIST(sample=sample, kl=kl)
 
 
@@ -145,6 +154,7 @@ def sample_c_grid(prob_grid: torch.Tensor,
                   similarity_matrix: Optional[torch.Tensor],
                   noisy_sampling: bool,
                   sample_from_prior: bool,
+                  squeeze_mc: bool,
                   mc_samples: int = 1) -> torch.Tensor:
     """
     Sample c_grid either from a Determinental Point Process (DPP) prior specified by a similarity matrix or
@@ -155,6 +165,8 @@ def sample_c_grid(prob_grid: torch.Tensor,
         similarity_matrix: torch.Tensor of size :math:`(W x H, W x H)` with the similarity between all grid points
         noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
         sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
+        squeeze_mc: whether or not to squeeze the leading dimension corresponding to different mc_samples.
+            This has effect only if :attr:`mc_samples` == 1.
         mc_samples: number of monte_carlos samples to draw from the posterior or prior
 
     Returns:
@@ -182,6 +194,10 @@ def sample_c_grid(prob_grid: torch.Tensor,
         # sample from posterior which is a collection of independent Bernoulli variables
         random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
         c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
+
+    if squeeze_mc:
+        # Note that squeeze has effect only if the squeezed dimension has shape 1
+        c_grid = c_grid.squeeze(dim=0)
 
     return c_grid.float()
 

@@ -244,6 +244,13 @@ class MetricMiniBatch(NamedTuple):
     # I am learning the right things?
     similarity_l: float
     similarity_w: float
+    # For debug
+    logit_min: float
+    logit_mean: float
+    logit_max: float
+    prob_min: float
+    prob_mean: float
+    prob_max: float
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, kl={3:.3f}, mask_overlap={4:.3f}, \
