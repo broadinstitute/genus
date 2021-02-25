@@ -208,8 +208,8 @@ def draw_img(inference: Inference,
                                    c=inference.sample_c_k,
                                    color="green") if draw_ideal_boxes else torch.zeros_like(fg_mask)
 
-    bb_all = torch.sum(bb + bb_ideal, dim=-3, keepdim=True)
-    mask_no_bb = (bb_all == 0)
+    bb_all = bb + bb_ideal
+    mask_no_bb = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
     return mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb_all
 
 
