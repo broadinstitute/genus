@@ -405,13 +405,21 @@ class FiniteDPP(Distribution):
         https://github.com/pytorch/pytorch/issues/28293
     """
     arg_constraints = {'K': constraints.positive_definite,
-                       'L': constraints.positive_definite}
+                       'L': constraints.positive_definite,
+                       'eigen_L': constraints.positive_definite}
     support = constraints.boolean
     has_rsample = False
 
-    def __init__(self, K=None, L=None, validate_args=None):
+    def __init__(self, K=None, L=None, eigen_L=None, validate_args=None):
         """
-        A Finite DPP distribution is defined either via the likelihood matrix (L) or the correlation matrix (K).
+        A Finite DPP is FULLY specified by the correlation matrix (K), the likelihood matrix (L)
+        and the L_eigenvalues. All three are necessary to perform different operations.
+        For example:
+            (1) the computation of the log_probability of a configuration requires the L matrix and L_eigenvalues.
+            (2) Drawing a new random sample requires the K matrix
+
+        The MINIMAL specification of the DPP is by either the K or L matrix. The remaining information can be obtained
+        via SVD decomposition. If all three elements are specified, no svd decomposition will be performed.
 
         Args:
             K: correlation matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
@@ -420,6 +428,7 @@ class FiniteDPP(Distribution):
             L: likelihood matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
                 eigenvalues in :math:`>= 0`. Any expoentially decaying similarity kernel will give rise
                 to a valid likelihood matrix.
+            eigen_L: the eigenvalues of the L matrix
 
         Note:
             This class is often used in combination with :class:`SimilarityKernel`.
@@ -429,34 +438,69 @@ class FiniteDPP(Distribution):
             >>> likelihood_matrix = kernel.forward(n_width=20, n_height=20)
             >>> DPP = FiniteDPP(L=likelihood_matrix)
         """
-        if (K is None and L is None) or (K is not None and L is not None):
-            raise Exception("only one among K and L need to be defined")
 
-        elif K is not None:
-            self.K = 0.5 * (K + K.transpose(-1, -2))  # make sure it is symmetrized
+        if (K is None) and (L is None):
+            raise Exception("One between K and L need to be defined")
+        elif L is None:
+            self._L = None
+            self._K = 0.5 * (K + K.transpose(-1, -2))
+            batch_shape, event_shape = self._K.shape[:-2], self._K.shape[-1:]
+        elif K is None:
+            self._K = None
+            self._L = 0.5 * (L + L.transpose(-1, -2))
+            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+        else:
+            # neither is none
+            assert L.shape == K.shape
+            self._L = L
+            self._K = K
+            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+
+        self._eigen_l = eigen_L
+
+        print("DEBUG initialization", self._L is None, self._K is None, self._eigen_l is None)
+        super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
+
+    @property
+    def K(self):
+        if self._K is None:
+            print("svd from L")
             try:
-                u, s_k, v = torch.svd(self.K)
+                u, s_l, v = torch.svd(self._L)
             except:
                 # torch.svd may have convergence issues for GPU and CPU.
-                u, s_k, v = torch.svd(self.K + 1e-3 * self.K.mean() * torch.ones_like(self.K))
-            s_l = s_k / (1.0 - s_k)
-            self.L = torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
-        elif L is not None:
-            self.L = 0.5 * (L + L.transpose(-1, -2))  # make sure it is symmetrized
+                u, s_l, v = torch.svd(self._L + 1e-3 * self._L.mean() * torch.ones_like(self._L))
+            s_k = s_l / (1.0 + s_l)
+            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+            self._eigen_l = s_l
+        return self._K
+
+    @property
+    def L(self):
+        if self._L is None:
+            print("svd from K")
+            try:
+                u, s_k, v = torch.svd(self._K)
+            except:
+                # torch.svd may have convergence issues for GPU and CPU.
+                u, s_k, v = torch.svd(self._K + 1e-3 * self._K.mean() * torch.ones_like(self._K))
+            self._eigen_l = s_k / (1.0 - s_k)
+            self._L = torch.matmul(u * self._eigen_l.unsqueeze(-2), v.transpose(-1, -2))
+        return self._L
+
+    @property
+    def eigen_l(self):
+        if self._eigen_l is None:
+            print("eigen from L")
             try:
                 u, s_l, v = torch.svd(self.L)
             except:
                 # torch.svd may have convergence issues for GPU and CPU.
                 u, s_l, v = torch.svd(self.L + 1e-3 * self.L.mean() * torch.ones_like(self.L))
             s_k = s_l / (1.0 + s_l)
-            self.K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-        else:
-            raise Exception
-
-        self.s_l = s_l
-        batch_shape, event_shape = self.K.shape[:-2], self.K.shape[-1:]
-        super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
-        print("DEBUG -> initializing giniteDPP with SVD")
+            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+            self._eigen_l = s_l
+        return self._eigen_l
 
     def expand(self, batch_shape, _instance=None):
         """
@@ -466,9 +510,9 @@ class FiniteDPP(Distribution):
         batch_shape = torch.Size(batch_shape)
         kernel_shape = batch_shape + self.event_shape + self.event_shape
         value_shape = batch_shape + self.event_shape
-        new.s_l = self.s_l.expand(value_shape)
-        new.L = self.L.expand(kernel_shape)
-        new.K = self.K.expand(kernel_shape)
+        new._eigen_l = None if self._eigen_l is None else self._eigen_l.expand(value_shape)
+        new._L = None if self._L is None else self._L.expand(kernel_shape)
+        new._K = None if self._K is None else self._K.expand(kernel_shape)
         super(FiniteDPP, new).__init__(batch_shape,
                                        self.event_shape,
                                        validate_args=False)
@@ -497,6 +541,7 @@ class FiniteDPP(Distribution):
              >>> value = DPP.sample(sample_shape=torch.Size([2]))
              >>> print(value.shape)
         """
+
         shape_value = self._extended_shape(sample_shape)  # shape = sample_shape + batch_shape + event_shape
         shape_kernel = shape_value + self._event_shape  # shape = sample_shape + batch_shape + event_shape + event_shape
 
@@ -518,7 +563,7 @@ class FiniteDPP(Distribution):
     def log_prob(self, value):
         """
         Computes the log_probability of the configuration given the current value of the correlation matrix (K) or
-        likelihood matrix (L) used to initialize the instance.
+        likelihood matrix (L) used to initialize the instance. It requires the L matrix and L_eigenvalues
 
         Args:
             value: The binarized configuration of shape :math:`(*, \\text{event_shape})`
@@ -553,30 +598,101 @@ class FiniteDPP(Distribution):
         if self._validate_args:
             self._validate_sample(value)
 
-        logdet_L_plus_I = (self.s_l + 1).log().sum(dim=-1)  # sum over the event_shape
-
         # Reshapes
         value = value.unsqueeze(0)  # trick to make it work even if not-batched
         independet_dims = list(value.shape[:-1])
         value = value.flatten(start_dim=0, end_dim=-2)  # *, event_shape
-        # print("internal. value.shape", value.shape)
         L = self.L.expand(independet_dims + [-1, -1]).flatten(start_dim=0, end_dim=-3)  # *, event_shape, event_shape
-        # print("internal. L.shape", L.shape)
 
         # Here I am computing the logdet of square matrix of different shapes
         # I use the trick to embed everything inside a larger identity matrix since
         #     | A  B  0 |
         # det | C  D  0 | = determinant of the sub_matrix
         #     | 0  0  1 |
-        n_max = torch.sum(value, dim=-1).max().item()
+        n_c = torch.sum(value, dim=-1)
+        n_max = n_c.max().item()
         matrix = torch.eye(n_max, dtype=L.dtype, device=L.device).expand(L.shape[-3], n_max, n_max).clone()
-        # print("internal. matrix.shape", matrix.shape)
-        for i in range(value.shape[0]):
-            n = torch.sum(value[i]).item()
-            matrix[i, :n, :n] = L[i, value[i], :][:, value[i]]
+        # Since the tensor is rugged, I need to do it with a for loop...
+        for i in range(n_c.shape[0]):
+            matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]  # WORKS BUT SLOW
+            # matrix[i, :n_c[i], :n_c[i]] = L[i, :, value[i]][value[i], :]  # TRY THIS ONE
         logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
-        print("DEBUG LOGPP INVOLVED LOGDET OF SHAPE", matrix.shape)
+        logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched
+
+
+####class DPP_wrapper(torch.nn.Module):
+####
+####    def __init__(self,
+####                 length_scale: float,
+####                 weight: float,
+####                 length_scale_min_max: Optional[Tuple[float, float]] = None,
+####                 weight_min_max: Optional[Tuple[float, float]] = None,
+####                 pbc: bool = False,
+####                 eps: float = 1E-4):
+####
+####        self.similiraty_kernel = SimilarityKernel(length_scale=length_scale,
+####                                                  weight=weight,
+####                                                  length_scale_min_max=length_scale_min_max,
+####                                                  weight_min_max=weight_min_max,
+####                                                  pbc=pbc,
+####                                                  eps=eps)
+####        self.dpp = None
+####
+####    def logp
+####        if (n_width != self.n_width) or (n_height != self.n_height):
+####            print("DEBUG -> computing a new similarity kernel")
+####            self.n_width = n_width
+####            self.n_height = n_height
+####            self.d2, self.diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
+####
+####        return self.diag + w * torch.exp(-0.5 * self.d2 / (l * l))
+##
+##@torch.no_grad()
+##def sample_c_grid(prob_grid: torch.Tensor,
+##                  dpp: DPP_wrapper,
+##                  noisy_sampling: bool,
+##                  sample_from_prior: bool,
+##                  squeeze_mc: bool,
+##                  mc_samples: int = 1) -> torch.Tensor:
+##    """
+##    Sample c_grid either from a Determinental Point Process (DPP) prior specified by a similarity matrix or
+##    from a posterior which is a collection of independent Bernoulli specified by the logit_grid.
+##
+##    Args:
+##        prob_grid: torch.Tensor of size :math:`(*,1,W,H)` with the probabilities specifying the Bernoulli
+##        dpp: torch.Module of type DPP_wrapper
+##        noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
+##        sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
+##        squeeze_mc: whether or not to squeeze the leading dimension corresponding to different mc_samples.
+##            This has effect only if :attr:`mc_samples` == 1.
+##        mc_samples: number of monte_carlos samples to draw from the posterior or prior
+##
+##    Returns:
+##        Binarized torch.Tensor with c_grid with size :math:`(mc_samples, prob_grid.shape)`.
+##
+##    Note:
+##        The algorithm works for any number of leading dimensions. Each leading dimension will be treated independently.
+##
+##    Note:
+##        The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`prob_grid` or :attr:`similarity_matrix`)
+##    """
+##
+##    if sample_from_prior:
+##        independent_dim = [mc_samples] + list(prob_grid.shape[:-2])
+##        c_grid = dpp.sample(independent_dim=independent_dim,
+##                            n_width=prob_grid.shape[-2],
+##                            n_height=prob_grid.shape[-1])  #shape: mc_samples, prob_grid.shape
+##    else:
+##        # sample from posterior which is a collection of independent Bernoulli variables
+##        random = torch.rand([mc_samples]+list(prob_grid.shape), device=prob_grid.device, dtype=prob_grid.dtype)
+##        c_grid = random < prob_grid if noisy_sampling else (0.5 < prob_grid.expand_as(random))
+##
+##    if squeeze_mc:
+##        # Note that squeeze has effect only if the squeezed dimension has shape 1
+##        c_grid = c_grid.squeeze(dim=0)
+##
+##    return c_grid.float()
 
 
 class ConditionalRandomCrop(object):
