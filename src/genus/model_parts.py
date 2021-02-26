@@ -465,7 +465,7 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
             area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
             similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
-            print(similarity_w.detach().item(), similarity_l.detach().item())
+            # print(similarity_w.detach().item(), similarity_l.detach().item())
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
