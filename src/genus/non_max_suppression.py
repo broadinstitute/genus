@@ -143,4 +143,4 @@ class NonMaxSuppression(object):
         k_mask_n = torch.zeros_like(masked_score_n).scatter(dim=-1,
                                                             index=indices_k,
                                                             src=torch.ones_like(masked_score_n))
-        return NmsOutput(k_mask_n=k_mask_n, indices_k=indices_k)
+        return NmsOutput(k_mask_n=k_mask_n.bool(), indices_k=indices_k)

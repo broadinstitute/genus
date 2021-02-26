@@ -6,8 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
 from .encoders_decoders import EncoderConv, DecoderConv, Decoder1by1Linear, DecoderBackground
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import sample_and_kl_diagonal_normal, sample_c_grid
-from .util_ml import compute_logp_dpp, compute_entropy_bernoulli, compute_logp_bernoulli, SimilarityKernel
+from .util_ml import sample_and_kl_diagonal_normal, compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, ZZ, DIST, MetricMiniBatch
 from .non_max_suppression import NonMaxSuppression
 
@@ -138,10 +137,10 @@ class InferenceAndGeneration(torch.nn.Module):
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
         # modules
-        self.similarity_kernel_dpp = SimilarityKernel(length_scale=config["input_image"]["similarity_DPP_l"],
-                                                      length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
-                                                      weight=config["input_image"]["similarity_DPP_w"],
-                                                      weight_min_max=config["input_image"]["similarity_DPP_w_min_max"])
+        self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["similarity_DPP_l"],
+                                 length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
+                                 weight=config["input_image"]["similarity_DPP_w"],
+                                 weight_min_max=config["input_image"]["similarity_DPP_w_min_max"])
 
         self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
                                level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
@@ -259,20 +258,22 @@ class InferenceAndGeneration(torch.nn.Module):
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
-        # TODO: If you are not learning similarity make sure to not recompute it
-        # Sample the probability map from prior or posterior
-        similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
-                                                               n_height=unet_output.logit.shape[-1])
-
         # NMS + top-K operation
         with torch.no_grad():
-            c_grid_before_nms = sample_c_grid(prob_grid=unet_prob_b1wh,
-                                              similarity_matrix=similarity_kernel,
-                                              noisy_sampling=noisy_sampling,
-                                              sample_from_prior=generate_synthetic_data,
-                                              mc_samples=1 if generate_synthetic_data else self.n_mc_samples,
-                                              squeeze_mc=False)
 
+            # Sample c_grid form either prior or posterior
+            mc_samples = 1 if generate_synthetic_data else self.n_mc_samples
+            squeeze_mc = False
+            if generate_synthetic_data:
+                # sample from dpp prior
+                c_tmp = self.grid_dpp.sample(size=torch.Size([mc_samples] + list(unet_prob_b1wh.shape)))
+            else:
+                # sample from posterior
+                prob_expanded = unet_prob_b1wh.expand([mc_samples] + list(unet_prob_b1wh.shape))
+                c_tmp = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling else (0.5 < prob_expanded)
+            c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
+
+            # Do non-max-suppression
             score_grid = c_grid_before_nms + unet_prob_b1wh
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
@@ -297,12 +298,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # TODO: compute finite DPP only once and reuse it multiple times to compute logp_DPP.
         #  Especially if similarity matrix is not changing.
-        logp_dpp_after_nms = compute_logp_dpp(c_grid=c_grid_after_nms.detach(),
-                                              similarity_matrix=similarity_kernel).mean()
         entropy = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
 
-        logp_dpp_before_nms_mb = compute_logp_dpp(c_grid=c_grid_before_nms.detach(),
-                                                  similarity_matrix=similarity_kernel)
+        logp_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
+        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
         baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
@@ -324,7 +323,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                 dim=-1, index=nms_output.indices_k)
         c_detached_mbk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1),
                                       dim=-1, index=nms_output.indices_k)
-        ncell_av = c_detached_mbk.sum(dim=-1).mean()
+        ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
 
         zwhere_kl_mbk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
                                      dim=-1, index=nms_output.indices_k)
@@ -370,8 +369,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
         # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
         # c_smooth_mbk = prob_mbk  THIS IS A POSSIBILITY
-        # c_smooth_mbk = prob_mbk + (c_detached_mbk - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
-        c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk).detach()
+        # c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
+        c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
         c_smooth_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None] * out_mask_mbk1wh
         mixing_mbk1wh = c_smooth_times_mask_mbk1wh / torch.sum(c_smooth_times_mask_mbk1wh,
                                                                dim=-4, keepdim=True).clamp(min=1.0)
@@ -465,7 +464,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # Other stuff I want to monitor
         with torch.no_grad():
             area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
-            similarity_l, similarity_w = self.similarity_kernel_dpp.get_l_w()
+            similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
+            print(similarity_w.detach().item(), similarity_l.detach().item())
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
