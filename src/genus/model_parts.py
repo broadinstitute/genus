@@ -259,6 +259,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
+        # TODO: If you are not learning similarity make sure to not recompute it
         # Sample the probability map from prior or posterior
         similarity_kernel = self.similarity_kernel_dpp.forward(n_width=unet_output.logit.shape[-2],
                                                                n_height=unet_output.logit.shape[-1])
@@ -286,7 +287,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
-        #    = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
+        #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
         # The first term is the negative entropy of the Bernoulli distribution. It can be computed analitucally and its
         # minimization w.r.t. a lead to high entropy posteriors.
         # The derivative of the second term w.r.t. DPP can be estimated by simple MONTE CARLO samples and makes
@@ -294,6 +295,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
 
+        # TODO: compute finite DPP only once and reuse it multiple times to compute logp_DPP.
+        #  Especially if similarity matrix is not changing.
         logp_dpp_after_nms = compute_logp_dpp(c_grid=c_grid_after_nms.detach(),
                                               similarity_matrix=similarity_kernel).mean()
         entropy = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
@@ -303,6 +306,8 @@ class InferenceAndGeneration(torch.nn.Module):
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
         baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
+        # TODO: do not compute reinforce if you are doing pretraining....
+        #   This will speed up a lot
         reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
 
         # I am splitting the KL into two terms, one will be always be active
@@ -478,7 +483,7 @@ class InferenceAndGeneration(torch.nn.Module):
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
                                  kl_logit_base=logit_kl_base.detach().item(),
-                                 kl_logit_additional=logit_kl_base.detach().item(),
+                                 kl_logit_additional=logit_kl_additional.detach().item(),
                                  kl_zinstance=zinstance_kl.detach().item(),
                                  kl_zbg=zbg_kl.detach().item(),
                                  kl_zwhere=zwhere_kl.detach().item(),

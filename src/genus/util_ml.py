@@ -254,7 +254,7 @@ def compute_logp_dpp(c_grid: torch.Tensor, similarity_matrix: torch.Tensor):
 
 class SimilarityKernel(torch.nn.Module):
     """
-    Square gaussian kernel with learnable parameters (weight and lenght_scale).
+    Square gaussian kernel with learnable parameters (weight and length_scale).
     """
 
     def __init__(self,
@@ -266,7 +266,7 @@ class SimilarityKernel(torch.nn.Module):
                  eps: float = 1E-4):
         """
         Args:
-            length_scale: Initial value for learnable parameter specifying the lenght scale of the kernel.
+            length_scale: Initial value for learnable parameter specifying the length scale of the kernel.
             weight: Initial value for learnable parameter specifying the weight of the kernel.
             length_scale_min_max: Tuple with the minimum and maximum allowed value for the :attr:`length_scale`.
                 During training the value of length_scale is clamped back inside the allowed range.
@@ -384,6 +384,7 @@ class SimilarityKernel(torch.nn.Module):
         l, w = self._clamp_and_get_l_w()
 
         if (n_width != self.n_width) or (n_height != self.n_height):
+            print("DEBUG -> computing a new similarity kernel")
             self.n_width = n_width
             self.n_height = n_height
             self.d2, self.diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
@@ -455,6 +456,7 @@ class FiniteDPP(Distribution):
         self.s_l = s_l
         batch_shape, event_shape = self.K.shape[:-2], self.K.shape[-1:]
         super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
+        print("DEBUG -> initializing giniteDPP with SVD")
 
     def expand(self, batch_shape, _instance=None):
         """
@@ -573,6 +575,7 @@ class FiniteDPP(Distribution):
             n = torch.sum(value[i]).item()
             matrix[i, :n, :n] = L[i, value[i], :][:, value[i]]
         logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
+        print("DEBUG LOGPP INVOLVED LOGDET OF SHAPE", matrix.shape)
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched
 
 
