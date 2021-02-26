@@ -43,7 +43,7 @@ class NonMaxSuppression(object):
 
         # Loop
         counter = 0
-        while (counter <= k_objects_max) and (possible_1n.sum() > 0):
+        while counter <= k_objects_max:  # and (possible_1n.sum() > 0):
             score_mask_nn = mask_overlap_nn * (score_1n * possible_1n)
             index_n1 = torch.max(score_mask_nn, keepdim=True, dim=-1)[1]
             selected_n1 += possible_1n.transpose(dim0=-1, dim1=-2) * (idx_n1 == index_n1)
