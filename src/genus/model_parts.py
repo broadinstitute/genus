@@ -300,7 +300,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
-            logit_kl_additional = - reinforce + reinforce.detach()
+            logit_kl_additional = - reinforce
         else:
             logit_kl_additional = torch.zeros_like(logit_kl_base)
 
@@ -358,6 +358,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #   Should I introduce z_depth?
         #   c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
         #   c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
+        #   Should I detach the denominator?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
         # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
         p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
@@ -401,6 +402,9 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco_ncell = self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
 
         # Loss for non-overlapping masks
+        # TODO: I observe that this loss makes the mask shinkr and the fg_fraction go down.
+        #   The intended behavior is to avoid the overlaps not to drive down the fg_fraction.
+        #   Maybe I should write this loss function in terms of mixing.
         p_detached_times_mask_mbk1wh = prob_mbk[..., None, None, None].detach() * out_mask_mbk1wh
         mask_overlap_mb1wh = p_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
                              p_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
@@ -427,11 +431,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # zwhere and zinstance can become unstable. Therefore I multiply by 1.
         # If a box is empty, i.e. it is not used for reconstruction, the model will easily put zwhere and zinstance to
         # the prior value
-        # indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
-        # TODO: change indicator_mbk to prob_mbk.detach()
-        indicator_mbk = torch.ones_like(prob_mbk)
-        zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
+        zwhere_kl = (zwhere_kl_mbk * prob_mbk.detach()).sum(dim=-1).mean()
+        zinstance_kl = (zinstance_kl_mbk * prob_mbk.detach()).sum(dim=-1).mean()
 
         # TODO: Decide what is the best thing to couple to lambda_ncell
         # coupled_to_ncell = unet_output.logit.clamp(min=-10).sum(dim=(-1, -2, -3)).mean() if lambda_ncell > 0 else \
@@ -440,10 +441,10 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + \
                     lambda_mse.detach() * mse_av + loss_geco_mse - loss_geco_mse.detach()
 
-        loss_additional = loss_mask_overlap + loss_bb_regression + \
-                          lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
-                                                        out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
-                          loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
+        loss_additional = loss_mask_overlap + loss_bb_regression + logit_kl_additional
+                          # lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
+                          #                               out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
+                          # loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
                           # + lambda_ncell.detach() * com.sum(dim=(-1, -2, -3))
                           # loss_geco_ncell - loss_geco_ncell.detach()
 
