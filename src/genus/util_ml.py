@@ -409,7 +409,9 @@ class FiniteDPP(Distribution):
         L = self.L.expand(independet_dims + [-1, -1]).flatten(start_dim=0, end_dim=-3)  # *, event_shape, event_shape
 
         # Here I am computing the logdet of square matrix of different shapes
-        # I use the trick to embed everything inside a larger identity matrix since
+
+        # APPROACH 1:
+        # Select sub-row and columns and embed everything inside a larger identity matrix since
         #     | A  B  0 |
         # det | C  D  0 | = determinant of the sub_matrix
         #     | 0  0  1 |
@@ -418,8 +420,8 @@ class FiniteDPP(Distribution):
         matrix = torch.eye(n_max, dtype=L.dtype, device=L.device).expand(L.shape[-3], n_max, n_max).clone()
         # Since the tensor is rugged, I need to do it with a for loop...
         for i in range(n_c.shape[0]):
-            matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]  # WORKS BUT SLOW
-            # matrix[i, :n_c[i], :n_c[i]] = L[i, :, value[i]][value[i], :]  # TRY THIS ONE
+            matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
+
         logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
         logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched

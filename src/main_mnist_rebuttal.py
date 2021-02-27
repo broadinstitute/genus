@@ -290,6 +290,6 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                         ckpt = vae.create_ckpt(optimizer=optimizer,
                                                epoch=epoch,
                                                history_dict=history_dict)
-                        log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
+                        log_object_as_artifact(name="last_ckpt_"+str(epoch), obj=ckpt, experiment=exp)  # log file into neptune
                     print("Done epoch")
 exp.stop()

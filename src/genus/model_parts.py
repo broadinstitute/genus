@@ -220,14 +220,6 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
-        # FOr debug
-        logit_min = torch.min(unet_output.logit).detach().item()
-        logit_mean = torch.mean(unet_output.logit).detach().item()
-        logit_max = torch.max(unet_output.logit).detach().item()
-        prob_min = torch.min(unet_prob_b1wh).detach().item()
-        prob_mean = torch.mean(unet_prob_b1wh).detach().item()
-        prob_max = torch.max(unet_prob_b1wh).detach().item()
-
         # TODO: Replace the background block with a VQ-VAE
         # Compute the background
         zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zbg.mu,
@@ -295,24 +287,22 @@ class InferenceAndGeneration(torch.nn.Module):
         # DPP prior parameters adjust to the seen configurations.
         # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
-
-        # TODO: compute finite DPP only once and reuse it multiple times to compute logp_DPP.
-        #  Especially if similarity matrix is not changing.
+        #
+        # I am splitting the KL_logit into two terms, one will be always be active
+        # the other will be turned on later during training
         entropy = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
-
         logp_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
-        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
-        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
-                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-        # TODO: do not compute reinforce if you are doing pretraining....
-        #   This will speed up a lot
-        reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
-
-        # I am splitting the KL into two terms, one will be always be active
-        # the other will be torned on later during training
         logit_kl_base = - entropy - logp_dpp_after_nms
-        logit_kl_additional = - reinforce + reinforce.detach()
+
+        if prob_corr_factor < 1.0:
+            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
+            logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
+                                                            logit=unet_output.logit).sum(dim=(-1, -2, -3))
+            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
+            reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
+            logit_kl_additional = - reinforce + reinforce.detach()
+        else:
+            logit_kl_additional = torch.zeros_like(logit_kl_base)
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
@@ -366,14 +356,12 @@ class InferenceAndGeneration(torch.nn.Module):
         #   There are many ways to make c differentiable
         #   Should I detach the denominator?
         #   Should I introduce z_depth?
+        #   c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
+        #   c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
         # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
-        # c_smooth_mbk = prob_mbk  THIS IS A POSSIBILITY
-        # c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
-        c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
-        c_smooth_times_mask_mbk1wh = c_smooth_mbk[..., None, None, None] * out_mask_mbk1wh
-        mixing_mbk1wh = c_smooth_times_mask_mbk1wh / torch.sum(c_smooth_times_mask_mbk1wh,
-                                                               dim=-4, keepdim=True).clamp(min=1.0)
+        p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
+        mixing_mbk1wh = p_times_mask_mbk1wh / torch.sum(p_times_mask_mbk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
         fgfraction_av = mixing_fg_mb1wh.mean()
@@ -413,9 +401,9 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco_ncell = self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
 
         # Loss for non-overlapping masks
-        p_times_mask_mbk1wh = prob_mbk[..., None, None, None].detach() * out_mask_mbk1wh
-        mask_overlap_mb1wh = p_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
-                             p_times_mask_mbk1wh.pow(2).sum(dim=-4)
+        p_detached_times_mask_mbk1wh = prob_mbk[..., None, None, None].detach() * out_mask_mbk1wh
+        mask_overlap_mb1wh = p_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
+                             p_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
         loss_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3)).mean()
 
         # Loss to ideal bounding boxes
@@ -455,8 +443,8 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_additional = loss_mask_overlap + loss_bb_regression + \
                           lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
                                                         out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
-                          loss_geco_fgfraction - loss_geco_fgfraction.detach()
-                          # logit_kl_additional + lambda_ncell.detach() * com.sum(dim=(-1, -2, -3))
+                          loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
+                          # + lambda_ncell.detach() * com.sum(dim=(-1, -2, -3))
                           # loss_geco_ncell - loss_geco_ncell.detach()
 
         loss = loss_base + (1.0 - prob_corr_factor) * loss_additional
@@ -499,12 +487,5 @@ class InferenceAndGeneration(torch.nn.Module):
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0,
                                  similarity_l=similarity_l.detach().item(),
-                                 similarity_w=similarity_w.detach().item(),
-                                 logit_min=logit_min,
-                                 logit_mean=logit_mean,
-                                 logit_max=logit_max,
-                                 prob_min=prob_min,
-                                 prob_mean=prob_mean,
-                                 prob_max=prob_max)
-
+                                 similarity_w=similarity_w.detach().item())
         return inference, metric
