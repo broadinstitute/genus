@@ -228,6 +228,8 @@ class MetricMiniBatch(NamedTuple):
     cost_mask_overlap_av: float
     cost_bb_regression_av: float
     ncell_av: float
+    prob_av: float
+    distance_from_reinforce_baseline: float
     fgfraction_av: float
     area_mask_over_area_bb_av: float
     # geco

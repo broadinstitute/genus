@@ -300,9 +300,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
+            distance_from_reinforce_baseline = (logp_dpp_before_nms_mb - baseline_b).abs().mean()
             logit_kl_additional = - reinforce
         else:
             logit_kl_additional = torch.zeros_like(logit_kl_base)
+            distance_from_reinforce_baseline = torch.zeros_like(logit_kl_base)
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
@@ -353,12 +355,13 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Compute the mixing
         # TODO: think hard about this part with Mehrtash
+        #   This is a sort of softmax function......
         #   There are many ways to make c differentiable
         #   Should I detach the denominator?
         #   Should I introduce z_depth?
         #   c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
         #   c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
-        #   Should I detach the denominator?
+        #   Should I detach the denominator? SHould the denominator be multiplied by c_detahced?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
         # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
         p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
@@ -425,14 +428,12 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_bb_regression = self.bb_regression_strength * (prob_mbk.detach() * is_active_mbk *
                                                             bb_regression_mbk).sum(dim=-1).mean()
 
-        # KL should act only on full boxes.
-        # However, there could be transient time at the beginning of training in which the code
-        # predicts all empty boxes. Multiplying by c is very dangerous b/c when not regularized by kl both
-        # zwhere and zinstance can become unstable. Therefore I multiply by 1.
-        # If a box is empty, i.e. it is not used for reconstruction, the model will easily put zwhere and zinstance to
-        # the prior value
-        zwhere_kl = (zwhere_kl_mbk * prob_mbk.detach()).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_mbk * prob_mbk.detach()).sum(dim=-1).mean()
+        # KL should act at full strength on full boxes.
+        # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
+        # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
+        indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
+        zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
 
         # TODO: Decide what is the best thing to couple to lambda_ncell
         # coupled_to_ncell = unet_output.logit.clamp(min=-10).sum(dim=(-1, -2, -3)).mean() if lambda_ncell > 0 else \
@@ -479,6 +480,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  cost_mask_overlap_av=loss_mask_overlap.detach().item(),
                                  cost_bb_regression_av=loss_bb_regression.detach().item(),
                                  ncell_av=ncell_av.detach().item(),
+                                 prob_av=prob_mbk.sum(dim=-1).mean().detach().item(),
+                                 distance_from_reinforce_baseline=distance_from_reinforce_baseline.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
                                  area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
                                  lambda_mse=lambda_mse.detach().item(),
