@@ -299,12 +299,14 @@ class InferenceAndGeneration(torch.nn.Module):
             logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
                                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            reinforce = (logp_ber_before_nms_mb * (logp_dpp_before_nms_mb - baseline_b).detach()).mean()
-            distance_from_reinforce_baseline = (logp_dpp_before_nms_mb - baseline_b).abs().mean()
-            logit_kl_additional = - reinforce
+            d = (logp_dpp_before_nms_mb - baseline_b).detach()
+            std_b = d.pow(2).mean(dim=-2).sqrt()
+            distance_from_reinforce_baseline = d.abs().mean()
+            reinforce_mb = logp_ber_before_nms_mb * torch.sign(logp_dpp_before_nms_mb - baseline_b).detach()
+            logit_kl_additional = reinforce_mb.mean()
         else:
-            logit_kl_additional = torch.zeros_like(logit_kl_base)
             distance_from_reinforce_baseline = torch.zeros_like(logit_kl_base)
+            logit_kl_additional = torch.zeros_like(logit_kl_base)
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
@@ -445,10 +447,11 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + \
                     lambda_mse.detach() * mse_av + loss_geco_mse - loss_geco_mse.detach()
 
-        loss_additional = loss_mask_overlap + loss_bb_regression + \
-                          lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()  # + \
+        loss_additional = loss_mask_overlap + loss_bb_regression + logit_kl_additional
+                          # \
+                          # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()  # + \
                           # loss_geco_ncell - loss_geco_ncell.detach()
-                          # + logit_kl_additional
+                          # +
                           # lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
                           #                               out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
                           # loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
