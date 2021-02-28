@@ -431,7 +431,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # KL should act at full strength on full boxes.
         # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
         # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
-        indicator_mbk = torch.max(prob_mbk, c_detached_mbk).detach()
+        indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
         zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
         zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
 
