@@ -281,7 +281,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
         #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
-        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analitucally and its
+        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
         # minimization w.r.t. a lead to high entropy posteriors.
         # The derivative of the second term w.r.t. DPP can be estimated by simple MONTE CARLO samples and makes
         # DPP prior parameters adjust to the seen configurations.
@@ -315,7 +315,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                 dim=-1, index=nms_output.indices_k)
         c_detached_mbk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1),
                                       dim=-1, index=nms_output.indices_k)
-        ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
 
         zwhere_kl_mbk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
                                      dim=-1, index=nms_output.indices_k)
@@ -364,6 +363,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #   Should I detach the denominator? SHould the denominator be multiplied by c_detahced?
         # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
         # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
+        # In the "GOLDEN CODE" in the spacetx I used: c+p-p.detached
         p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
         mixing_mbk1wh = p_times_mask_mbk1wh / torch.sum(p_times_mask_mbk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
@@ -387,8 +387,11 @@ class InferenceAndGeneration(torch.nn.Module):
             # From log_lambda to lambda
             lambda_mse = self.geco_loglambda_mse.data.exp() * \
                          torch.sign(mse_av - self.geco_target_mse_min)
+
+            ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
             lambda_ncell = self.geco_loglambda_ncell.data.exp() * \
                            torch.sign(ncell_av - self.geco_target_ncell_min)
+
             lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * \
                                 torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
 
@@ -442,12 +445,15 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + \
                     lambda_mse.detach() * mse_av + loss_geco_mse - loss_geco_mse.detach()
 
-        loss_additional = loss_mask_overlap + loss_bb_regression + logit_kl_additional
+        loss_additional = loss_mask_overlap + loss_bb_regression + \
+                          lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()  # + \
+                          # loss_geco_ncell - loss_geco_ncell.detach()
+                          # + logit_kl_additional
                           # lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
                           #                               out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
                           # loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
                           # + lambda_ncell.detach() * com.sum(dim=(-1, -2, -3))
-                          # loss_geco_ncell - loss_geco_ncell.detach()
+                          #
 
         loss = loss_base + (1.0 - prob_corr_factor) * loss_additional
 

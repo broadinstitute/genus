@@ -106,9 +106,11 @@ if config["simulation"]["type"] == "scratch":
     min_test_loss = 999999
 
 elif config["simulation"]["type"] == "resume":
-    
-    ckpt = file2ckpt(path="ckpt.pt", device=None)
-    # ckpt = file2ckpt(path="ckpt.pt", device='cpu')
+
+    if torch.cuda.is_available():
+        ckpt = file2ckpt(path="ckpt.pt", device=None)
+    else:
+        ckpt = file2ckpt(path="ckpt.pt", device='cpu')
 
     load_from_ckpt(ckpt=ckpt,
                    model=vae,
@@ -124,8 +126,10 @@ elif config["simulation"]["type"] == "resume":
 
 elif config["simulation"]["type"] == "pretrained":
 
-    ckpt = file2ckpt(path="ckpt.pt", device=None)
-    # ckpt = file2ckpt(path="ckpt.pt", device='cpu')
+    if torch.cuda.is_available():
+        ckpt = file2ckpt(path="ckpt.pt", device=None)
+    else:
+        ckpt = file2ckpt(path="ckpt.pt", device='cpu')
 
     load_from_ckpt(ckpt=ckpt,
                    model=vae,
