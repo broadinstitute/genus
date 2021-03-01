@@ -304,11 +304,9 @@ class InferenceAndGeneration(torch.nn.Module):
             logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
                                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            d = (logp_dpp_before_nms_mb - baseline_b).detach()
-            std_b = d.pow(2).mean(dim=-2).sqrt()
-            distance_from_reinforce_baseline = d.abs().mean()
-            reinforce_mb = logp_ber_before_nms_mb * torch.sign(logp_dpp_before_nms_mb - baseline_b).detach()
-            logit_kl_additional = reinforce_mb.mean()
+            d_mb = (logp_dpp_before_nms_mb - baseline_b).detach()
+            distance_from_reinforce_baseline = d_mb.abs().mean()
+            logit_kl_additional = (logp_ber_before_nms_mb * d_mb).mean()
         else:
             distance_from_reinforce_baseline = torch.zeros_like(logit_kl_base)
             logit_kl_additional = torch.zeros_like(logit_kl_base)

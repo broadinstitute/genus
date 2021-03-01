@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy
 import pathlib
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, List
 from .namedtuple import Inference, MetricMiniBatch, Segmentation, SparseSimilarity, Output
 from .util_vis import draw_bounding_boxes, draw_img
 from .model_parts import InferenceAndGeneration
@@ -813,7 +813,7 @@ def load_from_ckpt(ckpt: dict,
     return
 
 
-def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> torch.optim.Optimizer:
+def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> List[torch.optim.Optimizer]:
     """
     Instantiate a optimizer object to optimize the trainable parameters of the model.
 
@@ -823,7 +823,7 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
             as learning rate, betas, weight_decay etc. (required).
 
     Returns:
-        An optimizer object
+        An list containing all the optimizers object
 
     Note:
         The state of the optimizer can be loaded from a ckpt by invoking :class:`load_from_ckpt`.
@@ -873,16 +873,17 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
     return optimizer
 
 
-def instantiate_scheduler(optimizer: torch.optim.Optimizer, config_scheduler: dict) -> torch.optim.lr_scheduler:
+def instantiate_scheduler(optimizer: Tuple[torch.optim.Optimizer],
+                          config_scheduler: dict) -> torch.optim.lr_scheduler._LRScheduler:
     """
     Instantiate a optimizer scheduler.
 
     Args:
-        optimizer: The optimizer whose state will be controlled by the scheduler.
+        optimizer: List of optimizers whose state will be controlled by the scheduler.
         config_scheduler: Dictionary containing the hyperparameters of the scheduler.
 
     Returns:
-        A scheduler object.
+        A list of scheduler object.
 
     Raises:
         Exception: If dict_params_scheduler["type"] is not "step_LR"
@@ -963,6 +964,7 @@ def process_one_epoch(model: CompositionalVae,
                 optimizer.zero_grad()
                 metrics.loss.backward()  # do back_prop and compute all the gradients
                 optimizer.step()  # update the parameters
+
                 grad_logit_min = torch.min(model.inference_and_generator.unet.logit.grad).detach().float()
                 grad_logit_mean = torch.mean(model.inference_and_generator.unet.logit.grad).detach().float()
                 grad_logit_max = torch.max(model.inference_and_generator.unet.logit.grad).detach().float()
