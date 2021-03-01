@@ -76,7 +76,7 @@ class UNet(torch.nn.Module):
         self.pred_background = EncoderBackground(ch_in=self.ch_in_bg,
                                                  dim_z=self.dim_zbg)
 
-        self.logit = None
+        self.logit = None  # I reserve storage here to monitor the gradients of logit
 
     def forward(self, x: torch.Tensor, verbose: bool):
         # input_w, input_h = x.shape[-2:]
