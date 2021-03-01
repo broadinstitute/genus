@@ -950,35 +950,48 @@ def process_one_epoch(model: CompositionalVae,
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
-            metrics = model.forward(imgs_in=imgs,
-                                    iom_threshold=iom_threshold,
-                                    noisy_sampling=noisy_sampling,
-                                    draw_image=False,
-                                    draw_bg=False,
-                                    draw_boxes=False,
-                                    draw_boxes_ideal=False).metrics  # the forward function returns metric and other stuff
-
-            if verbose:
-                print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
-
-            # Accumulate metrics over an epoch
-            with torch.no_grad():
-                metric_accumulator.accumulate(source=metrics, counter_increment=len(index))
-
-                # special treatment for count_prediction, wrong_example, accuracy
-                metric_accumulator.set_value(key="count_prediction", value=-1 * numpy.ones(1))
-                metric_accumulator.set_value(key="wrong_examples", value=-1 * numpy.ones(1))
-                metric_accumulator.set_value(key="accuracy", value=-1)
-
-                mask_exact = (metrics.count_prediction == labels.cpu().numpy())
-                n_exact_examples += numpy.sum(mask_exact)
-                wrong_examples += list(index[~mask_exact].cpu().numpy())
+            metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                     iom_threshold=iom_threshold,
+                                                     noisy_sampling=noisy_sampling,
+                                                     draw_image=False,
+                                                     draw_bg=False,
+                                                     draw_boxes=False,
+                                                     draw_boxes_ideal=False).metrics  # forward return metric and other stuff
 
             # Only if training I apply backward
             if model.training:
                 optimizer.zero_grad()
                 metrics.loss.backward()  # do back_prop and compute all the gradients
                 optimizer.step()  # update the parameters
+                grad_logit_min = torch.min(model.inference_and_generator.unet.logit.grad).detach().float()
+                grad_logit_mean = torch.mean(model.inference_and_generator.unet.logit.grad).detach().float()
+                grad_logit_max = torch.max(model.inference_and_generator.unet.logit.grad).detach().float()
+            else:
+                grad_logit_min = 0.0
+                grad_logit_mean = 0.0
+                grad_logit_max = 0.0
+
+            if verbose:
+                print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
+
+            # Accumulate metrics over an epoch
+            with torch.no_grad():
+
+                # compute the right and wrong examples
+                mask_exact = (metrics.count_prediction == labels.cpu().numpy())
+                n_exact_examples += numpy.sum(mask_exact)
+                wrong_examples += list(index[~mask_exact].cpu().numpy())
+
+                # modify the metrics before accumulation
+                metrics_new = metrics._replace(grad_logit_min=grad_logit_min,
+                                               grad_logit_mean=grad_logit_mean,
+                                               grad_logit_max=grad_logit_max,
+                                               count_prediction=-1 * numpy.ones(1),
+                                               wrong_examples=-1 * numpy.ones(1),
+                                               accuracy=-1.0)
+
+                # accumulate the new_metric
+                metric_accumulator.accumulate(source=metrics_new, counter_increment=len(index))
 
                 # apply the weight clipper
                 if weight_clipper is not None:
@@ -1001,4 +1014,4 @@ def process_one_epoch(model: CompositionalVae,
 
             # Make a namedtuple out of the OrderDictionary.
             # Since OrderDictionary preserves the order this preserved order of term.
-            return MetricMiniBatch._make(metric_one_epoch.values())  # is this a robust way to convert dict to namedtuple?
+            return MetricMiniBatch._make(metric_one_epoch.values())  # robust way to convert dict to namedtuple

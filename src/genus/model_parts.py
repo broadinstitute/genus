@@ -219,6 +219,11 @@ class InferenceAndGeneration(torch.nn.Module):
         # ---------------------------#
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
+        # unet_output.logit.register_hook(lambda grad: print("grad before clipping:",
+        #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
+        # unet_output.logit.register_hook(lambda grad: grad.clamp(min=-10, max=10))
+        # unet_output.logit.register_hook(lambda grad: print("grad after clipping:",
+        #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
 
         # TODO: Replace the background block with a VQ-VAE
         # Compute the background
@@ -496,9 +501,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_mse=lambda_mse.detach().item(),
                                  lambda_ncell=lambda_ncell.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 count_prediction=torch.sum(c_detached_mbk[0], dim=-1).detach().cpu().numpy(),
-                                 wrong_examples=-1 * numpy.ones(1),
-                                 accuracy=-1.0,
                                  similarity_l=similarity_l.detach().item(),
-                                 similarity_w=similarity_w.detach().item())
+                                 similarity_w=similarity_w.detach().item(),
+                                 count_prediction=torch.sum(c_detached_mbk[0], dim=-1).detach().cpu().numpy(),
+                                 wrong_examples=None,
+                                 accuracy=None,
+                                 grad_logit_min=None,
+                                 grad_logit_mean=None,
+                                 grad_logit_max=None)
+
         return inference, metric

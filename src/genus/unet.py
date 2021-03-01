@@ -76,6 +76,8 @@ class UNet(torch.nn.Module):
         self.pred_background = EncoderBackground(ch_in=self.ch_in_bg,
                                                  dim_z=self.dim_zbg)
 
+        self.logit = None
+
     def forward(self, x: torch.Tensor, verbose: bool):
         # input_w, input_h = x.shape[-2:]
         if verbose:
@@ -100,7 +102,9 @@ class UNet(torch.nn.Module):
             dist_to_end_of_net = self.n_max_pool - i
             if dist_to_end_of_net == self.level_zwhere_and_logit_output:
                 zwhere = self.encode_zwhere(x)
-                logit = self.encode_logit(x)
+                self.logit = self.encode_logit(x)
+                if self.training:
+                    self.logit.retain_grad()
             if dist_to_end_of_net == self.level_background_output:
                 zbg = self.pred_background(x)  # only few channels needed for predicting bg
 
@@ -115,7 +119,7 @@ class UNet(torch.nn.Module):
             features = self.pred_features(x)
 
         return UNEToutput(zwhere=zwhere,
-                          logit=logit,
+                          logit=self.logit,
                           zbg=zbg,
                           features=features)
 
