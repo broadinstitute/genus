@@ -151,7 +151,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                dim_zwhere=config["architecture"]["dim_zwhere"],
                                dim_logit=1,
                                ch_raw_image=config["architecture"]["n_ch_img"],
-                               concatenate_raw_image_to_fmap=True)
+                               concatenate_raw_image_to_fmap=True,
+                               grad_logit_max=config["loss"]["grad_logit_max"])
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],

@@ -3,6 +3,7 @@ from .unet_parts import DownBlock, DoubleConvolutionBlock, UpBlock
 from .encoders_decoders import Encoder1by1, MLP_1by1, EncoderBackground
 from collections import deque
 from .namedtuple import UNEToutput
+from typing import Optional
 
 
 class UNet(torch.nn.Module):
@@ -16,7 +17,8 @@ class UNet(torch.nn.Module):
                  dim_zwhere: int,
                  dim_logit: int,
                  ch_raw_image: int,
-                 concatenate_raw_image_to_fmap: bool):
+                 concatenate_raw_image_to_fmap: bool,
+                 grad_logit_max: Optional[float] = None):
         super().__init__()
 
         # Parameters UNet
@@ -30,6 +32,8 @@ class UNet(torch.nn.Module):
         self.dim_logit = dim_logit
         self.ch_raw_image = ch_raw_image
         self.concatenate_raw_image_to_fmap = concatenate_raw_image_to_fmap
+        self.grad_logit_max = grad_logit_max
+        self.logit = None  # I reserve storage here to monitor the gradients of logit
 
         # Initializations
         ch = self.ch_after_first_two_conv
@@ -76,8 +80,6 @@ class UNet(torch.nn.Module):
         self.pred_background = EncoderBackground(ch_in=self.ch_in_bg,
                                                  dim_z=self.dim_zbg)
 
-        self.logit = None  # I reserve storage here to monitor the gradients of logit
-
     def forward(self, x: torch.Tensor, verbose: bool):
         # input_w, input_h = x.shape[-2:]
         if verbose:
@@ -105,7 +107,9 @@ class UNet(torch.nn.Module):
                 self.logit = self.encode_logit(x)
                 if self.training:
                     self.logit.retain_grad()
-                    self.logit.register_hook(lambda grad: grad.clamp(min=-0.01, max=0.01))
+                    if self.grad_logit_max is not None:
+                        self.logit.register_hook(lambda grad: grad.clamp(min=-self.grad_logit_max,
+                                                                         max=self.grad_logit_max))
             if dist_to_end_of_net == self.level_background_output:
                 zbg = self.pred_background(x)  # only few channels needed for predicting bg
 
