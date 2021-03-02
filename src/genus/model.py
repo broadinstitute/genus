@@ -813,7 +813,7 @@ def load_from_ckpt(ckpt: dict,
     return
 
 
-def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> List[torch.optim.Optimizer]:
+def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> torch.optim.Optimizer:
     """
     Instantiate a optimizer object to optimize the trainable parameters of the model.
 

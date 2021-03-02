@@ -221,13 +221,6 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
-        # if unet_output.logit.requires_grad:
-        #    unet_output.logit.register_hook(lambda grad: grad.clamp(min=-0.01, max=0.01))
-            # unet_output.logit.register_hook(lambda grad: print("grad before clipping:",
-            #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
-            # unet_output.logit.register_hook(lambda grad: print("grad after clipping:",
-            #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
-
         # TODO: Replace the background block with a VQ-VAE
         # Compute the background
         zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zbg.mu,
@@ -239,6 +232,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   mc_samples=1 if generate_synthetic_data else self.n_mc_samples,
                                                   squeeze_mc=False)
         zbg_kl = zbg.kl.mean()  # mean over latent dimension and batch
+        # TODO: remove sigmoid from here. Background is not limited to be in (0,1)
         out_background_mbcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
                                                               high_resolution=(imgs_bcwh.shape[-2],
                                                                                imgs_bcwh.shape[-1])))
@@ -323,7 +317,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                 dim=-1, index=nms_output.indices_k)
         c_detached_mbk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1),
                                       dim=-1, index=nms_output.indices_k)
-
         zwhere_kl_mbk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
                                      dim=-1, index=nms_output.indices_k)
 
@@ -382,6 +375,17 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_mbcwh = ((out_background_mbcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = torch.mean((mixing_mbk1wh * mse_fg_mbkcwh).sum(dim=-4) + mixing_bg_mb1wh * mse_bg_mbcwh)
+
+
+
+
+
+
+
+
+
+
+
 
         # GECO
         with torch.no_grad():
