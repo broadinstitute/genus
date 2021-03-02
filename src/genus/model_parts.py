@@ -73,12 +73,6 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
         ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
         ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
 
-        # print("DEBUG min, max ->", min_box_size, max_box_size)
-        # print("DEBUG input ->", bounding_boxes_kb.bx[0, 0], bounding_boxes_kb.by[0, 0],
-        #       bounding_boxes_kb.bw[0, 0], bounding_boxes_kb.bh[0, 0], empty_kb[0, 0])
-        # print("DEBUG ideal ->", ideal_bx_kb[0, 0], ideal_by_kb[0, 0],
-        #       ideal_bw_kb[0, 0], ideal_bh_kb[0, 0], empty_kb[0, 0])
-
     # Outside the torch.no_grad() compute the regression cost
     cost_bb_regression = torch.abs(ideal_bx_k - bounding_boxes_k.bx) + \
                          torch.abs(ideal_by_k - bounding_boxes_k.by) + \
@@ -344,6 +338,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the bounding boxes
+        # TODO: Apply sigmoid to mask only
         small_stuff = torch.sigmoid(self.decoder_zinstance.forward(zinstance_few.sample))
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_mbk,
                                      small_stuff=small_stuff,
@@ -353,79 +348,32 @@ class InferenceAndGeneration(torch.nn.Module):
                                                       split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
                                                       dim=-3)
 
-        # Compute the mixing
-        # TODO: think hard about this part with Mehrtash
-        #   This is a sort of softmax function......
-        #   There are many ways to make c differentiable
-        #   Should I detach the denominator?
-        #   Should I introduce z_depth?
-        #   c_smooth_mbk = prob_mbk + (c_detached_mbk.float() - prob_mbk).detach() THIS IS WRONG BECAUSE IT CAN BE EXACTLY ZERO
-        #   c_smooth_mbk = prob_mbk - prob_mbk.detach() + torch.max(prob_mbk, c_detached_mbk.float()).detach()
-        #   Should I detach the denominator? SHould the denominator be multiplied by c_detahced?
-        # Ideally I would like to multiply by c. However if c=0 I can not learn anything and moreover
-        # and kl_zwhere and kl_zinstnace diverge because they are not compensated by anything.
-        # In the "GOLDEN CODE" in the spacetx I used: c+p-p.detached
+        # Compute the mixing (using a softmax-like function)
         p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
         mixing_mbk1wh = p_times_mask_mbk1wh / torch.sum(p_times_mask_mbk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
-        fgfraction_av = mixing_fg_mb1wh.mean()
 
         # Compute mse
         mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_mbcwh = ((out_background_mbcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = torch.mean((mixing_mbk1wh * mse_fg_mbkcwh).sum(dim=-4) + mixing_bg_mb1wh * mse_bg_mbcwh)
 
-
-
-
-
-
-
-
-
-
-
-
-        # GECO
-        with torch.no_grad():
-            # Clamp the log_lambda into the allowed regime
-            self.geco_loglambda_mse.data.clamp_(min=self.geco_loglambda_mse_min,
-                                                max=self.geco_loglambda_mse_max)
-            self.geco_loglambda_ncell.data.clamp_(min=self.geco_loglambda_ncell_min,
-                                                  max=self.geco_loglambda_ncell_max)
-            self.geco_loglambda_fgfraction.data.clamp_(min=self.geco_loglambda_fgfraction_min,
-                                                       max=self.geco_loglambda_fgfraction_max)
-            # From log_lambda to lambda
-            lambda_mse = self.geco_loglambda_mse.data.exp() * \
-                         torch.sign(mse_av - self.geco_target_mse_min)
-
-            ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
-            lambda_ncell = self.geco_loglambda_ncell.data.exp() * \
-                           torch.sign(ncell_av - self.geco_target_ncell_min)
-
-            lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * \
-                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
-
-            # Is the value in range?
-            mse_in_range = (mse_av > self.geco_target_mse_min) & \
-                           (mse_av < self.geco_target_mse_max)
-            ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-                             (ncell_av < self.geco_target_ncell_max)
-            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
-                                  (fgfraction_av < self.geco_target_fgfraction_max)
-        # Outside torch.no_grad()
-        loss_geco_mse = self.geco_loglambda_mse * (1.0 * mse_in_range - 1.0 * ~mse_in_range)
-        loss_geco_fgfraction = self.geco_loglambda_fgfraction * (1.0 * fgfraction_in_range - 1.0 * ~fgfraction_in_range)
-        loss_geco_ncell = self.geco_loglambda_ncell * (1.0 * ncell_in_range - 1.0 * ~ncell_in_range)
+        # KL should act at full strength on full boxes.
+        # TODO: I don't think it is a big deal to multiply by 1.0, i.e. empty cell also have KL.
+        #   Netwrok will learn to have does cell to produce KL=0.
+        #   Ideally, I would multiply by p_detached
+        # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
+        # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
+        indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
+        zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
+        zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
 
         # Loss for non-overlapping masks
         # TODO: I observe that this loss makes the mask shinkr and the fg_fraction go down.
         #   The intended behavior is to avoid the overlaps not to drive down the fg_fraction.
         #   Maybe I should write this loss function in terms of mixing.
-        p_detached_times_mask_mbk1wh = prob_mbk[..., None, None, None].detach() * out_mask_mbk1wh
-        mask_overlap_mb1wh = p_detached_times_mask_mbk1wh.sum(dim=-4).pow(2) - \
-                             p_detached_times_mask_mbk1wh.pow(2).sum(dim=-4)
+        mask_overlap_mb1wh = mixing_mbk1wh.sum(dim=-4).pow(2) - mixing_mbk1wh.pow(2).sum(dim=-4)
         loss_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3)).mean()
 
         # Loss to ideal bounding boxes
@@ -434,7 +382,6 @@ class InferenceAndGeneration(torch.nn.Module):
             area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
             ratio_mbk = area_mask_mbk / area_bb_mbk
             is_active_mbk = ratio_mbk < 0.8  # this is a trick so that you do not start expanding empty squares
-        # outside torch.no_grad()
         bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
                                                                                bounding_boxes_k=bounding_box_mbk,
                                                                                pad_size=self.pad_size_bb,
@@ -443,30 +390,47 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_bb_regression = self.bb_regression_strength * (prob_mbk.detach() * is_active_mbk *
                                                             bb_regression_mbk).sum(dim=-1).mean()
 
-        # KL should act at full strength on full boxes.
-        # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
-        # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
-        indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
-        zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
+        # GECO
+        with torch.no_grad():
+            # MSE
+            self.geco_loglambda_mse.data.clamp_(min=self.geco_loglambda_mse_min,
+                                                max=self.geco_loglambda_mse_max)
+            lambda_mse = self.geco_loglambda_mse.data.exp() * torch.sign(mse_av - self.geco_target_mse_min)
+            mse_in_range = (mse_av > self.geco_target_mse_min) & \
+                           (mse_av < self.geco_target_mse_max)
+            g_mse = 2.0 * mse_in_range - 1.0
 
-        # TODO: Decide what is the best thing to couple to lambda_ncell
-        # coupled_to_ncell = unet_output.logit.clamp(min=-10).sum(dim=(-1, -2, -3)).mean() if lambda_ncell > 0 else \
-        #    unet_output.logit.clamp(max=10).sum(dim=(-1, -2, -3)).mean()
+            # FG_FRACTION
+            self.geco_loglambda_fgfraction.data.clamp_(min=self.geco_loglambda_fgfraction_min,
+                                                       max=self.geco_loglambda_fgfraction_max)
+            fgfraction_av = mixing_fg_mb1wh.mean()
+            lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * \
+                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
+            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
+                                  (fgfraction_av < self.geco_target_fgfraction_max)
+            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
 
-        loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + \
-                    lambda_mse.detach() * mse_av + loss_geco_mse - loss_geco_mse.detach()
+            # NCELL_AV
+            self.geco_loglambda_ncell.data.clamp_(min=self.geco_loglambda_ncell_min,
+                                                  max=self.geco_loglambda_ncell_max)
+            ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
+            lambda_ncell = self.geco_loglambda_ncell.data.exp() * torch.sign(ncell_av - self.geco_target_ncell_min)
+            ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
+                             (ncell_av < self.geco_target_ncell_max)
+            g_ncell = 2.0 * ncell_in_range - 1.0
 
-        loss_additional = loss_mask_overlap + loss_bb_regression + logit_kl_additional
-                          # \
-                          # lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()  # + \
-                          # loss_geco_ncell - loss_geco_ncell.detach()
-                          # +
-                          # lambda_fgfraction.detach() * (prob_mbk[..., None, None, None].detach() *
-                          #                               out_mask_mbk1wh).sum(dim=(-1, -2, -3, -4)).mean() + \
-                          # loss_geco_fgfraction - loss_geco_fgfraction.detach() + logit_kl_additional \
-                          # + lambda_ncell.detach() * com.sum(dim=(-1, -2, -3))
-                          #
+        # Outside torch.no_grad()
+        loss_geco_mse = self.geco_loglambda_mse * g_mse + lambda_mse.detach() * mse_av
+        loss_geco_fgfraction = self.geco_loglambda_fgfraction * g_fgfraction + \
+                               lambda_fgfraction.detach() * mixing_fg_mb1wh.sum(dim=(-1, -2, -3)).mean()
+        loss_geco_ncell = self.geco_loglambda_ncell * g_ncell + \
+                          lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
+
+        # Add all the losses together
+        loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + loss_geco_mse
+
+        loss_additional = loss_mask_overlap + loss_bb_regression + \
+                          logit_kl_additional + loss_geco_fgfraction + loss_geco_ncell
 
         loss = loss_base + (1.0 - prob_corr_factor) * loss_additional
 
