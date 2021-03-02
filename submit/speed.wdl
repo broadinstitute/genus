@@ -49,11 +49,17 @@ task train {
            cd ./src 
            pip install pprofile 
            pprofile --out profile_output.txt --exclude-syspath ~{main_file_name}
+           mv profile_output.txt $exec_dir/profiling.txt
         fi
+        
+        # 4. check the execution dir
+        echo "JUST BEFORE DELOCALIZATION --> Content of execution dir"
+        cd $exec_dir
+        echo $(ls)
     >>>
 
     output {
-        File profiling = "profile_output.txt"
+        File profiling = "profiling.txt"
     }
 
     runtime {

@@ -19,7 +19,7 @@
 
 
 import time
-for i in range(100):
+for i in range(10):
     print(i)
     time.sleep(1.0)
 
