@@ -1,21 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import neptune
-# import genus
-from genus.util_logging import log_object_as_artifact, log_model_summary, log_img_only, log_many_metrics
-from genus.model import *
-from genus.util_vis import show_batch, plot_tiling, plot_label_contours, \
-    plot_reconstruction_and_inference, plot_generation, plot_segmentation, plot_img_and_seg, plot_concordance
-from genus.util_ml import SpecialDataSet #, ConditionalRandomCrop
-from genus.util import *
-
-# Check versions
-import torch
-import numpy
-from platform import python_version
-print("python_version() ---> ", python_version())
-print("torch.__version__ --> ", torch.__version__)
+#import neptune
+## import genus
+#from genus.util_logging import log_object_as_artifact, log_model_summary, log_img_only, log_many_metrics
+#from genus.model import *
+#from genus.util_vis import show_batch, plot_tiling, plot_label_contours, \
+#    plot_reconstruction_and_inference, plot_generation, plot_segmentation, plot_img_and_seg, plot_concordance
+#from genus.util_ml import SpecialDataSet #, ConditionalRandomCrop
+#from genus.util import *
+#
+## Check versions
+#import torch
+#import numpy
+#from platform import python_version
+#print("python_version() ---> ", python_version())
+#print("torch.__version__ --> ", torch.__version__)
 
 
 import time
