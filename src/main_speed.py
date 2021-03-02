@@ -225,4 +225,3 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                epoch=epoch,
                                                history_dict=history_dict)
                     print("Done epoch")
-exp.stop()
