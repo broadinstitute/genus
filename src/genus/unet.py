@@ -105,6 +105,7 @@ class UNet(torch.nn.Module):
                 self.logit = self.encode_logit(x)
                 if self.training:
                     self.logit.retain_grad()
+                    self.logit.register_hook(lambda grad: grad.clamp(min=-0.01, max=0.01))
             if dist_to_end_of_net == self.level_background_output:
                 zbg = self.pred_background(x)  # only few channels needed for predicting bg
 

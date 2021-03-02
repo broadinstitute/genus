@@ -219,12 +219,13 @@ class InferenceAndGeneration(torch.nn.Module):
         # ---------------------------#
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
-        unet_output.logit.register_hook(lambda grad: grad.clamp(min=-0.01, max=0.01))
 
-        # unet_output.logit.register_hook(lambda grad: print("grad before clipping:",
-        #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
-        # unet_output.logit.register_hook(lambda grad: print("grad after clipping:",
-        #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
+        # if unet_output.logit.requires_grad:
+        #    unet_output.logit.register_hook(lambda grad: grad.clamp(min=-0.01, max=0.01))
+            # unet_output.logit.register_hook(lambda grad: print("grad before clipping:",
+            #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
+            # unet_output.logit.register_hook(lambda grad: print("grad after clipping:",
+            #                                                   torch.min(grad), torch.mean(grad), torch.max(grad)))
 
         # TODO: Replace the background block with a VQ-VAE
         # Compute the background

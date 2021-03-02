@@ -873,7 +873,7 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> Li
     return optimizer
 
 
-def instantiate_scheduler(optimizer: Tuple[torch.optim.Optimizer],
+def instantiate_scheduler(optimizer: torch.optim.Optimizer,
                           config_scheduler: dict) -> torch.optim.lr_scheduler._LRScheduler:
     """
     Instantiate a optimizer scheduler.
@@ -918,7 +918,7 @@ def instantiate_scheduler(optimizer: Tuple[torch.optim.Optimizer],
 def process_one_epoch(model: CompositionalVae,
                       dataloader: SpecialDataSet,
                       optimizer: torch.optim.Optimizer,
-                      scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+                      scheduler: torch.optim.lr_scheduler._LRScheduler = None,
                       weight_clipper: Optional[Callable[[None], None]] = None,
                       verbose: bool = False,
                       noisy_sampling: bool = True,
