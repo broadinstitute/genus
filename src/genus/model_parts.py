@@ -187,10 +187,10 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_loglambda_ncell_min = numpy.log(config["loss"]["geco_lambda_ncell"][0])
         self.geco_loglambda_ncell_max = numpy.log(config["loss"]["geco_lambda_ncell"][1])
 
-        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(0,  # self.geco_target_fgfraction_min,
+        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(self.geco_target_fgfraction_min,
                                                                               dtype=torch.float),
                                                             requires_grad=True)
-        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(0,  # self.geco_loglambda_ncell_max,
+        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_min,
                                                                          dtype=torch.float),
                                                        requires_grad=True)
         self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_mse_max,

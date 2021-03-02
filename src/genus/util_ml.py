@@ -31,18 +31,10 @@ class MetricsAccumulator(object):
     def _accumulate_key_value(self, _key, _value, counter_increment):
 
         if isinstance(_value, torch.Tensor):
-            mask = torch.isfinite(_value)
-            _value[~mask] = 0.0
             x = _value.detach().item()
         elif isinstance(_value, float):
-            if numpy.isfinite(_value):
-                x = _value
-            else:
-                x = 0.0
-                print("DEBUG not_finite", _key, _value)
+            x = _value
         elif isinstance(_value, numpy.ndarray):
-            mask = numpy.isfinite(_value)
-            _value[~mask] = 0.0
             x = _value
         else:
             raise Exception("value of unrecognized type", _key, type(_value))
