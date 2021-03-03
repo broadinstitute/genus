@@ -5,7 +5,7 @@
  "simulation" : {
    "__comment" : "there are 3 types of runs: scratch, resume, pretrained",
    "type" : "scratch",
-   "MAX_EPOCHS" : 201,
+   "MAX_EPOCHS" : 2,
    "TEST_FREQUENCY" : 5,
    "CHECKPOINT_FREQUENCY" : 20,
    "batch_size" : 128
@@ -40,22 +40,22 @@
  
  "shortcut_prob_corr_factor" : {
   "__comment" : "parameters for the shortcut for porb_corr_factor",
-  "values" : [0.0, 0.0],
-  "times" : [50, 100]
+  "values" : [1.0, 0.0],
+  "times" : [61, 100]
  },
 
  "loss" : {
    "__comment" : "if active=false use ELBO, else use GECO with Log-Likelihood threshold = n_pixels * n_channel * threshold",
    "geco_mse_target" : 0.1,
    "geco_fgfraction_target" : [0.05, 0.15],
-   "geco_ncell_target" : [2.0, 6.0],
-   "geco_lambda_mse" : [1.0, 10.0],
-   "geco_lambda_ncell" : [0.01, 10],
-   "geco_lambda_fgfraction" : [0.01, 10],
+   "geco_ncell_target" : [3.0, 5.0],
+   "geco_lambda_mse" : [1.0, 5.0],
+   "geco_lambda_ncell" : [0.001, 3],
+   "geco_lambda_fgfraction" : [0.001, 1000],
    "mask_overlap_penalty_strength": 0.0,
    "bounding_box_regression_penalty_strength": 0.0,
    "bounding_box_regression_padding" : 3,
-   "n_mc_samples" : 2,
+   "n_mc_samples" : 4,
    "grad_logit_max" : 0.1
  },
 
@@ -64,7 +64,7 @@
    "type" : "adam",
    "base_lr" : 0.001,
    "betas" : [0.9, 0.999],
-   "base_lr_similarity" : 0.001,
+   "base_lr_similarity" : 0.01,
    "betas_similarity" : [0.9, 0.999],
    "base_lr_geco" : 0.001,
    "betas_geco" : [0.9, 0.999],

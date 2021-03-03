@@ -48,7 +48,8 @@ task train {
            export NEPTUNE_API_TOKEN=$token
            cd ./src 
            pip install pprofile 
-           pprofile --out profile_output.txt --exclude-syspath ~{main_file_name}
+           # pprofile --out profile_output.txt --exclude-syspath ~{main_file_name}
+           pprofile --out profile_output.txt ~{main_file_name}
            mv profile_output.txt $exec_dir/profiling.txt
         fi
         
@@ -62,23 +63,23 @@ task train {
         File profiling = "profiling.txt"
     }
 
-    runtime {
-          docker: "python"
-          cpu: 1
-          preemptible: 3
-    }
+##    runtime {
+##          docker: "python"
+##          cpu: 1
+##          preemptible: 3
+##    }
     
-###    runtime {
-###         docker: "us.gcr.io/broad-dsde-methods/pyro_matplotlib:0.0.7"
-###         bootDiskSizeGb: 100
-###         memory: "26G"
-###         cpu: 4
-###         zones: "us-east1-d us-east1-c"
-###         gpuCount: 1
-###         gpuType:  "nvidia-tesla-t4" #"nvidia-tesla-p100" #"nvidia-tesla-k80"
-###         maxRetries: 0
-###         preemptible_tries: 0
-###    }
+    runtime {
+         docker: "us.gcr.io/broad-dsde-methods/pyro_matplotlib:0.0.7"
+         bootDiskSizeGb: 100
+         memory: "26G"
+         cpu: 4
+         zones: "us-east1-d us-east1-c"
+         gpuCount: 1
+         gpuType:  "nvidia-tesla-t4" #"nvidia-tesla-p100" #"nvidia-tesla-k80"
+         maxRetries: 0
+         preemptible_tries: 0
+    }
 
 }
 
