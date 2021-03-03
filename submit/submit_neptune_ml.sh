@@ -68,7 +68,6 @@ template_wdl_json() {
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		-h|--help)
-			echo "here"
 			display_help
 			exit 0
 			;;
