@@ -1,6 +1,6 @@
 {
 
- "neptune_project" : "dalessioluca/genus",
+ "neptune_project" : "dalessioluca/MNIST",
 
  "simulation" : {
    "__comment" : "there are 3 types of runs: scratch, resume, pretrained",
@@ -18,12 +18,12 @@
    "dim_zbg" : 20,
    "glimpse_size" : 28,
    "n_max_pool_unet" : 4,
-   "level_zwherelogit_unet" : 2,
+   "level_zwherelogit_unet" : 4,
    "n_ch_img" : 1,
-   "n_ch_output_features" : 32,
-   "n_ch_after_preprocessing" : 32,
+   "n_ch_output_features" : 16,
+   "n_ch_after_preprocessing" : 16,
    "downsampling_factor_during_preprocessing" : 1,
-   "nms_threshold_train" : 0.5,
+   "nms_threshold_train" : 0.3,
    "nms_threshold_test" : 0.7
  },
 
@@ -41,7 +41,7 @@
  "shortcut_prob_corr_factor" : {
   "__comment" : "parameters for the shortcut for porb_corr_factor",
   "values" : [0.4, 0.0],
-  "times" : [50, 150]
+  "times" : [20, 40]
  },
 
  "loss" : {
@@ -49,9 +49,9 @@
    "geco_mse_target" : 0.075,
    "geco_fgfraction_target" : [0.05, 0.15],
    "geco_ncell_target" : [2.0, 6.0],
-   "geco_lambda_mse" : [1.0, 100],
-   "geco_lambda_ncell" : [0.001, 1000],
-   "geco_lambda_fgfraction" : [0.001, 1000],
+   "geco_lambda_mse" : [1.0, 10],
+   "geco_lambda_ncell" : [0.01, 1000],
+   "geco_lambda_fgfraction" : [0.01, 1000],
    "mask_overlap_penalty_type": 1,
    "mask_overlap_penalty_strength": 0.0,
    "bounding_box_regression_penalty_strength": 0.0,
@@ -61,7 +61,7 @@
  "optimizer" : {
    "__comment" : "which optimizer to use",
    "type" : "adam",
-   "base_lr" : 0.0001,
+   "base_lr" : 0.001,
    "betas" : [0.9, 0.999],
    "base_lr_similarity" : 0.01,
    "betas_similarity" : [0.9, 0.999],

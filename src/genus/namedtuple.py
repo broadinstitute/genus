@@ -163,8 +163,8 @@ class BB(NamedTuple):
 
 
 class NmsOutput(NamedTuple):
-    score_kb: torch.Tensor  # shape k, batch_size
-    indices_kb: torch.Tensor
+    k_mask_n: torch.Tensor  # mask with exactly k ones
+    indices_k: torch.Tensor
 
 
 class SparseSimilarity(NamedTuple):
@@ -191,16 +191,16 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
-    logit_grid_unet: torch.Tensor  # for debug
-    background_bcwh: torch.Tensor
-    foreground_kbcwh: torch.Tensor
-    mixing_kb1wh: torch.Tensor
+    background_cwh: torch.Tensor
+    foreground_kcwh: torch.Tensor
+    sum_c_times_mask_1wh: torch.Tensor
+    mixing_k1wh: torch.Tensor
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor
     sample_c_grid_after_nms: torch.Tensor
-    sample_c_kb: torch.Tensor
-    sample_bb_kb: BB
-    sample_bb_ideal_kb: BB
+    sample_c_k: torch.Tensor
+    sample_bb_k: BB
+    sample_bb_ideal_k: BB
 
 
 class MetricMiniBatch(NamedTuple):
@@ -220,38 +220,47 @@ class MetricMiniBatch(NamedTuple):
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
-    kl_av: float
+    kl_logit_base: float
+    kl_logit_additional: float
+    kl_zinstance: float
+    kl_zbg: float
+    kl_zwhere: float
     cost_mask_overlap_av: float
     cost_bb_regression_av: float
     ncell_av: float
+    prob_av: float
+    distance_from_reinforce_baseline: float
     fgfraction_av: float
+    area_mask_over_area_bb_av: float
     # geco
     lambda_mse: float
     lambda_ncell: float
     lambda_fgfraction: float
-    # conting accuracy
-    count_prediction: numpy.ndarray
-    wrong_examples: numpy.ndarray
-    accuracy: float
     # I am learning the right things?
     similarity_l: float
     similarity_w: float
-    kl_logit_av: float
+    # conting accuracy
+    count_prediction: numpy.ndarray
+    wrong_examples: Optional[numpy.ndarray]
+    accuracy: Optional[float]
+    # Debugging the grads
+    grad_logit_min: Optional[float]
+    grad_logit_mean: Optional[float]
+    grad_logit_max: Optional[float]
 
     def pretty_print(self, epoch: int = 0) -> str:
-        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, kl={3:.3f}, mask_overlap={4:.3f}, \
-             bb_regression={5:.3f}, fg_fraction_av={6:.3f}, n_cell_av={7:.3f}, lambda_mse={8:.3f}, \
-             lambda_ncell={9:.3f}, lambda_fgfraction={10:.3f}".format(epoch,
-                                                                      self.loss,
-                                                                      self.mse_av,
-                                                                      self.kl_av,
-                                                                      self.cost_mask_overlap_av,
-                                                                      self.cost_bb_regression_av,
-                                                                      self.fgfraction_av,
-                                                                      self.ncell_av,
-                                                                      self.lambda_mse,
-                                                                      self.lambda_ncell,
-                                                                      self.lambda_fgfraction)
+        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
+             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
+             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
+                                                                     self.loss,
+                                                                     self.mse_av,
+                                                                     self.cost_mask_overlap_av,
+                                                                     self.cost_bb_regression_av,
+                                                                     self.fgfraction_av,
+                                                                     self.ncell_av,
+                                                                     self.lambda_mse,
+                                                                     self.lambda_ncell,
+                                                                     self.lambda_fgfraction)
         return s
 
 

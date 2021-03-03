@@ -3,11 +3,10 @@ import numpy
 import torch.nn.functional as F
 from torch.distributions.utils import broadcast_all
 from typing import Union, Optional, Tuple
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from torch.distributions.distribution import Distribution
 from torch.distributions import constraints
-from collections import deque
-from .util import invert_convert_to_box_list, convert_to_box_list
+from .util import invert_convert_to_box_list, convert_to_box_list, are_broadcastable
 from .util_vis import plot_img_and_seg
 from .namedtuple import DIST
 
@@ -29,21 +28,21 @@ class MetricsAccumulator(object):
         self._counter = 0
         self._dict_accumulate = OrderedDict()
 
-    def _accumulate_key_value(self, key, value, counter_increment):
-        if isinstance(value, torch.Tensor):
-            x = value.detach().item() * counter_increment
-        elif isinstance(value, float):
-            x = value * counter_increment
-        elif isinstance(value, numpy.ndarray):
-            x = value * counter_increment
+    def _accumulate_key_value(self, _key, _value, counter_increment):
+
+        if isinstance(_value, torch.Tensor):
+            x = _value.detach().item()
+        elif isinstance(_value, float):
+            x = _value
+        elif isinstance(_value, numpy.ndarray):
+            x = _value
         else:
-            print(type(value))
-            raise Exception
+            raise Exception("value of unrecognized type", _key, type(_value))
 
         try:
-            self._dict_accumulate[key] = x + self._dict_accumulate.get(key, 0)
+            self._dict_accumulate[_key] = x * counter_increment + self._dict_accumulate.get(_key, 0)
         except ValueError:
-            # oftent the case if accumulating two numpy array of different sizes
+            # often the case if accumulating two numpy array of different sizes
             pass
 
     def accumulate(self, source: Union[tuple, dict], counter_increment: int = 1):
@@ -71,7 +70,7 @@ class MetricsAccumulator(object):
         """
         tmp = self._dict_accumulate.copy()
         for k, v in self._dict_accumulate.items():
-            tmp[k] = v/self._counter
+            tmp[k] = v / self._counter
         return tmp
 
     def set_value(self, key, value):
@@ -79,146 +78,9 @@ class MetricsAccumulator(object):
         self._dict_accumulate[key] = value
 
 
-def are_broadcastable(a: torch.Tensor, b: torch.Tensor) -> bool:
-    """ Returns True if the two tensor are broadcastable to each other, False otherwise. """
-    return all((m == n) or (m == 1) or (n == 1) for m, n in zip(a.shape[::-1], b.shape[::-1]))
-
-
-def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
-                                  posterior_std: torch.Tensor,
-                                  prior_mu: torch.Tensor,
-                                  prior_std: torch.Tensor,
-                                  noisy_sampling: bool,
-                                  sample_from_prior: bool) -> DIST:
-    """
-    Analytically computes KL divergence between two gaussian distributions
-    and draw a sample from either the prior or posterior depending of the values of :attr:`sample_from_prior`.
-
-    Args:
-        posterior_mu: torch.Tensor with the posterior mean
-        posterior_std: torch.Tensor with the posterior standard deviation
-        prior_mu: torch.Tensor with the prior mean
-        prior_std: torch.Tensor with the prior standard deviation
-        noisy_sampling: if True a random sample is generated,
-            if False the mode of the distribution (i.e. the mean) is returned.
-        sample_from_prior: if True the sample is drawn from the prior distribution, if False the posterior distribution
-            is used.
-
-    Returns:
-        :class:`DIST` with the KL divergence and the sample from either the prior or posterior
-        depending of the values of :attr:`sample_from_prior`. The shape of the sample and KL divergence is equal to
-        the common broadcast shape of the :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu`
-        and :attr:`prior_std`
-
-    Note:
-        :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu` and :attr:`prior_std`
-        must the broadcastable to a common shape.
-
-    Note:
-        The KL divergence is :math:`KL = \\int dz q(z) \\log \\left(p(z)/q(z)\\right)` where
-        :math:`q(z)` is the posterior and :math:`p(z)` is the prior.
-    """
-    # Compute the KL divergence
-    post_mu, post_std, pr_mu, pr_std = broadcast_all(posterior_mu, posterior_std, prior_mu, prior_std)
-    tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
-    kl = tmp / (2 * pr_std * pr_std) - post_std.log() + pr_std.log()
-
-    if sample_from_prior:
-        # working with the prior
-        sample = pr_mu + pr_std * torch.randn_like(pr_mu) if noisy_sampling else pr_mu
-    else:
-        # working with the posterior
-        sample = post_mu + post_std * torch.randn_like(post_mu) if noisy_sampling else post_mu
-
-    return DIST(sample=sample, kl=kl)
-
-
-def sample_c_grid(logit_grid: torch.Tensor,
-                  similarity_matrix: torch.Tensor,
-                  noisy_sampling: bool,
-                  sample_from_prior: bool) -> torch.Tensor:
-    """
-    Sample c_grid either from a Determinental Point Process (DPP) prior specified by a similarity matrix or
-    from a posterior which is a collection of independent Bernoulli specified by the logit_grid.
-
-    Args:
-        logit_grid: torch.Tensor of size :math:`(B,1,W,H)` with the logit specifying the Bernoulli probabilities
-        similarity_matrix: torch.Tensor of size :math:`(W x H, W x H)` with the similarity between all grid points
-        noisy_sampling: if True draw a random sample, if False the sample is the mode of the distribution
-        sample_from_prior: If True draw from the prior (DPP), if False draw from the posterior (independent Bernoulli)
-
-    Returns:
-        Binarized torch.Tensor with c_grid which has the same size as :attr:`logit_grid`.
-
-    Note:
-        The output is not differentiable w.r.t. any of the inputs (i.e. :attr:`logit_grid` or :attr:`similarity_matrix`)
-    """
-    assert len(logit_grid.shape) == 4
-    assert logit_grid.shape[-3] == 1
-    assert len(similarity_matrix.shape) == 2
-    assert similarity_matrix.shape[-2] == similarity_matrix.shape[-1] == logit_grid.shape[-1]*logit_grid.shape[-2]
-
-    with torch.no_grad():
-        if sample_from_prior:
-            # sample from DPP specified by the similarity kernel
-            batch_size = torch.Size([logit_grid.shape[0]])
-            s = similarity_matrix.requires_grad_(False)
-            c_all = FiniteDPP(L=s).sample(sample_shape=batch_size)  # shape: batch_size, n_points
-            c_reshaped = c_all.transpose(-1, -2).float().unsqueeze(-1)  # shape: n_points, batch_size, 1
-            c_grid = invert_convert_to_box_list(c_reshaped,
-                                                original_width=logit_grid.shape[-2],
-                                                original_height=logit_grid.shape[-1])
-        else:
-            # sample from posterior which is a collection of independent Bernoulli variables
-            p_grid = torch.sigmoid(logit_grid)
-            c_grid = (torch.rand_like(p_grid) < p_grid) if noisy_sampling else (0.5 < p_grid)
-
-        return c_grid.float()  # same shape as logit_grid.
-
-
-def compute_logp_dpp(c_grid: torch.Tensor,
-                     similarity_matrix: torch.Tensor):
-    """
-    Compute the log_probability of the :attr:`c_grid` configuration under the DPP distribution specified by the
-    :attr:`similarity_matrix`.
-
-    Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-        similarity_matrix: Matrix with the similarity matrix between grid points of shape :math:`(W x H, W x H)`
-
-    Returns:
-        :math:`log_prob(c_grid | DPP(similarity_matrix))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`similarity_matrix` but not differentiable w.r.t. :attr:`c_grid`.
-    """
-    c_no_grad = convert_to_box_list(c_grid).squeeze(-1).bool().detach()  # shape n_points, batch_size
-    log_prob_prior = FiniteDPP(L=similarity_matrix).log_prob(c_no_grad.transpose(-1, -2))  # shape: batch_shape
-    return log_prob_prior
-
-
-def compute_logp_bernoulli(c_grid: torch.Tensor,
-                           logit_grid: torch.Tensor):
-    """
-    Compute the log_probability of the :attr:`c_grid` configuration under the collection
-    of independent Bernoulli distributions specified by the :attr:`logit_grid`.
-
-    Args:
-        c_grid: Binarized configuration of shape :math:`(B,1,W,H)`
-        logit_grid: Logit of the Bernoulli distributions of shape :math:`(B,1,W,H)`
-
-    Returns:
-        :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of shape :math:`(B)`. This value is differentiable w.r.t.
-        the :attr:`logit_grid` but not differentiable w.r.t. :attr:`c_grid`.
-    """
-    log_p_grid = F.logsigmoid(logit_grid)
-    log_1_m_p_grid = F.logsigmoid(-logit_grid)
-    log_prob_bernoulli = (c_grid.detach() * log_p_grid +
-                          (c_grid - 1).detach() * log_1_m_p_grid).sum(dim=(-1, -2, -3))  # sum over ch=1, w, h
-    return log_prob_bernoulli
-
-
 class SimilarityKernel(torch.nn.Module):
     """
-    Square gaussian kernel with learnable parameters (weight and lenght_scale).
+    Square gaussian kernel with learnable parameters (weight and length_scale).
     """
 
     def __init__(self,
@@ -230,7 +92,7 @@ class SimilarityKernel(torch.nn.Module):
                  eps: float = 1E-4):
         """
         Args:
-            length_scale: Initial value for learnable parameter specifying the lenght scale of the kernel.
+            length_scale: Initial value for learnable parameter specifying the length scale of the kernel.
             weight: Initial value for learnable parameter specifying the weight of the kernel.
             length_scale_min_max: Tuple with the minimum and maximum allowed value for the :attr:`length_scale`.
                 During training the value of length_scale is clamped back inside the allowed range.
@@ -282,12 +144,6 @@ class SimilarityKernel(torch.nn.Module):
         self.weight_value = torch.nn.Parameter(data=torch.tensor(weight, device=self.device, dtype=torch.float),
                                                requires_grad=True)
 
-        # Initialization
-        self.n_width = -1
-        self.n_height = -1
-        self.d2 = None
-        self.diag = None
-
     def _compute_d2_diag(self, n_width: int, n_height: int):
         with torch.no_grad():
             ix_array = torch.arange(start=0, end=n_width, dtype=torch.int, device=self.device)
@@ -308,29 +164,15 @@ class SimilarityKernel(torch.nn.Module):
             diag = torch.diag_embed(values, offset=0, dim1=-2, dim2=-1)
             return d2, diag
 
-    def sample_2_mask(self, sample):
-        """
-        Conversion routine
-
-        Args:
-            sample: A tensor fo size :math:`(*, W \\times H)`
-
-        Returns:
-            A grid of size :math:`(*,W,H)`
-        """
-        independent_dims = list(sample.shape[:-1])
-        mask = sample.view(independent_dims + [self.n_width, self.n_height])
-        return mask
-
     def get_l_w(self):
-        """ Returns the current value of lenght scale and weight of the similarity kernel """
-        return self.length_scale_value.data, self.weight_value.data
+        """ Returns the current value of length scale and weight of the similarity kernel """
+        return self.length_scale_value, self.weight_value
 
     def _clamp_and_get_l_w(self):
         """ Clamps the parameters before they are used to compute the similarity matrix. """
-        l_clamped = self.length_scale_value.data.clamp_(min=self.length_scale_min, max=self.length_scale_max)
-        w_clamped = self.weight_value.data.clamp_(min=self.weight_min, max=self.weight_max)
-        return l_clamped, w_clamped
+        self.length_scale_value.data.clamp_(min=self.length_scale_min, max=self.length_scale_max)
+        self.weight_value.data.clamp_(min=self.weight_min, max=self.weight_max)
+        return self.length_scale_value, self.weight_value
 
     def forward(self, n_width: int, n_height: int) -> torch.Tensor:
         """
@@ -344,15 +186,9 @@ class SimilarityKernel(torch.nn.Module):
             A similarity matrix of shape :math:`(N, N)` where
             :math:`N =` :attr:`n_width` :math:`\\times` :attr:`n_height`.
         """
-
         l, w = self._clamp_and_get_l_w()
-
-        if (n_width != self.n_width) or (n_height != self.n_height):
-            self.n_width = n_width
-            self.n_height = n_height
-            self.d2, self.diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
-
-        return self.diag + w * torch.exp(-0.5*self.d2/(l*l))
+        d2, diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
+        return diag + w * torch.exp(-0.5*d2/(l*l))
 
 
 class FiniteDPP(Distribution):
@@ -368,13 +204,21 @@ class FiniteDPP(Distribution):
         https://github.com/pytorch/pytorch/issues/28293
     """
     arg_constraints = {'K': constraints.positive_definite,
-                       'L': constraints.positive_definite}
+                       'L': constraints.positive_definite,
+                       'eigen_L': constraints.positive_definite}
     support = constraints.boolean
     has_rsample = False
 
-    def __init__(self, K=None, L=None, validate_args=None):
+    def __init__(self, K=None, L=None, eigen_L=None, validate_args=None):
         """
-        A Finite DPP distribution is defined either via the likelihood matrix (L) or the correlation matrix (K).
+        A Finite DPP is FULLY specified by the correlation matrix (K), the likelihood matrix (L)
+        and the L_eigenvalues. All three are necessary to perform different operations.
+        For example:
+            (1) the computation of the log_probability of a configuration requires the L matrix and L_eigenvalues.
+            (2) Drawing a new random sample requires the K matrix
+
+        The MINIMAL specification of the DPP is by either the K or L matrix. The remaining information can be obtained
+        via SVD decomposition. If all three elements are specified, no svd decomposition will be performed.
 
         Args:
             K: correlation matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
@@ -383,6 +227,7 @@ class FiniteDPP(Distribution):
             L: likelihood matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
                 eigenvalues in :math:`>= 0`. Any expoentially decaying similarity kernel will give rise
                 to a valid likelihood matrix.
+            eigen_L: the eigenvalues of the L matrix
 
         Note:
             This class is often used in combination with :class:`SimilarityKernel`.
@@ -392,33 +237,67 @@ class FiniteDPP(Distribution):
             >>> likelihood_matrix = kernel.forward(n_width=20, n_height=20)
             >>> DPP = FiniteDPP(L=likelihood_matrix)
         """
-        if (K is None and L is None) or (K is not None and L is not None):
-            raise Exception("only one among K and L need to be defined")
 
-        elif K is not None:
-            self.K = 0.5 * (K + K.transpose(-1, -2))  # make sure it is symmetrized
+        if (K is None) and (L is None):
+            raise Exception("One between K and L need to be defined")
+        elif L is None:
+            self._L = None
+            self._K = 0.5 * (K + K.transpose(-1, -2))
+            batch_shape, event_shape = self._K.shape[:-2], self._K.shape[-1:]
+        elif K is None:
+            self._K = None
+            self._L = 0.5 * (L + L.transpose(-1, -2))
+            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+        else:
+            # neither is none
+            assert L.shape == K.shape
+            self._L = L
+            self._K = K
+            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+
+        self._eigen_l = eigen_L
+        super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
+
+    @property
+    def K(self):
+        if self._K is None:
+            # print("svd from L")
             try:
-                u, s_k, v = torch.svd(self.K)
+                u, s_l, v = torch.svd(self._L)
             except:
                 # torch.svd may have convergence issues for GPU and CPU.
-                u, s_k, v = torch.svd(self.K + 1e-3 * self.K.mean() * torch.ones_like(self.K))
-            s_l = s_k / (1.0 - s_k)
-            self.L = torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
-        elif L is not None:
-            self.L = 0.5 * (L + L.transpose(-1, -2))  # make sure it is symmetrized
+                u, s_l, v = torch.svd(self._L + 1e-3 * self._L.mean() * torch.ones_like(self._L))
+            s_k = s_l / (1.0 + s_l)
+            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+            self._eigen_l = s_l
+        return self._K
+
+    @property
+    def L(self):
+        if self._L is None:
+            # print("svd from K")
+            try:
+                u, s_k, v = torch.svd(self._K)
+            except:
+                # torch.svd may have convergence issues for GPU and CPU.
+                u, s_k, v = torch.svd(self._K + 1e-3 * self._K.mean() * torch.ones_like(self._K))
+            self._eigen_l = s_k / (1.0 - s_k)
+            self._L = torch.matmul(u * self._eigen_l.unsqueeze(-2), v.transpose(-1, -2))
+        return self._L
+
+    @property
+    def eigen_l(self):
+        if self._eigen_l is None:
+            # print("eigen from L")
             try:
                 u, s_l, v = torch.svd(self.L)
             except:
                 # torch.svd may have convergence issues for GPU and CPU.
                 u, s_l, v = torch.svd(self.L + 1e-3 * self.L.mean() * torch.ones_like(self.L))
             s_k = s_l / (1.0 + s_l)
-            self.K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-        else:
-            raise Exception
-
-        self.s_l = s_l
-        batch_shape, event_shape = self.K.shape[:-2], self.K.shape[-1:]
-        super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
+            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+            self._eigen_l = s_l
+        return self._eigen_l
 
     def expand(self, batch_shape, _instance=None):
         """
@@ -428,9 +307,9 @@ class FiniteDPP(Distribution):
         batch_shape = torch.Size(batch_shape)
         kernel_shape = batch_shape + self.event_shape + self.event_shape
         value_shape = batch_shape + self.event_shape
-        new.s_l = self.s_l.expand(value_shape)
-        new.L = self.L.expand(kernel_shape)
-        new.K = self.K.expand(kernel_shape)
+        new._eigen_l = None if self._eigen_l is None else self._eigen_l.expand(value_shape)
+        new._L = None if self._L is None else self._L.expand(kernel_shape)
+        new._K = None if self._K is None else self._K.expand(kernel_shape)
         super(FiniteDPP, new).__init__(batch_shape,
                                        self.event_shape,
                                        validate_args=False)
@@ -480,7 +359,7 @@ class FiniteDPP(Distribution):
     def log_prob(self, value):
         """
         Computes the log_probability of the configuration given the current value of the correlation matrix (K) or
-        likelihood matrix (L) used to initialize the instance.
+        likelihood matrix (L) used to initialize the instance. It requires the L matrix and L_eigenvalues
 
         Args:
             value: The binarized configuration of shape :math:`(*, \\text{event_shape})`
@@ -515,29 +394,86 @@ class FiniteDPP(Distribution):
         if self._validate_args:
             self._validate_sample(value)
 
-        logdet_L_plus_I = (self.s_l + 1).log().sum(dim=-1)  # sum over the event_shape
-
         # Reshapes
         value = value.unsqueeze(0)  # trick to make it work even if not-batched
         independet_dims = list(value.shape[:-1])
         value = value.flatten(start_dim=0, end_dim=-2)  # *, event_shape
-        # print("internal. value.shape", value.shape)
         L = self.L.expand(independet_dims + [-1, -1]).flatten(start_dim=0, end_dim=-3)  # *, event_shape, event_shape
-        # print("internal. L.shape", L.shape)
 
         # Here I am computing the logdet of square matrix of different shapes
-        # I use the trick to embed everything inside a larger identity matrix since
+
+        # APPROACH 1:
+        # Select sub-row and columns and embed everything inside a larger identity matrix since
         #     | A  B  0 |
         # det | C  D  0 | = determinant of the sub_matrix
         #     | 0  0  1 |
-        n_max = torch.sum(value, dim=-1).max().item()
+        n_c = torch.sum(value, dim=-1)
+        n_max = n_c.max().item()
         matrix = torch.eye(n_max, dtype=L.dtype, device=L.device).expand(L.shape[-3], n_max, n_max).clone()
-        # print("internal. matrix.shape", matrix.shape)
-        for i in range(value.shape[0]):
-            n = torch.sum(value[i]).item()
-            matrix[i, :n, :n] = L[i, value[i], :][:, value[i]]
+        # Since the tensor is rugged, I need to do it with a for loop...
+        for i in range(n_c.shape[0]):
+            matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
+
         logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
+        logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched
+
+
+class Grid_DPP(torch.nn.Module):
+    """ Wrapper around :class:`SimilariyKenrnel` and :class:`FiniteDPP` for easy work with 2D grids of points """
+
+    def __init__(self,
+                 length_scale: float,
+                 weight: float,
+                 length_scale_min_max: Optional[Tuple[float, float]] = None,
+                 weight_min_max: Optional[Tuple[float, float]] = None,
+                 pbc: bool = False,
+                 eps: float = 1E-4):
+        """ See :class:`SimilarityKernel` for an explanation of the arguments """
+
+        super().__init__()
+        self.similiraty_kernel = SimilarityKernel(length_scale=length_scale,
+                                                  weight=weight,
+                                                  length_scale_min_max=length_scale_min_max,
+                                                  weight_min_max=weight_min_max,
+                                                  pbc=pbc,
+                                                  eps=eps)
+        self.finite_dpp:  Optional[FiniteDPP] = None
+        self.fingerprint = (None, None, None, None)
+
+    def sample(self, size: torch.Size):
+        """
+        Draw a random sample of size torch.Size according to the current values of length_scale, weight.
+        Note that size must be at least 2D.
+        """
+        assert len(size) >= 2
+        current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
+                              self.similiraty_kernel.weight_value.data.item(),
+                              size[-2], size[-1])
+
+        if current_figerprint != self.fingerprint:
+            similarity = self.similiraty_kernel.forward(n_width=size[-2], n_height=size[-1])
+            self.finite_dpp = FiniteDPP(L=similarity)
+            self.fingerprint = current_figerprint
+
+        c_all = self.finite_dpp.sample(sample_shape=size[:-2]).view(size)
+        return c_all
+
+    def log_prob(self, value: torch.Tensor):
+        """ Compute the log_prob of a configuration. Note that value need to be at least 2D """
+        assert len(value.shape) >= 2
+        current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
+                              self.similiraty_kernel.weight_value.data.item(),
+                              value.shape[-2], value.shape[-1])
+
+        if current_figerprint != self.fingerprint:
+            similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
+            self.finite_dpp = FiniteDPP(L=similarity)
+            self.fingerprint = current_figerprint
+
+        # Identical can immediately draw a sample
+        logp = self.finite_dpp.log_prob(value=value.flatten(start_dim=-2))
+        return logp
 
 
 class ConditionalRandomCrop(object):
@@ -633,7 +569,7 @@ class ConditionalRandomCrop(object):
                             fraction = float(term1 - term2 - term3 + term4) / self.desired_area
                         elif roi_mask is not None:
                             fraction = roi_mask[b, 0, i:i+self.desired_w,
-                                                j:j+self.desired_h].sum().float()/self.desired_area
+                                       j:j+self.desired_h].sum().float()/self.desired_area
                         else:
                             fraction = 1.0
 
@@ -905,3 +841,95 @@ class SpecialDataSet(object):
         print("MINIBATCH: min and max of minibatch", torch.min(img), torch.max(img))
         return plot_img_and_seg(img=img, seg=seg, figsize=(6, 12))
 
+
+def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
+                                  posterior_std: torch.Tensor,
+                                  prior_mu: torch.Tensor,
+                                  prior_std: torch.Tensor,
+                                  noisy_sampling: bool,
+                                  sample_from_prior: bool,
+                                  squeeze_mc: bool,
+                                  mc_samples: int = 1) -> DIST:
+    """
+    Analytically computes KL divergence between two gaussian distributions
+    and draw a sample from either the prior or posterior depending of the values of :attr:`sample_from_prior`.
+
+    Args:
+        posterior_mu: torch.Tensor with the posterior mean
+        posterior_std: torch.Tensor with the posterior standard deviation
+        prior_mu: torch.Tensor with the prior mean
+        prior_std: torch.Tensor with the prior standard deviation
+        noisy_sampling: if True a random sample is generated,
+            if False the mode of the distribution (i.e. the mean) is returned.
+        sample_from_prior: if True the sample is drawn from the prior distribution, if False the posterior distribution
+            is used.
+        squeeze_mc: whether or not to squeeze the leading dimension corresponding to different mc_samples.
+            This has effect only if :attr:`mc_samples` == 1.
+        mc_samples: number of monte_carlo samples
+
+    Returns:
+        :class:`DIST` with the KL divergence and the sample from either the prior or posterior
+        depending of the values of :attr:`sample_from_prior`. The shape of the sample and KL divergence is equal to
+        the common broadcast shape of the :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu`
+        and :attr:`prior_std`. If :attr:`mc_samples` > 1 or :attr:`squeeze_mc` is False a leading dimension is
+        added to the left to represent the different monte carlo samples
+
+    Note:
+        :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu` and :attr:`prior_std`
+        must the broadcastable to a common shape.
+
+    Note:
+        The KL divergence is :math:`KL = \\int dz q(z) \\log \\left(p(z)/q(z)\\right)` where
+        :math:`q(z)` is the posterior and :math:`p(z)` is the prior.
+    """
+    post_mu, post_std, pr_mu, pr_std = broadcast_all(posterior_mu, posterior_std, prior_mu, prior_std)
+    random = torch.randn([mc_samples] + list(post_mu.shape), device=post_mu.device, dtype=post_mu.dtype)
+
+    # Compute the KL divergence
+    tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
+    kl = (tmp / (2 * pr_std * pr_std) - post_std.log() + pr_std.log()).expand_as(random)
+
+    # Sample
+    if sample_from_prior:
+        # working with the prior
+        sample = pr_mu + pr_std * random if noisy_sampling else pr_mu.expand_as(random)
+    else:
+        # working with the posterior
+        sample = post_mu + post_std * random if noisy_sampling else post_mu.expand_as(random)
+
+    if squeeze_mc:
+        # Note that squeeze has effect only if the squeezed dimension has shape 1
+        sample = sample.squeeze(dim=0)
+        kl = kl.squeeze(dim=0)
+
+    return DIST(sample=sample, kl=kl)
+
+
+def compute_entropy_bernoulli(logit: torch.Tensor):
+    """ Compute the entropy of the bernoulli distribution, i.e. H= - [p * log(p) + (1-p) * log(1-p)] """
+    p = torch.sigmoid(logit)
+    one_m_p = torch.sigmoid(-logit)
+    log_p = F.logsigmoid(logit)
+    log_one_m_p = F.logsigmoid(-logit)
+    entropy = - (p * log_p + one_m_p * log_one_m_p)
+    return entropy
+
+
+def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
+    """
+     Compute the log_probability of the :attr:`c` configuration under the Bernoulli distribution specified by
+     :attr:`logit`.
+
+     Args:
+         c: Boolean tensor with the configuration
+         logit: Logit of the Bernoulli distributions
+
+     Returns:
+         :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of the same shape as :attr:`c`.
+         This value is differentiable w.r.t. the :attr:`logit` but not differentiable w.r.t. :attr:`c`.
+     """
+
+    log_p = F.logsigmoid(logit)
+    log_one_m_p = F.logsigmoid(-logit)
+    log_prob_bernoulli = (c.detach() * log_p + ~c.detach() * log_one_m_p)
+    return log_prob_bernoulli

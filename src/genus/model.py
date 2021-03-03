@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy
 import pathlib
-from typing import Tuple, Optional, Callable
+from typing import Tuple, Optional, Callable, List
 from .namedtuple import Inference, MetricMiniBatch, Segmentation, SparseSimilarity, Output
 from .util_vis import draw_bounding_boxes, draw_img
 from .model_parts import InferenceAndGeneration
@@ -118,8 +118,8 @@ class CompositionalVae(torch.nn.Module):
 
         return ckpt
 
-
     @staticmethod
+    @torch.no_grad()
     def _compute_sparse_similarity_matrix(mixing_k: torch.tensor,
                                           batch_of_index: torch.tensor,
                                           max_index: int,
@@ -132,8 +132,8 @@ class CompositionalVae(torch.nn.Module):
         This method is called internally by the method :meth:`process_batch_imgs` which is exposed to the user.
 
         Args:
-            mixing_k: Tensor of shape :math:`(N_{max_instances}, B, 1, W, H)` containing the mixing probabilities.
-            batch_of_index: Tensor of shape :math:`(B, 1, W, H)` with a unique integer identifying each pixel IDs.
+            mixing_k: Tensor of shape :math:`(*, K, 1, W, H)` containing the mixing probabilities.
+            batch_of_index: Tensor of shape :math:`(*, 1, W, H)` with a unique integer identifying each pixel IDs.
                 Valid pixel IDs are >= 0. Pixel with ID value less than 0 will be ignored.
             max_index: The maximum pixel ID. This is necessary b/c a sparse matrix can only be constructed if the
                 largest possible row and col ID is known.
@@ -145,6 +145,9 @@ class CompositionalVae(torch.nn.Module):
             is O(max_index) not O(max_index^2) as for dense matrices.
 
         Note:
+            It works for any number of leading dimensions. Any leading dimensions will be treated independently.
+
+        Note:
             This function is a thin wrapper around a dot product. For each displacement
             (let's say +1 in the x direction) all pixel pairs are computed simultaneously.
             Unfortunately there is no way to compute all displacement without using a for-loop.
@@ -154,7 +157,7 @@ class CompositionalVae(torch.nn.Module):
         """
         with torch.no_grad():
             # start_time = time.time()
-            n_boxes, batch_shape, ch_in, w, h = mixing_k.shape
+            batch_shape, n_boxes, ch_in, w, h = mixing_k.shape
             assert ch_in == 1
             assert (batch_shape, 1, w, h) == batch_of_index.shape
 
@@ -171,7 +174,7 @@ class CompositionalVae(torch.nn.Module):
                                                                      b=pad_index,
                                                                      radius=radius_nn):
                 v = (pad_mixing_k *
-                     pad_mixing_k_shifted).sum(dim=-5)[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
+                     pad_mixing_k_shifted).sum(dim=-4)[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
                 col = pad_index_shifted[:, 0, pad:(pad + w), pad:(pad + h)]  # shape: batch, w, h
 
                 # check that pixel IDs are valid and connectivity larger than threshold
@@ -254,6 +257,7 @@ class CompositionalVae(torch.nn.Module):
                                       max_index=None,
                                       radius_nn=10)
 
+    @torch.no_grad()
     def _segment_internal(self,
                           batch_imgs: torch.tensor,
                           k_objects_max: int,
@@ -278,59 +282,57 @@ class CompositionalVae(torch.nn.Module):
 
         # start_time = time.time()
 
-        with torch.no_grad():
+        inference: Inference
+        metrics: MetricMiniBatch
+        inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
+                                                          generate_synthetic_data=False,
+                                                          prob_corr_factor=prob_corr_factor,
+                                                          iom_threshold=iom_threshold,
+                                                          k_objects_max=k_objects_max,
+                                                          topk_only=topk_only,
+                                                          noisy_sampling=noisy_sampling)
 
-            inference: Inference
-            metrics: MetricMiniBatch
-            inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
-                                                              generate_synthetic_data=False,
-                                                              prob_corr_factor=prob_corr_factor,
-                                                              iom_threshold=iom_threshold,
-                                                              k_objects_max=k_objects_max,
-                                                              topk_only=topk_only,
-                                                              noisy_sampling=noisy_sampling)
+        # Now compute fg_prob, integer_segmentation_mask, similarity
+        most_likely_mixing, index = torch.max(inference.mixing_k1wh, dim=-4, keepdim=True)  # *, 1, 1, w, h
+        integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
+        fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-            # Now compute fg_prob, integer_segmentation_mask, similarity
-            most_likely_mixing, index = torch.max(inference.mixing_kb1wh, dim=-5, keepdim=True)  # 1, batch_size, 1, w, h
-            integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-5).to(dtype=torch.int32)  # bg=0 fg=1,2,.
-            fg_prob = torch.sum(inference.mixing_kb1wh, dim=-5)  # sum over instances
+        bounding_boxes = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                             bounding_box_k=inference.sample_bb_k,
+                                             width=integer_mask.shape[-2],
+                                             height=integer_mask.shape[-1],
+                                             color='red') if draw_boxes else None
 
-            bounding_boxes = draw_bounding_boxes(c_kb=inference.sample_c_kb,
-                                                 bounding_box_kb=inference.sample_bb_kb,
-                                                 width=integer_mask.shape[-2],
-                                                 height=integer_mask.shape[-1],
-                                                 color='red') if draw_boxes else None
+        bounding_boxes_ideal = draw_bounding_boxes(c_k=inference.sample_c_k,
+                                                   bounding_box_k=inference.sample_bb_ideal_k,
+                                                   width=integer_mask.shape[-2],
+                                                   height=integer_mask.shape[-1],
+                                                   color='blue') if draw_boxes_ideal else None
 
-            bounding_boxes_ideal = draw_bounding_boxes(c_kb=inference.sample_c_kb,
-                                                       bounding_box_kb=inference.sample_bb_ideal_kb,
-                                                       width=integer_mask.shape[-2],
-                                                       height=integer_mask.shape[-1],
-                                                       color='blue') if draw_boxes_ideal else None
+        # print("inference time", time.time()-start_time)
 
-            # print("inference time", time.time()-start_time)
+        if batch_of_index is None:
+            return Segmentation(raw_image=batch_imgs,
+                                fg_prob=fg_prob,
+                                integer_mask=integer_mask,
+                                bounding_boxes=bounding_boxes,
+                                bounding_boxes_ideal=bounding_boxes_ideal,
+                                similarity=None)
 
-            if batch_of_index is None:
-                return Segmentation(raw_image=batch_imgs,
-                                    fg_prob=fg_prob,
-                                    integer_mask=integer_mask,
-                                    bounding_boxes=bounding_boxes,
-                                    bounding_boxes_ideal=bounding_boxes_ideal,
-                                    similarity=None)
-
-            else:
-                max_index = torch.max(batch_of_index) if max_index is None else max_index
-                similarity_matrix = CompositionalVae._compute_sparse_similarity_matrix(mixing_k=inference.mixing_kb1wh,
-                                                                                       batch_of_index=batch_of_index,
-                                                                                       max_index=max_index,
-                                                                                       radius_nn=radius_nn,
-                                                                                       min_threshold=0.1)
-                return Segmentation(raw_image=batch_imgs,
-                                    fg_prob=fg_prob,
-                                    integer_mask=integer_mask,
-                                    bounding_boxes=bounding_boxes,
-                                    bounding_boxes_ideal=bounding_boxes_ideal,
-                                    similarity=SparseSimilarity(sparse_matrix=similarity_matrix,
-                                                                index_matrix=None))
+        else:
+            max_index = torch.max(batch_of_index) if max_index is None else max_index
+            similarity_matrix = CompositionalVae._compute_sparse_similarity_matrix(mixing_k=inference.mixing_k1wh,
+                                                                                   batch_of_index=batch_of_index,
+                                                                                   max_index=max_index,
+                                                                                   radius_nn=radius_nn,
+                                                                                   min_threshold=0.1)
+            return Segmentation(raw_image=batch_imgs,
+                                fg_prob=fg_prob,
+                                integer_mask=integer_mask,
+                                bounding_boxes=bounding_boxes,
+                                bounding_boxes_ideal=bounding_boxes_ideal,
+                                similarity=SparseSimilarity(sparse_matrix=similarity_matrix,
+                                                            index_matrix=None))
 
     def segment_with_tiling(self,
                             single_img: torch.Tensor,
@@ -821,7 +823,7 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
             as learning rate, betas, weight_decay etc. (required).
 
     Returns:
-        An optimizer object
+        An list containing all the optimizers object
 
     Note:
         The state of the optimizer can be loaded from a ckpt by invoking :class:`load_from_ckpt`.
@@ -842,9 +844,11 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
     # split the parameters between GECO and NOT_GECO
     geco_params, similarity_params, other_params = [], [], []
     for name, param in model.named_parameters():
-        if name.startswith("geco"):
+        if ".geco" in name:
+            # print("geco params -->", name)
             geco_params.append(param)
-        elif name.startswith("similarity"):
+        elif ".similarity" in name:
+            # print("similarity params -->", name)
             similarity_params.append(param)
         else:
             other_params.append(param)
@@ -869,16 +873,17 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
     return optimizer
 
 
-def instantiate_scheduler(optimizer: torch.optim.Optimizer, config_scheduler: dict) -> torch.optim.lr_scheduler:
+def instantiate_scheduler(optimizer: torch.optim.Optimizer,
+                          config_scheduler: dict) -> torch.optim.lr_scheduler._LRScheduler:
     """
     Instantiate a optimizer scheduler.
 
     Args:
-        optimizer: The optimizer whose state will be controlled by the scheduler.
+        optimizer: List of optimizers whose state will be controlled by the scheduler.
         config_scheduler: Dictionary containing the hyperparameters of the scheduler.
 
     Returns:
-        A scheduler object.
+        A list of scheduler object.
 
     Raises:
         Exception: If dict_params_scheduler["type"] is not "step_LR"
@@ -900,6 +905,11 @@ def instantiate_scheduler(optimizer: torch.optim.Optimizer, config_scheduler: di
                                                     step_size=config_scheduler["step_size"],
                                                     gamma=config_scheduler["gamma"],
                                                     last_epoch=-1)
+    elif config_scheduler["type"] == "multistep_LR":
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,
+                                                         milestones=config_scheduler["milestones"],
+                                                         gamma=config_scheduler["gamma"],
+                                                         last_epoch=-1)
     else:
         raise Exception("scheduler type is not recognized")
     return scheduler
@@ -908,7 +918,7 @@ def instantiate_scheduler(optimizer: torch.optim.Optimizer, config_scheduler: di
 def process_one_epoch(model: CompositionalVae,
                       dataloader: SpecialDataSet,
                       optimizer: torch.optim.Optimizer,
-                      scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+                      scheduler: torch.optim.lr_scheduler._LRScheduler = None,
                       weight_clipper: Optional[Callable[[None], None]] = None,
                       verbose: bool = False,
                       noisy_sampling: bool = True,
@@ -932,59 +942,78 @@ def process_one_epoch(model: CompositionalVae,
     n_exact_examples = 0
     wrong_examples = []
 
-    # Start loop over minibatches
-    for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
+    # Anomaly detection is slow but help with debugging
+    with torch.autograd.set_detect_anomaly(mode=False):
 
-        # Put data in GPU if available
-        imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
+        # Start loop over minibatches
+        for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
 
-        metrics = model.forward(imgs_in=imgs,
-                                iom_threshold=iom_threshold,
-                                noisy_sampling=noisy_sampling,
-                                draw_image=False,
-                                draw_bg=False,
-                                draw_boxes=False,
-                                draw_boxes_ideal=False).metrics  # the forward function returns metric and other stuff
+            # Put data in GPU if available
+            imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
-        if verbose:
-            print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
+            metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                     iom_threshold=iom_threshold,
+                                                     noisy_sampling=noisy_sampling,
+                                                     draw_image=False,
+                                                     draw_bg=False,
+                                                     draw_boxes=False,
+                                                     draw_boxes_ideal=False).metrics  # forward return metric and other stuff
 
-        # Accumulate metrics over an epoch
+            # Only if training I apply backward
+            if model.training:
+                optimizer.zero_grad()
+                metrics.loss.backward()  # do back_prop and compute all the gradients
+                optimizer.step()  # update the parameters
+
+                grad_logit_min = torch.min(model.inference_and_generator.unet.logit.grad).detach().float()
+                grad_logit_mean = torch.mean(model.inference_and_generator.unet.logit.grad).detach().float()
+                grad_logit_max = torch.max(model.inference_and_generator.unet.logit.grad).detach().float()
+            else:
+                grad_logit_min = 0.0
+                grad_logit_mean = 0.0
+                grad_logit_max = 0.0
+
+            if verbose:
+                print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
+
+            # Accumulate metrics over an epoch
+            with torch.no_grad():
+
+                # compute the right and wrong examples
+                mask_exact = (metrics.count_prediction == labels.cpu().numpy())
+                n_exact_examples += numpy.sum(mask_exact)
+                wrong_examples += list(index[~mask_exact].cpu().numpy())
+
+                # modify the metrics before accumulation
+                metrics_new = metrics._replace(grad_logit_min=grad_logit_min,
+                                               grad_logit_mean=grad_logit_mean,
+                                               grad_logit_max=grad_logit_max,
+                                               count_prediction=-1 * numpy.ones(1),
+                                               wrong_examples=-1 * numpy.ones(1),
+                                               accuracy=-1.0)
+
+                # accumulate the new_metric
+                metric_accumulator.accumulate(source=metrics_new, counter_increment=len(index))
+
+                # apply the weight clipper
+                if weight_clipper is not None:
+                    model.__self__.apply(weight_clipper)
+                    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
+
+        # End of loop over minibatches
+
+        # Only if training apply the scheduler
+        if model.training and scheduler is not None:
+            scheduler.step()
+
+        # At the end of the loop compute a dictionary with the average of the metrics over one epoch
         with torch.no_grad():
-            metric_accumulator.accumulate(source=metrics, counter_increment=len(index))
+            metric_one_epoch = metric_accumulator.get_average()
+            accuracy = float(n_exact_examples) / (n_exact_examples + len(wrong_examples))
+            metric_one_epoch["accuracy"] = accuracy
+            metric_one_epoch["wrong_examples"] = numpy.array(wrong_examples)
+            metric_one_epoch["count_prediction"] = -1 * numpy.ones(1)
 
-            # special treatment for count_prediction, wrong_example, accuracy
-            metric_accumulator.set_value(key="count_prediction", value=-1 * numpy.ones(1))
-            metric_accumulator.set_value(key="wrong_examples", value=-1 * numpy.ones(1))
-            metric_accumulator.set_value(key="accuracy", value=-1)
-
-            mask_exact = (metrics.count_prediction == labels.cpu().numpy())
-            n_exact_examples += numpy.sum(mask_exact)
-            wrong_examples += list(index[~mask_exact].cpu().numpy())
-
-        # Only if training I apply backward
-        if model.training:
-            optimizer.zero_grad()
-            metrics.loss.backward()  # do back_prop and compute all the gradients
-            optimizer.step()  # update the parameters
-
-            # apply the weight clipper
-            if weight_clipper is not None:
-                model.__self__.apply(weight_clipper)
-    # End of loop over minibatches
-
-    # Only if training apply the scheduler
-    if model.training and scheduler is not None:
-        scheduler.step()
-
-    # At the end of the loop compute a dictionary with the average of the metrics over one epoch
-    with torch.no_grad():
-        metric_one_epoch = metric_accumulator.get_average()
-        accuracy = float(n_exact_examples) / (n_exact_examples + len(wrong_examples))
-        metric_one_epoch["accuracy"] = accuracy
-        metric_one_epoch["wrong_examples"] = numpy.array(wrong_examples)
-        metric_one_epoch["count_prediction"] = -1 * numpy.ones(1)
-
-        # Make a namedtuple out of the OrderDictionary.
-        # Since OrderDictionary preserves the order this preserved order of term.
-        return MetricMiniBatch._make(metric_one_epoch.values())  # is this a robust way to convert dict to namedtuple?
+            # Make a namedtuple out of the OrderDictionary.
+            # Since OrderDictionary preserves the order this preserved order of term.
+            return MetricMiniBatch._make(metric_one_epoch.values())  # robust way to convert dict to namedtuple

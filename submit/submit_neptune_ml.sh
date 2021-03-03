@@ -64,6 +64,7 @@ template_wdl_json() {
 #--------------------------------------
 # 1. read inputs from command line
 #--------------------------------------
+
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		-h|--help)
@@ -87,8 +88,16 @@ while [[ $# -gt 0 ]]; do
 			template_wdl_json
 			exit 0
 			;;
-		-*|--*=) # unknown option
+		-*|--*) # unknown option
 			echo "ERROR: Unsupported flag $1"
+			exit 1
+			;;
+		*.wdl) # wdl workflow
+			WDL=$1
+			shift 1
+			;;
+		*)
+			echo "ERROR: Unrecognized option $1"
 			exit 1
 			;;
 	esac
@@ -107,7 +116,7 @@ gsutil cp $ML_JSON $ML_JSON_CLOUD
 # 2. create the json file which will be passed to cromshell
 echo
 echo "Step2: crerating input.json file for cromshell"
-key_for_ML_parameters=$(womtool inputs neptune_ml.wdl | jq 'keys[]' | grep "ML_par")
+key_for_ML_parameters=$(womtool inputs $WDL | jq 'keys[]' | grep "ML_par")
 echo '{' "$key_for_ML_parameters" : '"'"$ML_JSON_CLOUD"'" }' > tmp.json
 jq -s '.[0] * .[1]' tmp.json $WDL_JSON | tee input.json
 rm -rf tmp.json
