@@ -220,8 +220,7 @@ class MetricMiniBatch(NamedTuple):
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
-    kl_logit_base: float
-    kl_logit_additional: float
+    kl_logit: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float

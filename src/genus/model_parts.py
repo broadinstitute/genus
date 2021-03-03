@@ -1,5 +1,5 @@
 import torch
-import torch.nn.functional as F
+from typing import Union
 import numpy
 
 from .cropper_uncropper import Uncropper, Cropper
@@ -54,18 +54,24 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
         minus_h = plus_h[-1] - plus_h + 1
         minus_w = plus_w[-1] - plus_w + 1
 
-        # Find the coordinates of the bounding box
-        ideal_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        ideal_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        ideal_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
-        ideal_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+        # Find the coordinates of the full bounding boxes
+        full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
+        full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
+        full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+        full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
 
-        # If the box is empty, do a special treatment, i.e. make them the smallest possible size
+        # Find the coordinates of the empty bounding boxes
+        empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
+        empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
+        empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
+        empty_y3_k = bounding_boxes_k.by + 0.5 * min_box_size
+
+        # Ideal_bb depends whether box is full or empty
         empty_k = (mask_k == 0)
-        ideal_x1_k[empty_k] = bounding_boxes_k.bx[empty_k] - 0.5 * min_box_size
-        ideal_x3_k[empty_k] = bounding_boxes_k.bx[empty_k] + 0.5 * min_box_size
-        ideal_y1_k[empty_k] = bounding_boxes_k.by[empty_k] - 0.5 * min_box_size
-        ideal_y3_k[empty_k] = bounding_boxes_k.by[empty_k] + 0.5 * min_box_size
+        ideal_x1_k = torch.where(empty_k, empty_x1_k, full_x1_k)
+        ideal_x3_k = torch.where(empty_k, empty_x3_k, full_x3_k)
+        ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
+        ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
 
         # Compute the box coordinates (note the clamping of bw and bh)
         ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
@@ -113,6 +119,28 @@ def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box
               by=convert_to_box_list(by_grid).squeeze(-1),
               bw=convert_to_box_list(bw_grid).squeeze(-1),
               bh=convert_to_box_list(bh_grid).squeeze(-1))
+
+
+def linear_quadratic_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+    if isinstance(x, float):
+        y = x if x < 0.5 else x**2 + 0.25
+    elif isinstance(x, torch.Tensor):
+        mask = x < 0.5
+        y = mask * x + ~mask * (x.pow(2) + 0.25)
+    else:
+        raise Exception("input type should be either float or torch.Tensor ->", type(x))
+    return y
+
+
+def inverse_linear_quadratic_activation(y: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+    if isinstance(y, float):
+        x = y if y < 0.5 else numpy.sqrt(y-0.25)
+    elif isinstance(y, torch.Tensor):
+        mask = y < 0.5
+        x = mask * y + ~mask * (y-0.25).sqrt()
+    else:
+        raise Exception("input type should be either float or torch.Tensor ->", type(y))
+    return x
 
 
 class InferenceAndGeneration(torch.nn.Module):
@@ -180,20 +208,20 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_target_fgfraction_min = config["loss"]["geco_fgfraction_target"][0]
         self.geco_target_fgfraction_max = config["loss"]["geco_fgfraction_target"][1]
 
-        self.geco_loglambda_mse_min = numpy.log(config["loss"]["geco_lambda_mse"][0])
-        self.geco_loglambda_mse_max = numpy.log(config["loss"]["geco_lambda_mse"][1])
-        self.geco_loglambda_fgfraction_min = numpy.log(config["loss"]["geco_lambda_fgfraction"][0])
-        self.geco_loglambda_fgfraction_max = numpy.log(config["loss"]["geco_lambda_fgfraction"][1])
-        self.geco_loglambda_ncell_min = numpy.log(config["loss"]["geco_lambda_ncell"][0])
-        self.geco_loglambda_ncell_max = numpy.log(config["loss"]["geco_lambda_ncell"][1])
+        self.geco_rawlambda_mse_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_mse"][0]))
+        self.geco_rawlambda_mse_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_mse"][1]))
+        self.geco_rawlambda_fgfraction_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_fgfraction"][0]))
+        self.geco_rawlambda_fgfraction_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_fgfraction"][1]))
+        self.geco_rawlambda_ncell_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_ncell"][0]))
+        self.geco_rawlambda_ncell_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_ncell"][1]))
 
-        self.geco_loglambda_fgfraction = torch.nn.Parameter(data=torch.tensor(self.geco_target_fgfraction_min,
+        self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(1.0,  # self.geco_target_fgfraction_min,
                                                                               dtype=torch.float),
                                                             requires_grad=True)
-        self.geco_loglambda_ncell = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_ncell_min,
+        self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(1.0,  # self.geco_rawlambda_ncell_min,
                                                                          dtype=torch.float),
                                                        requires_grad=True)
-        self.geco_loglambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_loglambda_mse_max,
+        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_rawlambda_mse_max,
                                                                        dtype=torch.float), requires_grad=True)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -226,6 +254,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   mc_samples=1 if generate_synthetic_data else self.n_mc_samples,
                                                   squeeze_mc=False)
         zbg_kl = zbg.kl.mean()  # mean over latent dimension and batch
+
         # TODO: remove sigmoid from here. Background is not limited to be in (0,1)
         out_background_mbcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
                                                               high_resolution=(imgs_bcwh.shape[-2],
@@ -261,8 +290,9 @@ class InferenceAndGeneration(torch.nn.Module):
                 c_tmp = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling else (0.5 < prob_expanded)
             c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
 
-            # Do non-max-suppression
-            score_grid = c_grid_before_nms + unet_prob_b1wh
+            # Do non-max-suppression (nothat during pretraining I use random scores)
+            noise_grid = torch.rand(c_grid_before_nms.shape, dtype=unet_prob_b1wh.dtype, device=unet_prob_b1wh.device)
+            score_grid = c_grid_before_nms + unet_prob_b1wh + prob_corr_factor * noise_grid
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
@@ -273,34 +303,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      original_width=score_grid.shape[-2],
                                                      original_height=score_grid.shape[-1])
             c_grid_after_nms = c_grid_before_nms * k_mask_grid
-
-        # Compute KL divergence between the DPP prior and the posterior:
-        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
-        #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
-        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
-        # minimization w.r.t. a lead to high entropy posteriors.
-        # The derivative of the second term w.r.t. DPP can be estimated by simple MONTE CARLO samples and makes
-        # DPP prior parameters adjust to the seen configurations.
-        # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
-        # the posterior have more weight on configuration which are likely under the prior
-        #
-        # I am splitting the KL_logit into two terms, one will be always be active
-        # the other will be turned on later during training
-        entropy = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
-        logp_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
-        logit_kl_base = - entropy - logp_dpp_after_nms
-
-        if prob_corr_factor < 1.0:
-            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
-            logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
-                                                            logit=unet_output.logit).sum(dim=(-1, -2, -3))
-            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            d_mb = (logp_dpp_before_nms_mb - baseline_b).detach()
-            distance_from_reinforce_baseline = d_mb.abs().mean()
-            logit_kl_additional = - (logp_ber_before_nms_mb * d_mb).mean()
-        else:
-            distance_from_reinforce_baseline = torch.zeros_like(logit_kl_base)
-            logit_kl_additional = torch.zeros_like(logit_kl_base)
 
         # Gather all relevant quantities from the selected boxes
         bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
@@ -359,6 +361,27 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_bg_mbcwh = ((out_background_mbcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = torch.mean((mixing_mbk1wh * mse_fg_mbkcwh).sum(dim=-4) + mixing_bg_mb1wh * mse_bg_mbcwh)
 
+        # Compute KL divergence between the DPP prior and the posterior:
+        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
+        #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
+        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
+        # minimization w.r.t. a lead to high entropy posteriors.
+        # The derivative of the second term w.r.t. DPP can be estimated by simple MONTE CARLO samples and makes
+        # DPP prior parameters adjust to the seen configurations.
+        # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
+        # the posterior have more weight on configuration which are likely under the prior
+        entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
+
+        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
+        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
+                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
+        d_mb = (logp_dpp_before_nms_mb - baseline_b).detach()
+        distance_from_reinforce_baseline = d_mb.abs().mean()
+        reinforce_mb = logp_ber_before_nms_mb * d_mb
+        logit_kl = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
+
         # KL should act at full strength on full boxes.
         # TODO: I don't think it is a big deal to multiply by 1.0, i.e. empty cell also have KL.
         #   Netwrok will learn to have does cell to produce KL=0.
@@ -393,46 +416,45 @@ class InferenceAndGeneration(torch.nn.Module):
         # GECO
         with torch.no_grad():
             # MSE
-            self.geco_loglambda_mse.data.clamp_(min=self.geco_loglambda_mse_min,
-                                                max=self.geco_loglambda_mse_max)
-            lambda_mse = self.geco_loglambda_mse.data.exp() * torch.sign(mse_av - self.geco_target_mse_min)
+            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
+                                                max=self.geco_rawlambda_mse_max)
+            lambda_mse = linear_quadratic_activation(self.geco_rawlambda_mse.data) * \
+                         torch.sign(mse_av - self.geco_target_mse_min)
             mse_in_range = (mse_av > self.geco_target_mse_min) & \
                            (mse_av < self.geco_target_mse_max)
             g_mse = 2.0 * mse_in_range - 1.0
 
             # FG_FRACTION
-            self.geco_loglambda_fgfraction.data.clamp_(min=self.geco_loglambda_fgfraction_min,
-                                                       max=self.geco_loglambda_fgfraction_max)
+            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
+                                                       max=self.geco_rawlambda_fgfraction_max)
             fgfraction_av = mixing_fg_mb1wh.mean()
-            lambda_fgfraction = self.geco_loglambda_fgfraction.data.exp() * \
+            lambda_fgfraction = linear_quadratic_activation(self.geco_rawlambda_fgfraction.data) * \
                                 torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
             fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
                                   (fgfraction_av < self.geco_target_fgfraction_max)
             g_fgfraction = 2.0 * fgfraction_in_range - 1.0
 
             # NCELL_AV
-            self.geco_loglambda_ncell.data.clamp_(min=self.geco_loglambda_ncell_min,
-                                                  max=self.geco_loglambda_ncell_max)
+            self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
+                                                  max=self.geco_rawlambda_ncell_max)
             ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
-            lambda_ncell = self.geco_loglambda_ncell.data.exp() * torch.sign(ncell_av - self.geco_target_ncell_min)
+            lambda_ncell = linear_quadratic_activation(self.geco_rawlambda_ncell.data) * \
+                           torch.sign(ncell_av - self.geco_target_ncell_min)
             ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
                              (ncell_av < self.geco_target_ncell_max)
             g_ncell = 2.0 * ncell_in_range - 1.0
 
         # Outside torch.no_grad()
-        loss_geco_mse = self.geco_loglambda_mse * g_mse + lambda_mse.detach() * mse_av
-        loss_geco_fgfraction = self.geco_loglambda_fgfraction * g_fgfraction + \
+        loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
+        loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
                                lambda_fgfraction.detach() * mixing_fg_mb1wh.sum(dim=(-1, -2, -3)).mean()
-        loss_geco_ncell = self.geco_loglambda_ncell * g_ncell + \
+        loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
                           lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
 
         # Add all the losses together
-        loss_base = logit_kl_base + zbg_kl + zwhere_kl + zinstance_kl + loss_geco_mse
-
-        loss_additional = loss_mask_overlap + loss_bb_regression + \
-                          logit_kl_additional + loss_geco_fgfraction + loss_geco_ncell
-
-        loss = loss_base + (1.0 - prob_corr_factor) * loss_additional
+        loss = logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
+               loss_geco_mse + loss_geco_fgfraction + loss_geco_ncell + \
+               loss_mask_overlap + loss_bb_regression
 
         # Other stuff I want to monitor
         with torch.no_grad():
@@ -455,8 +477,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
-                                 kl_logit_base=logit_kl_base.detach().item(),
-                                 kl_logit_additional=logit_kl_additional.detach().item(),
+                                 kl_logit=logit_kl.detach().item(),
                                  kl_zinstance=zinstance_kl.detach().item(),
                                  kl_zbg=zbg_kl.detach().item(),
                                  kl_zwhere=zwhere_kl.detach().item(),
