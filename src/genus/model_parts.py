@@ -295,7 +295,7 @@ class InferenceAndGeneration(torch.nn.Module):
             av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
                                                            bounding_box=bounding_box_bn)
             ranking_bn = compute_ranking(av_intensity_in_box_bn)
-            prob_from_ranking_bn = (ranking_bn + 1)/(ranking_bn.shape[-1] + 1)
+            prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
             prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
                                                                 original_width=unet_prob_b1wh.shape[-2],
                                                                 original_height=unet_prob_b1wh.shape[-1])
