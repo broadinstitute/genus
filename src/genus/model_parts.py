@@ -291,8 +291,15 @@ class InferenceAndGeneration(torch.nn.Module):
             c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
 
             # Do non-max-suppression (nothat during pretraining I use random scores)
-            noise_grid = torch.rand(c_grid_before_nms.shape, dtype=unet_prob_b1wh.dtype, device=unet_prob_b1wh.device)
-            score_grid = c_grid_before_nms + unet_prob_b1wh + prob_corr_factor * noise_grid
+            # TODO: change noise grid to ranking. and do score = a * (c+p) + (1-a) * ranking
+            av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
+                                                           bounding_box=bounding_box_bn)
+            ranking_bn = compute_ranking(av_intensity_in_box_bn)
+            prob_from_ranking_bn = (ranking_bn + 1)/(ranking_bn.shape[-1] + 1)
+            prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
+                                                                original_width=unet_prob_b1wh.shape[-2],
+                                                                original_height=unet_prob_b1wh.shape[-1])
+            score_grid = c_grid_before_nms + unet_prob_b1wh + prob_corr_factor * prob_from_ranking_grid
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
@@ -388,7 +395,8 @@ class InferenceAndGeneration(torch.nn.Module):
         #   Ideally, I would multiply by p_detached
         # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
         # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
-        indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
+        # indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
+        indicator_mbk = torch.ones_like(prob_mbk).detach()
         zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
         zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
 
@@ -464,6 +472,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
+                              prob_from_ranking_grid=prob_from_ranking_grid,
                               background_cwh=out_background_mbcwh,
                               foreground_kcwh=out_img_mbkcwh,
                               sum_c_times_mask_1wh=torch.sum(c_detached_mbk[..., None, None, None] * out_mask_mbk1wh,

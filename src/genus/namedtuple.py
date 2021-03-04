@@ -191,6 +191,7 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
+    prob_from_ranking_grid: torch.Tensor
     background_cwh: torch.Tensor
     foreground_kcwh: torch.Tensor
     sum_c_times_mask_1wh: torch.Tensor
