@@ -446,7 +446,8 @@ class InferenceAndGeneration(torch.nn.Module):
             # NCELL_AV
             self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
                                                   max=self.geco_rawlambda_ncell_max)
-            ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
+            ncell_av = prob_mbk.sum(dim=-1).float().mean()
+            # ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
             lambda_ncell = linear_quadratic_activation(self.geco_rawlambda_ncell.data) * \
                            torch.sign(ncell_av - self.geco_target_ncell_min)
             ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
