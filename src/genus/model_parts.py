@@ -302,6 +302,7 @@ class InferenceAndGeneration(torch.nn.Module):
 ###                                                                original_height=unet_prob_b1wh.shape[-1])
 ###            score_grid = (1-prob_corr_factor) * (c_grid_before_nms + unet_prob_b1wh) + \
 ###                         prob_corr_factor * prob_from_ranking_grid
+            prob_from_ranking_grid = torch.zeros_like(unet_output.logit)
             score_grid = c_grid_before_nms + unet_prob_b1wh
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
