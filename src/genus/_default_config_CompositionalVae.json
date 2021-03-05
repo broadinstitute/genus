@@ -54,7 +54,8 @@
    "geco_lambda_fgfraction_max" : 20,
    "mask_overlap_penalty_strength": 1E-3,
    "bounding_box_regression_penalty_strength": 1E-3,
-   "bounding_box_regression_padding" : 4
+   "bounding_box_regression_padding" : 4,
+   "n_mc_samples" : 10
  },
 
  "optimizer" : {
