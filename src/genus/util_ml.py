@@ -416,7 +416,7 @@ class FiniteDPP(Distribution):
         #    matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
 
         # Option without for loops by fancy slicing
-        mask_s = (torch.arange(1, n_max + 1).view(1, -1) <= n_c.view(-1, 1))
+        mask_s = (torch.arange(1, n_max + 1, dtype=n_c.dtype, device=n_c.device).view(1, -1) <= n_c.view(-1, 1))
         mask_ss = torch.logical_and(mask_s.unsqueeze(-1), mask_s.unsqueeze(-2))
         mask_ll = torch.logical_and(value.unsqueeze(-1), value.unsqueeze(-2))
         matrix[mask_ss] = L[mask_ll]
