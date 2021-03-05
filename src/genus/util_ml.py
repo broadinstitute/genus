@@ -410,9 +410,16 @@ class FiniteDPP(Distribution):
         n_c = torch.sum(value, dim=-1)
         n_max = n_c.max().item()
         matrix = torch.eye(n_max, dtype=L.dtype, device=L.device).expand(L.shape[-3], n_max, n_max).clone()
+
         # Since the tensor is rugged, I need to do it with a for loop...
-        for i in range(n_c.shape[0]):
-            matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
+        # for i in range(n_c.shape[0]):
+        #    matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
+
+        # Option without for loops by fancy slicing
+        mask_s = (torch.arange(1, n_max + 1).view(1, -1) <= n_c.view(-1, 1))
+        mask_ss = torch.logical_and(mask_s.unsqueeze(-1), mask_s.unsqueeze(-2))
+        mask_ll = torch.logical_and(value.unsqueeze(-1), value.unsqueeze(-2))
+        matrix[mask_ss] = L[mask_ll]
 
         logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
         logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape

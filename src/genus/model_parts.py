@@ -61,6 +61,7 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
         full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
 
         # Find the coordinates of the empty bounding boxes
+        # TODO: empty bounding box should be centered
         empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
         empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
         empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
@@ -290,17 +291,18 @@ class InferenceAndGeneration(torch.nn.Module):
                 c_tmp = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling else (0.5 < prob_expanded)
             c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
 
-            # Do non-max-suppression (nothat during pretraining I use random scores)
-            # TODO: change noise grid to ranking. and do score = a * (c+p) + (1-a) * ranking
-            av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
-                                                            bounding_box=bounding_box_bn)
-            ranking_bn = compute_ranking(av_intensity_in_box_bn)
-            prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
-            prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
-                                                                original_width=unet_prob_b1wh.shape[-2],
-                                                                original_height=unet_prob_b1wh.shape[-1])
-            score_grid = (1-prob_corr_factor) * (c_grid_before_nms + unet_prob_b1wh) + \
-                         prob_corr_factor * prob_from_ranking_grid
+###            # Do non-max-suppression (nothat during pretraining I use random scores)
+###            # TODO: change noise grid to ranking. and do score = a * (c+p) + (1-a) * ranking
+###            av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
+###                                                            bounding_box=bounding_box_bn)
+###            ranking_bn = compute_ranking(av_intensity_in_box_bn)
+###            prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
+###            prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
+###                                                                original_width=unet_prob_b1wh.shape[-2],
+###                                                                original_height=unet_prob_b1wh.shape[-1])
+###            score_grid = (1-prob_corr_factor) * (c_grid_before_nms + unet_prob_b1wh) + \
+###                         prob_corr_factor * prob_from_ranking_grid
+            score_grid = c_grid_before_nms + unet_prob_b1wh
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
