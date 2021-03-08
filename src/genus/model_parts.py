@@ -91,7 +91,7 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
 
 def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box_size: float, max_box_size: float):
     """ 
-    Convert the output of the zwhere decoder to a list of boundinb boxes 
+    Convert the output of the zwhere decoder to a list of bounding boxes
     
     Args:
         t_grid: tensor of shape :math:`(B,4,w_grid,h_grid)` with values in (0,1)
@@ -101,7 +101,7 @@ def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box
         max_box_size: maximum allowed size for the bounding boxes
         
     Returns:
-        A container of type :class:`BB` with the bounding boxes of shape :math:`(N,B)` 
+        A container of type :class:`BB` with the bounding boxes of shape :math:`(B,N)`
         where :math:`N = w_grid * h_grid`. 
     """
     grid_width, grid_height = t_grid.shape[-2:]
@@ -122,23 +122,27 @@ def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box
               bh=convert_to_box_list(bh_grid).squeeze(-1))
 
 
-def linear_quadratic_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+def linear_exp_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+    """ y = f(x) where f is linear for small x and exponential for large x.
+        The function f is continuous with continuous first derivative.
+    """
     if isinstance(x, float):
-        y = x if x < 0.5 else x**2 + 0.25
+        y = x if x < 1.0 else numpy.exp(x-1.0)
     elif isinstance(x, torch.Tensor):
-        mask = x < 0.5
-        y = mask * x + ~mask * (x.pow(2) + 0.25)
+        y = torch.where(x < 1.0, x, (x-1.0).exp())
     else:
         raise Exception("input type should be either float or torch.Tensor ->", type(x))
     return y
 
 
-def inverse_linear_quadratic_activation(y: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+def inverse_linear_exp_activation(y: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
+    """ x = f^(-1)(y) where f is linear for small x and exponential for large x.
+        The function f is continuous with continuous first derivative.
+    """
     if isinstance(y, float):
-        x = y if y < 0.5 else numpy.sqrt(y-0.25)
+        x = y if y < 1.0 else numpy.log(y) + 1.0
     elif isinstance(y, torch.Tensor):
-        mask = y < 0.5
-        x = mask * y + ~mask * (y-0.25).sqrt()
+        x = torch.where(y < 1.0, y, y.log() + 1.0)
     else:
         raise Exception("input type should be either float or torch.Tensor ->", type(y))
     return x
@@ -163,7 +167,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["similarity_DPP_l"],
                                  length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
                                  weight=config["input_image"]["similarity_DPP_w"],
-                                 weight_min_max=config["input_image"]["similarity_DPP_w_min_max"])
+                                 weight_min_max=config["input_image"]["similarity_DPP_w_min_max"],
+                                 learnable_params=False)
 
         self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
                                level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
@@ -201,29 +206,35 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["loss"]["geco_mse_target"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
-
+        # Geco MSE
         self.geco_target_mse_min = 0.0
         self.geco_target_mse_max = 1.0
-        self.geco_target_ncell_min = config["loss"]["geco_ncell_target"][0]
-        self.geco_target_ncell_max = config["loss"]["geco_ncell_target"][1]
-        self.geco_target_fgfraction_min = config["loss"]["geco_fgfraction_target"][0]
-        self.geco_target_fgfraction_max = config["loss"]["geco_fgfraction_target"][1]
-
-        self.geco_rawlambda_mse_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_mse"][0]))
-        self.geco_rawlambda_mse_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_mse"][1]))
-        self.geco_rawlambda_fgfraction_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_fgfraction"][0]))
-        self.geco_rawlambda_fgfraction_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_fgfraction"][1]))
-        self.geco_rawlambda_ncell_min = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_ncell"][0]))
-        self.geco_rawlambda_ncell_max = inverse_linear_quadratic_activation(float(config["loss"]["geco_lambda_ncell"][1]))
-
-        self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(1.0,  # self.geco_target_fgfraction_min,
-                                                                              dtype=torch.float),
-                                                            requires_grad=True)
-        self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(1.0,  # self.geco_rawlambda_ncell_min,
-                                                                         dtype=torch.float),
-                                                       requires_grad=True)
-        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_rawlambda_mse_max,
+        lambda_mse_min = abs(float(config["loss"]["geco_lambda_mse"][0]))
+        lambda_mse_max = abs(float(config["loss"]["geco_lambda_mse"][1]))
+        self.geco_rawlambda_mse_min = inverse_linear_exp_activation(lambda_mse_min)
+        self.geco_rawlambda_mse_max = inverse_linear_exp_activation(lambda_mse_max)
+        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(100.0),
                                                                        dtype=torch.float), requires_grad=True)
+
+        # Geco ncell
+        self.geco_target_ncell_min = abs(float(config["loss"]["geco_ncell_target"][0]))
+        self.geco_target_ncell_max = abs(float(config["loss"]["geco_ncell_target"][1]))
+        lambda_ncell_min = abs(float(config["loss"]["geco_lambda_ncell"][0]))
+        lambda_ncell_max = abs(float(config["loss"]["geco_lambda_ncell"][1]))
+        self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
+        self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
+        self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
+                                                                         dtype=torch.float), requires_grad=True)
+
+        # Geco fg_fraction
+        self.geco_target_fgfraction_min = abs(float(config["loss"]["geco_fgfraction_target"][0]))
+        self.geco_target_fgfraction_max = abs(float(config["loss"]["geco_fgfraction_target"][1]))
+        lambda_fgfraction_min = float(config["loss"]["geco_lambda_fgfraction"][0])
+        lambda_fgfraction_max = float(config["loss"]["geco_lambda_fgfraction"][1])
+        self.geco_rawlambda_fgfraction_min = inverse_linear_exp_activation(lambda_fgfraction_min)
+        self.geco_rawlambda_fgfraction_max = inverse_linear_exp_activation(lambda_fgfraction_max)
+        self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
+                                                                              dtype=torch.float), requires_grad=True)
 
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
@@ -232,8 +243,6 @@ class InferenceAndGeneration(torch.nn.Module):
                 k_objects_max: int,
                 topk_only: bool,
                 noisy_sampling: bool) -> (Inference, MetricMiniBatch):
-
-        # compute the inference
 
         # 0. preparation
         batch_size, ch_raw_image, width_raw_image, height_raw_image = imgs_bcwh.shape
@@ -291,19 +300,20 @@ class InferenceAndGeneration(torch.nn.Module):
                 c_tmp = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling else (0.5 < prob_expanded)
             c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
 
-###            # Do non-max-suppression (nothat during pretraining I use random scores)
-###            # TODO: change noise grid to ranking. and do score = a * (c+p) + (1-a) * ranking
-###            av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
-###                                                            bounding_box=bounding_box_bn)
-###            ranking_bn = compute_ranking(av_intensity_in_box_bn)
-###            prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
-###            prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
-###                                                                original_width=unet_prob_b1wh.shape[-2],
-###                                                                original_height=unet_prob_b1wh.shape[-1])
-###            score_grid = (1-prob_corr_factor) * (c_grid_before_nms + unet_prob_b1wh) + \
-###                         prob_corr_factor * prob_from_ranking_grid
-            prob_from_ranking_grid = torch.zeros_like(unet_output.logit)
-            score_grid = c_grid_before_nms + unet_prob_b1wh
+            # During pretraining I select the boxes according to: score = (1-a) * (c+p) + a * ranking
+            if prob_corr_factor == 0:
+                prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
+            else:
+                av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
+                                                                bounding_box=bounding_box_bn)
+                ranking_bn = compute_ranking(av_intensity_in_box_bn)
+                prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
+                prob_from_ranking_grid = invert_convert_to_box_list(prob_from_ranking_bn.unsqueeze(dim=-1),
+                                                                    original_width=unet_prob_b1wh.shape[-2],
+                                                                    original_height=unet_prob_b1wh.shape[-1])
+
+            score_grid = (1-prob_corr_factor) * (c_grid_before_nms + unet_prob_b1wh) + \
+                         prob_corr_factor * prob_from_ranking_grid
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
@@ -382,30 +392,30 @@ class InferenceAndGeneration(torch.nn.Module):
         # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
         entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
-
-        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-        d_mb = (logp_dpp_before_nms_mb - baseline_b).detach()
-        distance_from_reinforce_baseline = d_mb.abs().mean()
+        with torch.no_grad():
+            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
+            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
+            d_mb = (logp_dpp_before_nms_mb - baseline_b)
+            distance_from_reinforce_baseline = d_mb.abs().mean()  # for debug
         reinforce_mb = logp_ber_before_nms_mb * d_mb
+
+        if self.grid_dpp.learnable_params:
+            logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
+        else:
+            logp_dpp_after_nms_mb = torch.zeros_like(entropy_b)
+
         logit_kl = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
 
-        # KL should act at full strength on full boxes.
-        # TODO: I don't think it is a big deal to multiply by 1.0, i.e. empty cell also have KL.
-        #   Netwrok will learn to have does cell to produce KL=0.
-        #   Ideally, I would multiply by p_detached
-        # However, multiplying by c is very dangerous b/c if a box with c=0 receives any gradient (is this possible?)
-        # then zwhere and zinstance will become unstable (b/c they are not regularized by the KL term)
-        # indicator_mbk = torch.max(prob_mbk, c_detached_mbk.float()).detach()
-        indicator_mbk = torch.ones_like(prob_mbk).detach()
+        # KL is at full strength if the object is certain and lower strenght otherwise.
+        # I clamp indicator_mbk to 0.1 to avoid numerical instabilities.
+        indicator_mbk = prob_mbk.clamp(min=0.1).detach()
         zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
         zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
 
         # Loss for non-overlapping masks
-        # TODO: I observe that this loss makes the mask shinkr and the fg_fraction go down.
+        # TODO: I observe that this loss makes the mask shrink and the fg_fraction go down.
         #   The intended behavior is to avoid the overlaps not to drive down the fg_fraction.
         #   Maybe I should write this loss function in terms of mixing.
         mask_overlap_mb1wh = mixing_mbk1wh.sum(dim=-4).pow(2) - mixing_mbk1wh.pow(2).sum(dim=-4)
@@ -430,7 +440,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # MSE
             self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
                                                 max=self.geco_rawlambda_mse_max)
-            lambda_mse = linear_quadratic_activation(self.geco_rawlambda_mse.data) * \
+            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
                          torch.sign(mse_av - self.geco_target_mse_min)
             mse_in_range = (mse_av > self.geco_target_mse_min) & \
                            (mse_av < self.geco_target_mse_max)
@@ -440,7 +450,7 @@ class InferenceAndGeneration(torch.nn.Module):
             self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
                                                        max=self.geco_rawlambda_fgfraction_max)
             fgfraction_av = mixing_fg_mb1wh.mean()
-            lambda_fgfraction = linear_quadratic_activation(self.geco_rawlambda_fgfraction.data) * \
+            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
                                 torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
             fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
                                   (fgfraction_av < self.geco_target_fgfraction_max)
@@ -449,15 +459,15 @@ class InferenceAndGeneration(torch.nn.Module):
             # NCELL_AV
             self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
                                                   max=self.geco_rawlambda_ncell_max)
-            ncell_av = (prob_mbk > 0.5).sum(dim=-1).float().mean()
-            # ncell_av = c_detached_mbk.sum(dim=-1).float().mean()
-            lambda_ncell = linear_quadratic_activation(self.geco_rawlambda_ncell.data) * \
+            ncell_av = (prob_mbk > 0.5).float().sum(dim=-1).mean()
+            lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
                            torch.sign(ncell_av - self.geco_target_ncell_min)
             ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
                              (ncell_av < self.geco_target_ncell_max)
             g_ncell = 2.0 * ncell_in_range - 1.0
 
         # Outside torch.no_grad()
+        # TODO: insert loss_geco_ncell back
         loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
         loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
                                lambda_fgfraction.detach() * mixing_fg_mb1wh.sum(dim=(-1, -2, -3)).mean()
@@ -465,15 +475,15 @@ class InferenceAndGeneration(torch.nn.Module):
                           lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
 
         # Add all the losses together
-        loss = logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
-               loss_geco_mse + loss_geco_fgfraction + loss_geco_ncell + \
-               loss_mask_overlap + loss_bb_regression
+        # TODO: additional losses should be multiplied by geco_lambda_mse
+        loss = loss_mask_overlap + loss_bb_regression + \
+               logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
+               loss_geco_mse + loss_geco_fgfraction  # + loss_geco_ncell
 
         # Other stuff I want to monitor
         with torch.no_grad():
             area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
             similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
-            # print(similarity_w.detach().item(), similarity_l.detach().item())
 
         # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,

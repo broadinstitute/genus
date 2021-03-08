@@ -411,17 +411,14 @@ class FiniteDPP(Distribution):
         n_max = n_c.max().item()
         matrix = torch.eye(n_max, dtype=L.dtype, device=L.device).expand(L.shape[-3], n_max, n_max).clone()
 
-        # Since the tensor is rugged, I need to do it with a for loop...
-        # for i in range(n_c.shape[0]):
-        #    matrix[i, :n_c[i], :n_c[i]] = L[i, value[i], :][:, value[i]]
-
         # Option without for loops by fancy slicing
         mask_s = (torch.arange(1, n_max + 1, dtype=n_c.dtype, device=n_c.device).view(1, -1) <= n_c.view(-1, 1))
         mask_ss = torch.logical_and(mask_s.unsqueeze(-1), mask_s.unsqueeze(-2))
         mask_ll = torch.logical_and(value.unsqueeze(-1), value.unsqueeze(-2))
         matrix[mask_ss] = L[mask_ll]
 
-        logdet_Ls = torch.logdet(matrix).view(independet_dims)  # sample_shape, batch_shape
+        # Compute the log_determinant of the full and submatrices
+        logdet_Ls = torch.logdet(matrix).view(independet_dims)
         logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched
 
@@ -435,8 +432,11 @@ class Grid_DPP(torch.nn.Module):
                  length_scale_min_max: Optional[Tuple[float, float]] = None,
                  weight_min_max: Optional[Tuple[float, float]] = None,
                  pbc: bool = False,
-                 eps: float = 1E-4):
-        """ See :class:`SimilarityKernel` for an explanation of the arguments """
+                 eps: float = 1E-4,
+                 learnable_params: bool = True):
+        """ See :class:`SimilarityKernel` for an explanation of the arguments. If :attr:`learnable_params` = False
+            the parameters :attr:`lenght_scale` and :attr:`weight` are fixed.
+        """
 
         super().__init__()
         self.similiraty_kernel = SimilarityKernel(length_scale=length_scale,
@@ -447,36 +447,47 @@ class Grid_DPP(torch.nn.Module):
                                                   eps=eps)
         self.finite_dpp:  Optional[FiniteDPP] = None
         self.fingerprint = (None, None, None, None)
+        self.learnable_params = learnable_params
 
     def sample(self, size: torch.Size):
         """
         Draw a random sample of size torch.Size according to the current values of length_scale, weight.
         Note that size must be at least 2D.
+        The samples are not differentiable.
         """
         assert len(size) >= 2
         current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
                               self.similiraty_kernel.weight_value.data.item(),
                               size[-2], size[-1])
 
-        if current_figerprint != self.fingerprint:
-            similarity = self.similiraty_kernel.forward(n_width=size[-2], n_height=size[-1])
-            self.finite_dpp = FiniteDPP(L=similarity)
-            self.fingerprint = current_figerprint
+        with torch.no_grad():
+            if current_figerprint != self.fingerprint:
+                similarity = self.similiraty_kernel.forward(n_width=size[-2], n_height=size[-1])
+                self.finite_dpp = FiniteDPP(L=similarity)
+                self.fingerprint = current_figerprint
 
-        c_all = self.finite_dpp.sample(sample_shape=size[:-2]).view(size)
-        return c_all
+            c_all = self.finite_dpp.sample(sample_shape=size[:-2]).view(size)
+            return c_all
 
     def log_prob(self, value: torch.Tensor):
-        """ Compute the log_prob of a configuration. Note that value need to be at least 2D """
+        """ Compute the log_prob of a configuration. Note that value need to be at least 2D.
+            The log_prob is differentiable w.r.t. the parameters of the similarity kernel but not :attr:`value`.
+        """
         assert len(value.shape) >= 2
         current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
                               self.similiraty_kernel.weight_value.data.item(),
                               value.shape[-2], value.shape[-1])
 
         if current_figerprint != self.fingerprint:
-            similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
-            self.finite_dpp = FiniteDPP(L=similarity)
-            self.fingerprint = current_figerprint
+            if self.learnable_params:
+                similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
+                self.finite_dpp = FiniteDPP(L=similarity)
+                self.fingerprint = current_figerprint
+            else:
+                with torch.no_grad():
+                    similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
+                    self.finite_dpp = FiniteDPP(L=similarity)
+                    self.fingerprint = current_figerprint
 
         # Identical can immediately draw a sample
         logp = self.finite_dpp.log_prob(value=value.flatten(start_dim=-2))

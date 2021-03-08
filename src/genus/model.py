@@ -862,12 +862,17 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
                                        'betas': config_optimizer["betas"]}],
                                      eps=config_optimizer["eps"],
                                      weight_decay=config_optimizer["weight_decay"])
-
     elif config_optimizer["type"] == "SGD":
         optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
                                      {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
                                      {'params': other_params, 'lr': config_optimizer["base_lr"]}],
                                     weight_decay=config_optimizer["weight_decay"])
+    elif config_optimizer["type"] == "RMSprop":
+        optimizer = torch.optim.RMSprop([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
+                                         {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
+                                         {'params': other_params, 'lr': config_optimizer["base_lr"]}],
+                                        alpha=config_optimizer["alpha"],
+                                        weight_decay=config_optimizer["weight_decay"])
     else:
         raise Exception("optimizer type is not recognized")
     return optimizer
