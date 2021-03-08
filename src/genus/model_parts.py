@@ -168,7 +168,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  length_scale_min_max=config["input_image"]["similarity_DPP_l_min_max"],
                                  weight=config["input_image"]["similarity_DPP_w"],
                                  weight_min_max=config["input_image"]["similarity_DPP_w_min_max"],
-                                 learnable_params=False)
+                                 learnable_params=config["input_image"]["learnable_DPP"])
 
         self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
                                level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
