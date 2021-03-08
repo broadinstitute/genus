@@ -195,7 +195,7 @@ class CompositionalVae(torch.nn.Module):
 
     def segment(self, imgs_in: torch.Tensor,
                 k_objects_max: Optional[int] = None,
-                prob_corr_factor: Optional[float] = None,
+                annealing_factor: Optional[float] = None,
                 topk_only: bool = False,
                 iom_threshold: float = 0.3,
                 noisy_sampling: bool = False,
@@ -212,7 +212,7 @@ class CompositionalVae(torch.nn.Module):
                 If this number is too low some foreground objects will be missed. If it is too high, computational
                 resources will be wasted. It might be beneficial to use a larger value than the one used during
                 training. If it is not specified, it is set to the value used during training.
-            prob_corr_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
+            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
                 poorly reconstructed by the background component. See :meth:`process_batch_imgs` for details. This value
                 should be zero except during the early phase of training.
             topk_only: This value should be set to False. See :meth:`process_batch_imgs` for details.
@@ -241,13 +241,13 @@ class CompositionalVae(torch.nn.Module):
             >>> segmentation = vae.segment(imgs_in=img_to_segment)
         """
 
-        prob_corr_factor = getattr(self, "prob_corr_factor", 0.0) if prob_corr_factor is None else prob_corr_factor
+        annealing_factor = getattr(self, "annealing_factor", 0.0) if annealing_factor is None else annealing_factor
         k_objects_max = getattr(self, "config_input_image_max_objects_per_patch") if k_objects_max is None else k_objects_max
         iom_threshold = getattr(self, "config_architecture_iom_threshold_test") if iom_threshold is None else iom_threshold
 
         return self._segment_internal(batch_imgs=imgs_in,
                                       k_objects_max=k_objects_max,
-                                      prob_corr_factor=prob_corr_factor,
+                                      annealing_factor=annealing_factor,
                                       iom_threshold=iom_threshold,
                                       noisy_sampling=noisy_sampling,
                                       topk_only=topk_only,
@@ -261,7 +261,7 @@ class CompositionalVae(torch.nn.Module):
     def _segment_internal(self,
                           batch_imgs: torch.tensor,
                           k_objects_max: int,
-                          prob_corr_factor: float,
+                          annealing_factor: float,
                           iom_threshold: float,
                           noisy_sampling: bool,
                           topk_only: bool,
@@ -286,7 +286,7 @@ class CompositionalVae(torch.nn.Module):
         metrics: MetricMiniBatch
         inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
                                                           generate_synthetic_data=False,
-                                                          prob_corr_factor=prob_corr_factor,
+                                                          annealing_factor=annealing_factor,
                                                           iom_threshold=iom_threshold,
                                                           k_objects_max=k_objects_max,
                                                           topk_only=topk_only,
@@ -297,14 +297,14 @@ class CompositionalVae(torch.nn.Module):
         integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
         fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        bounding_boxes = draw_bounding_boxes(c_k=inference.sample_c_k,
-                                             bounding_box_k=inference.sample_bb_k,
+        bounding_boxes = draw_bounding_boxes(c=inference.sample_c_k,
+                                             bounding_box=inference.sample_bb_k,
                                              width=integer_mask.shape[-2],
                                              height=integer_mask.shape[-1],
                                              color='red') if draw_boxes else None
 
-        bounding_boxes_ideal = draw_bounding_boxes(c_k=inference.sample_c_k,
-                                                   bounding_box_k=inference.sample_bb_ideal_k,
+        bounding_boxes_ideal = draw_bounding_boxes(c=inference.sample_c_k,
+                                                   bounding_box=inference.sample_bb_ideal_k,
                                                    width=integer_mask.shape[-2],
                                                    height=integer_mask.shape[-1],
                                                    color='blue') if draw_boxes_ideal else None
@@ -340,7 +340,7 @@ class CompositionalVae(torch.nn.Module):
                             patch_size: Optional[Tuple[int, int]] = None,
                             stride: Optional[Tuple[int, int]] = None,
                             k_objects_max_per_patch: Optional[int] = None,
-                            prob_corr_factor: float = 0.0,
+                            annealing_factor: float = 0.0,
                             topk_only: bool = False,
                             iom_threshold: float = 0.3,
                             radius_nn: int = 5,
@@ -380,7 +380,7 @@ class CompositionalVae(torch.nn.Module):
                 If this number is too low some foreground objects will be missed. If it is too high, computational
                 resources will be wasted. It might be beneficial to use a larger value than the one used during
                 training. If it is not specified, it is set to the value used during training.
-            prob_corr_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
+            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
                 poorly reconstructed by the background component. See :meth:`process_batch_imgs` for details. This value
                 should be zero except during the early phase of training.
             topk_only: This value should be set to False. See :meth:`process_batch_imgs` for details.
@@ -413,7 +413,7 @@ class CompositionalVae(torch.nn.Module):
             >>>                                  patch_size=(80, 80),
             >>>                                  stride=(40, 40),
             >>>                                  k_objects_max_per_patch=25,
-            >>>                                  prob_corr_factor=0,
+            >>>                                  annealing_factor=0,
             >>>                                  iom_threshold=0.4,
             >>>                                  radius_nn=10,
             >>>                                  batch_size=64)
@@ -518,7 +518,7 @@ class CompositionalVae(torch.nn.Module):
 
                 segmentation = self._segment_internal(batch_imgs=batch_imgs.to(self.sigma_fg.device),
                                                       k_objects_max=k_objects_max_per_patch,
-                                                      prob_corr_factor=prob_corr_factor,
+                                                      annealing_factor=annealing_factor,
                                                       iom_threshold=iom_threshold,
                                                       noisy_sampling=True,
                                                       topk_only=topk_only,
@@ -557,8 +557,8 @@ class CompositionalVae(torch.nn.Module):
                         shifted_integer_mask = (integer_mask[k] > 0) * \
                                                (integer_mask[k] + n_instances_tot)
                         n_instances_tot += n_instances
-                        big_integer_mask[x1[n]:x1[n] + patch_size[0],
-                            y1[n]:y1[n] + patch_size[1]] = shifted_integer_mask[0]
+                        big_integer_mask[x1[n]:x1[n] + patch_size[0], y1[n]:y1[n] +
+                                                                            patch_size[1]] = shifted_integer_mask[0]
 
             # End of loop over batches
             sparse_similarity_matrix.div_(n_prediction)
@@ -583,7 +583,7 @@ class CompositionalVae(torch.nn.Module):
                            draw_boxes: bool,
                            draw_boxes_ideal: bool,
                            noisy_sampling: bool,
-                           prob_corr_factor: float,
+                           annealing_factor: float,
                            iom_threshold: float,
                            k_objects_max: int) -> Output:
         """
@@ -608,16 +608,9 @@ class CompositionalVae(torch.nn.Module):
                 If true the optimal object bounding boxes are added to the output images in blue.
             noisy_sampling: If true a random sample from either the prior or the posterior (depending on the value of
                 :attr:`generate_synthetic_data` ) is used. If false the mode of the prior or posterior is used.
-            prob_corr_factor: Number in (0,1) used to encourage the model to focus its attentions on
-                regions which are poorly reconstructed by the background component. The object recognition
-                probabilities are modified as:
-
-                .. math::
-                    p = (1- \\text{prob_corr_factor} ) * p_{net} + \\text{prob_corr_factor} * \\delta_p
-
-                where :math:`p_{net}` is the probability generated by the NeuralNet and :math:`\\delta_p` in (0,1) is
-                a measure of discordance between the input image the reconstructed background component. The typical
-                use is to anneal :attr:`prob_corr_factor` from 0.5 to 0 during the initial phase of training.
+            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on
+                regions which are poorly reconstructed by the background component. The typical
+                use is to anneal :attr:`annealing_factor` from 1.0 to 0 during the initial phase of training.
             iom_threshold:  This value has effect only if :attr:`topk_only` is False. Threshold value of the
                 IntersectionOverMinimum between two bounding boxes before the non-max-suppressison kicks-in.
                 Typical values are :math:`0.3 - 0.5`.
@@ -661,7 +654,7 @@ class CompositionalVae(torch.nn.Module):
             >>>                                 draw_bg=False,
             >>>                                 draw_boxes=False,
             >>>                                 noisy_sampling=True,
-            >>>                                 prob_corr_factor=0.0,
+            >>>                                 annealing_factor=0.0,
             >>>                                 iom_threshold=0.3,
             >>>                                 n_objects_max=-25)
         """
@@ -674,7 +667,7 @@ class CompositionalVae(torch.nn.Module):
         metrics: MetricMiniBatch
         inference, metrics = self.inference_and_generator(imgs_bcwh=imgs_in,
                                                           generate_synthetic_data=generate_synthetic_data,
-                                                          prob_corr_factor=prob_corr_factor,
+                                                          annealing_factor=annealing_factor,
                                                           iom_threshold=iom_threshold,
                                                           k_objects_max=k_objects_max,
                                                           topk_only=topk_only,
@@ -719,7 +712,7 @@ class CompositionalVae(torch.nn.Module):
                                        draw_boxes=draw_boxes,
                                        draw_boxes_ideal=draw_boxes_ideal,
                                        noisy_sampling=noisy_sampling,
-                                       prob_corr_factor=getattr(self, "prob_corr_factor", 0.0),
+                                       annealing_factor=getattr(self, "annealing_factor", 0.0),
                                        iom_threshold=iom_threshold,
                                        k_objects_max=getattr(self, "config_input_image_max_objects_per_patch"))
 
@@ -754,7 +747,7 @@ class CompositionalVae(torch.nn.Module):
                                            draw_boxes=draw_boxes,
                                            draw_boxes_ideal=draw_boxes_ideal,
                                            noisy_sampling=True,
-                                           prob_corr_factor=0.0,
+                                           annealing_factor=0.0,
                                            iom_threshold=-1.0,
                                            k_objects_max=getattr(self, "config_input_image_max_objects_per_patch"))
 
@@ -970,14 +963,6 @@ def process_one_epoch(model: CompositionalVae,
                 metrics.loss.backward()  # do back_prop and compute all the gradients
                 optimizer.step()  # update the parameters
 
-                grad_logit_min = torch.min(model.inference_and_generator.unet.logit.grad).detach().float()
-                grad_logit_mean = torch.mean(model.inference_and_generator.unet.logit.grad).detach().float()
-                grad_logit_max = torch.max(model.inference_and_generator.unet.logit.grad).detach().float()
-            else:
-                grad_logit_min = 0.0
-                grad_logit_mean = 0.0
-                grad_logit_max = 0.0
-
             if verbose:
                 print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
 
@@ -989,16 +974,13 @@ def process_one_epoch(model: CompositionalVae,
                 n_exact_examples += numpy.sum(mask_exact)
                 wrong_examples += list(index[~mask_exact].cpu().numpy())
 
-                # modify the metrics before accumulation
-                metrics_new = metrics._replace(grad_logit_min=grad_logit_min,
-                                               grad_logit_mean=grad_logit_mean,
-                                               grad_logit_max=grad_logit_max,
-                                               count_prediction=-1 * numpy.ones(1),
-                                               wrong_examples=-1 * numpy.ones(1),
-                                               accuracy=-1.0)
+                # accumulate the metric
+                metric_accumulator.accumulate(source=metrics, counter_increment=len(index))
 
-                # accumulate the new_metric
-                metric_accumulator.accumulate(source=metrics_new, counter_increment=len(index))
+                # modify the metrics after accumulation
+                metric_accumulator.set_value(key="count_prediction", value=-1 * numpy.ones(1))
+                metric_accumulator.set_value(key="wrong_examples", value=-1 * numpy.ones(1))
+                metric_accumulator.set_value(key="accuracy", value=-1.0)
 
                 # apply the weight clipper
                 if weight_clipper is not None:

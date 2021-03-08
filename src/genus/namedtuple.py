@@ -241,12 +241,8 @@ class MetricMiniBatch(NamedTuple):
     similarity_w: float
     # conting accuracy
     count_prediction: numpy.ndarray
-    wrong_examples: Optional[numpy.ndarray]
-    accuracy: Optional[float]
-    # Debugging the grads
-    grad_logit_min: Optional[float]
-    grad_logit_mean: Optional[float]
-    grad_logit_max: Optional[float]
+    wrong_examples: numpy.ndarray
+    accuracy: float
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \

@@ -299,6 +299,20 @@ class FiniteDPP(Distribution):
             self._eigen_l = s_l
         return self._eigen_l
 
+    @property
+    def n_mean(self):
+        p = self.eigen_l / (1 + self.eigen_l)
+        return p.sum()
+
+    @property
+    def n_variance(self):
+        p = self.eigen_l / (1 + self.eigen_l)
+        return torch.sum(p*(1-p))
+
+    @property
+    def n_stddev(self):
+        return self.n_variance.sqrt()
+
     def expand(self, batch_shape, _instance=None):
         """
         :meta private:
@@ -400,9 +414,7 @@ class FiniteDPP(Distribution):
         value = value.flatten(start_dim=0, end_dim=-2)  # *, event_shape
         L = self.L.expand(independet_dims + [-1, -1]).flatten(start_dim=0, end_dim=-3)  # *, event_shape, event_shape
 
-        # Here I am computing the logdet of square matrix of different shapes
-
-        # APPROACH 1:
+        # I need to compute the logdet of square matrix of different shapes
         # Select sub-row and columns and embed everything inside a larger identity matrix since
         #     | A  B  0 |
         # det | C  D  0 | = determinant of the sub_matrix
@@ -448,6 +460,27 @@ class Grid_DPP(torch.nn.Module):
         self.finite_dpp:  Optional[FiniteDPP] = None
         self.fingerprint = (None, None, None, None)
         self.learnable_params = learnable_params
+        if self.learnable_params:
+            raise NotImplementedError("At the moment, \
+            the lenght_scale and weight of the DPP prior need to be fixed by the users")
+
+    @property
+    def n_mean(self):
+        if self.finite_dpp is None:
+            raise Exception("You need to draw a random sample first to fix the size of the grid")
+        return self.finite_dpp.n_mean
+
+    @property
+    def n_variance(self):
+        if self.finite_dpp is None:
+            raise Exception("You need to draw a random sample first to fix the size of the grid")
+        return self.finite_dpp.n_variance
+
+    @property
+    def n_stddev(self):
+        if self.finite_dpp is None:
+            raise Exception("You need to draw a random sample first to fix the size of the grid")
+        return self.finite_dpp.n_stddev
 
     def sample(self, size: torch.Size):
         """
