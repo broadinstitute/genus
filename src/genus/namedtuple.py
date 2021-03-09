@@ -191,6 +191,7 @@ class UNEToutput(NamedTuple):
 
 class Inference(NamedTuple):
     logit_grid: torch.Tensor
+    prob_from_ranking_grid: torch.Tensor
     background_cwh: torch.Tensor
     foreground_kcwh: torch.Tensor
     sum_c_times_mask_1wh: torch.Tensor
@@ -220,8 +221,7 @@ class MetricMiniBatch(NamedTuple):
 
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
-    kl_logit_base: float
-    kl_logit_additional: float
+    kl_logit: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
@@ -241,12 +241,8 @@ class MetricMiniBatch(NamedTuple):
     similarity_w: float
     # conting accuracy
     count_prediction: numpy.ndarray
-    wrong_examples: Optional[numpy.ndarray]
-    accuracy: Optional[float]
-    # Debugging the grads
-    grad_logit_min: Optional[float]
-    grad_logit_mean: Optional[float]
-    grad_logit_max: Optional[float]
+    wrong_examples: numpy.ndarray
+    accuracy: float
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \

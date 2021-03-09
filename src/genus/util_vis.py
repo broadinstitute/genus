@@ -518,8 +518,16 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet"+postfix)
+    fig_e = show_batch(output.inference.prob_from_ranking_grid,
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=False,
+                       title='prob_ranking, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"prob_ranking"+postfix)
 
-    fig_e = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+    fig_f = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -527,7 +535,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
-    fig_f = show_batch(output.inference.sum_c_times_mask_1wh,
+    fig_g = show_batch(output.inference.sum_c_times_mask_1wh,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -539,7 +547,7 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
 
 
 def plot_segmentation(segmentation: Segmentation,

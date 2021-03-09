@@ -12,7 +12,8 @@ class UNet(torch.nn.Module):
                  level_zwhere_and_logit_output: int,
                  level_background_output: int,
                  n_ch_output_features: int,
-                 ch_after_first_two_conv: int,
+                 ch_after_preprocessing: int,
+                 downsampling_factor_preprocessing: int,
                  dim_zbg: int,
                  dim_zwhere: int,
                  dim_logit: int,
@@ -26,14 +27,17 @@ class UNet(torch.nn.Module):
         self.level_zwhere_and_logit_output = level_zwhere_and_logit_output
         self.level_background_output = level_background_output
         self.n_ch_output_features = n_ch_output_features
-        self.ch_after_first_two_conv = ch_after_first_two_conv
+        self.ch_after_first_two_conv = ch_after_preprocessing
         self.dim_zbg = dim_zbg
         self.dim_zwhere = dim_zwhere
         self.dim_logit = dim_logit
         self.ch_raw_image = ch_raw_image
         self.concatenate_raw_image_to_fmap = concatenate_raw_image_to_fmap
         self.grad_logit_max = grad_logit_max
-        self.logit = None  # I reserve storage here to monitor the gradients of logit
+        self.downsampling_factor_preprocessing = downsampling_factor_preprocessing
+
+        if self.downsampling_factor_preprocessing != 1:
+            raise NotImplementedError("At the moment downsampling during preprocessing should be 1")
 
         # Initializations
         ch = self.ch_after_first_two_conv
@@ -104,12 +108,10 @@ class UNet(torch.nn.Module):
             dist_to_end_of_net = self.n_max_pool - i
             if dist_to_end_of_net == self.level_zwhere_and_logit_output:
                 zwhere = self.encode_zwhere(x)
-                self.logit = self.encode_logit(x)
-                if self.training:
-                    self.logit.retain_grad()
-                    if self.grad_logit_max is not None:
-                        self.logit.register_hook(lambda grad: grad.clamp(min=-self.grad_logit_max,
-                                                                         max=self.grad_logit_max))
+                logit = self.encode_logit(x)
+                if self.training and self.grad_logit_max is not None:
+                    logit.register_hook(lambda grad: grad.clamp(min=-self.grad_logit_max, max=self.grad_logit_max))
+
             if dist_to_end_of_net == self.level_background_output:
                 zbg = self.pred_background(x)  # only few channels needed for predicting bg
 
@@ -124,7 +126,7 @@ class UNet(torch.nn.Module):
             features = self.pred_features(x)
 
         return UNEToutput(zwhere=zwhere,
-                          logit=self.logit,
+                          logit=logit,
                           zbg=zbg,
                           features=features)
 

@@ -18,7 +18,7 @@
    "dim_zbg" : 20,
    "glimpse_size" : 28,
    "n_max_pool_unet" : 4,
-   "level_zwherelogit_unet" : 2,
+   "level_zwherelogit_unet" : 3,
    "n_ch_img" : 1,
    "n_ch_output_features" : 16,
    "n_ch_after_preprocessing" : 16,
@@ -40,7 +40,7 @@
  
  "shortcut_prob_corr_factor" : {
   "__comment" : "parameters for the shortcut for porb_corr_factor",
-  "values" : [0.0, 0.0],
+  "values" : [1.0, 0.0],
   "times" : [50, 100]
  },
 
@@ -56,7 +56,7 @@
    "bounding_box_regression_penalty_strength": 0.0,
    "bounding_box_regression_padding" : 3,
    "n_mc_samples" : 2,
-   "grad_logit_max" : 0.1
+   "grad_logit_max" : 10
  },
 
  "optimizer" : {
