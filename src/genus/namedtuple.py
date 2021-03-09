@@ -194,7 +194,7 @@ class Inference(NamedTuple):
     prob_from_ranking_grid: torch.Tensor
     background_cwh: torch.Tensor
     foreground_kcwh: torch.Tensor
-    sum_c_times_mask_1wh: torch.Tensor
+    mask_overlap_1wh: torch.Tensor
     mixing_k1wh: torch.Tensor
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor

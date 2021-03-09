@@ -347,12 +347,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             sample_from_prior=generate_synthetic_data,
                                                             mc_samples=1,
                                                             squeeze_mc=True)
-        zinstance_kl_mbk = zinstance_few.kl.mean(dim=-1)  # mean over latent dimension
+        zinstance_kl_bk = zinstance_few.kl.mean(dim=-1)  # mean over latent dimension
 
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the bounding boxes
-        # TODO: Apply sigmoid to mask only
         small_stuff_tmp = self.decoder_zinstance.forward(zinstance_few.sample)
         small_img, small_weight = torch.split(small_stuff_tmp,
                                               split_size_or_sections=(small_stuff_tmp.shape[-3] - 1, 1),
@@ -406,7 +405,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
         indicator_bk = prob_bk.clamp(min=0.1).detach()
         zwhere_kl = (zwhere_kl_bk * indicator_bk).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_mbk * indicator_bk).sum(dim=-1).mean()
+        zinstance_kl = (zinstance_kl_bk * indicator_bk).sum(dim=-1).mean()
 
         # Loss for non-overlapping masks
         # TODO: I observe that this loss makes the mask shrink and the fg_fraction go down.
@@ -482,8 +481,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               prob_from_ranking_grid=prob_from_ranking_grid,
                               background_cwh=out_background_bcwh,
                               foreground_kcwh=out_img_bkcwh,
-                              sum_c_times_mask_1wh=torch.sum((prob_bk > 0.5)[..., None, None, None] * out_mask_bk1wh,
-                                                             dim=-4),
+                              mask_overlap_1wh=mask_overlap_b1wh,
                               mixing_k1wh=mixing_bk1wh,
                               sample_c_grid_before_nms=c_grid_before_nms,
                               sample_c_grid_after_nms=c_grid_after_nms,
