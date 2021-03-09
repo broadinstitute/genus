@@ -214,8 +214,8 @@ class FiniteDPP(Distribution):
         A Finite DPP is FULLY specified by the correlation matrix (K), the likelihood matrix (L)
         and the L_eigenvalues. All three are necessary to perform different operations.
         For example:
-            (1) the computation of the log_probability of a configuration requires the L matrix and L_eigenvalues.
-            (2) Drawing a new random sample requires the K matrix
+        (1) the computation of the log_probability of a configuration requires the L matrix and L_eigenvalues.
+        (2) Drawing a new random sample requires the K matrix
 
         The MINIMAL specification of the DPP is by either the K or L matrix. The remaining information can be obtained
         via SVD decomposition. If all three elements are specified, no svd decomposition will be performed.
@@ -335,7 +335,7 @@ class FiniteDPP(Distribution):
         Draw random samples from the DPP.
 
         Args:
-           sample_shape: specify how many independent samples to draw.
+            sample_shape: specify how many independent samples to draw.
 
         Returns:
             The binary configaration of shape = sample_shape + batch_shape + event_shape where
@@ -529,9 +529,8 @@ class Grid_DPP(torch.nn.Module):
 
 class ConditionalRandomCrop(object):
     """
-    Crop a torch Tensor at random locations to obtain output of given size.
-    The random crop is accepted only if it contains the Region Of Interest (ROI).
-
+    Crop a torch Tensor at random locations to obtain output of given size. The random crop is accepted only if it
+    contains the Region Of Interest (ROI).
     """
 
     def __init__(self, desired_w: int, desired_h: int, min_roi_fraction: float = 0.0, n_crops_per_image: int = 1):
@@ -542,8 +541,6 @@ class ConditionalRandomCrop(object):
             min_roi_fraction: minimum threshold of the Region of Interest (ROI).
                 Random crops with less that this amount of ROI will be disregarded.
             n_crops_per_image: number of random crops to generate for each image
-
-
         """
         super().__init__()
         self.desired_w = desired_w
@@ -629,17 +626,18 @@ class ConditionalRandomCrop(object):
 
     def collate_crops_from_list(self, img: torch.Tensor, bij_list: list):
         """
-        :meta private:
         Makes a batch of cropped images.
 
         Args:
             img: tensor of shape :math:`(B,C,W,H)` with the images to crop
-            bij_list: list of tuple of type [b,i,j] indicating the image index and the location of the lower-left corner
-                of the random crop
+            bij_list: list of tuple of type :math:`[b,i,j]` indicating the image index and the location of the
+                lower-left corner of the random crop
 
         Returns:
             A batch with the cropped images of shape :math:`(N,C,\\text{desired}_w,\\text{desired}_h)`
             where N is the length of the list :attr:`bij_list`.
+
+        :meta private:
         """
         return torch.stack([img[b, :, i:i+self.desired_w, j:j+self.desired_h] for b, i, j in bij_list], dim=-4)
 

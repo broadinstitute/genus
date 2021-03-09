@@ -917,7 +917,6 @@ def process_one_epoch(model: CompositionalVae,
                       dataloader: SpecialDataSet,
                       optimizer: torch.optim.Optimizer,
                       scheduler: torch.optim.lr_scheduler._LRScheduler = None,
-                      weight_clipper: Optional[Callable[[None], None]] = None,
                       verbose: bool = False,
                       noisy_sampling: bool = True,
                       iom_threshold: float = 0.5) -> MetricMiniBatch:
@@ -931,9 +930,8 @@ def process_one_epoch(model: CompositionalVae,
             returns images, pixel_level_labels, image_level_labels and index of the image
         optimizer: Any torch optimizer
         scheduler: Any torch learning rate scheduler
-        weight_clipper: If specified the model's weights are clipped after each optimization step
         verbose: if true information are printed for each mini-batch.
-        noisy_sampling: value which is passed to the model.forward method
+        noisy_sampling: value which is passed to the model.forward method.
         iom_threshold: value which is passed to the model.forward method
     """
     metric_accumulator = MetricsAccumulator()  # initialize an empty accumulator
@@ -983,9 +981,9 @@ def process_one_epoch(model: CompositionalVae,
                 metric_accumulator.set_value(key="accuracy", value=-1.0)
 
                 # apply the weight clipper
-                if weight_clipper is not None:
-                    model.__self__.apply(weight_clipper)
-                    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
+                # if weight_clipper is not None:
+                #    model.__self__.apply(weight_clipper)
+                #    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
 
         # End of loop over minibatches
 
