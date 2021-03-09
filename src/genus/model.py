@@ -297,13 +297,13 @@ class CompositionalVae(torch.nn.Module):
         integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
         fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        bounding_boxes = draw_bounding_boxes(c=inference.sample_c_k,
+        bounding_boxes = draw_bounding_boxes(prob=inference.sample_c_k,
                                              bounding_box=inference.sample_bb_k,
                                              width=integer_mask.shape[-2],
                                              height=integer_mask.shape[-1],
                                              color='red') if draw_boxes else None
 
-        bounding_boxes_ideal = draw_bounding_boxes(c=inference.sample_c_k,
+        bounding_boxes_ideal = draw_bounding_boxes(prob=inference.sample_c_k,
                                                    bounding_box=inference.sample_bb_ideal_k,
                                                    width=integer_mask.shape[-2],
                                                    height=integer_mask.shape[-1],

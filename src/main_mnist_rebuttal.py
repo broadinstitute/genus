@@ -258,7 +258,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                  draw_bg=True)
 
                     plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_", experiment=exp)
-                    reference_n_cells_inferred = output.inference.sample_c_k.sum().item()
+                    reference_n_cells_inferred = (output.inference.sample_prob_k > 0.5).sum().item()
                     reference_n_cells_truth = reference_count.sum().item()
                     delta_n_cells = reference_n_cells_inferred - reference_n_cells_truth
                     tmp_dict = {"reference_n_cells_inferred": reference_n_cells_inferred,

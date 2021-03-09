@@ -199,7 +199,7 @@ class Inference(NamedTuple):
     # the sample of the 4 latent variables
     sample_c_grid_before_nms: torch.Tensor
     sample_c_grid_after_nms: torch.Tensor
-    sample_c_k: torch.Tensor
+    sample_prob_k: torch.Tensor
     sample_bb_k: BB
     sample_bb_ideal_k: BB
 
