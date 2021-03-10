@@ -251,7 +251,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
 
                     output: Output = vae.forward(reference_imgs,
                                                  iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                 noisy_sampling=True,
+                                                 noisy_sampling=False,
                                                  draw_image=True,
                                                  draw_boxes=True,
                                                  draw_boxes_ideal=True,

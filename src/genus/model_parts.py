@@ -286,13 +286,15 @@ class InferenceAndGeneration(torch.nn.Module):
             if generate_synthetic_data:
                 # sample from dpp prior
                 c_grid_before_nms_mcsamples = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
-                c_grid_before_nms = c_grid_before_nms_mcsamples[0]
             else:
                 # sample from posterior
                 prob_expanded = unet_prob_b1wh.expand([self.n_mc_samples] + list(unet_prob_b1wh.shape))
-                c_grid_before_nms_mcsamples = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling \
-                    else (0.5 < prob_expanded)
-                c_grid_before_nms = c_grid_before_nms_mcsamples[0]  # only one mcsamples is used downstream
+                c_grid_before_nms_mcsamples = (torch.rand_like(prob_expanded) < prob_expanded)
+                if not noisy_sampling:
+                    c_grid_before_nms_mcsamples[0] = (prob_expanded[0] > 0.5)
+
+            # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
+            c_grid_before_nms = c_grid_before_nms_mcsamples[0]
 
             # During pretraining I select the boxes according to: score = (1-a) * (c+p) + a * ranking
             if annealing_factor == 0:
