@@ -48,15 +48,15 @@ For these challenging situations, it would be highly desiderable to have the abi
 the segmentation stringency, as a post-processing step.
 To this end we implemented a graph-based strategy.
 Our ML algorithm can generate a co-objectness graph, in which each node represents a pixel,
-and pixels belonging to the same instance have a non-zero connectivity weight. Pixels that belong to the a same
-instance consistently will attain strong connections while pixels that are sometimes assigned to different instances
-will have weaker connections. The final segmentation is obtained by performing a fast modularity-based community
-detection on the graph using the Leiden algorithm. The Leiden algorithm admits a resolution parameter which can
-be roughly understood as a connectivity threshold below which a community is divided into further sub-communities.
+and pixels belonging to the same instance have a non-zero connectivity weight. The same image is segmented multiple
+times, pixels that belong to the same instance consistently have strong connections while pixels that are sometimes
+assigned to different instances will have weaker connections. The consensus segmentation is obtained by performing a
+fast modularity-based community detection on the graph using the Leiden algorithm.
+The Leiden algorithm admits a resolution parameter which can be roughly understood as a connectivity threshold below
+which a community is divided into further sub-communities, i.e. higher resolution leads to more communities.
 In our experiments, we have observed that most images are segmented consistently for a wide range of values of the
-resolution parameter. However, few ambiguous regions remain sensitive to the choice of the resolution parameter,
-which therefore becomes a simple and intuitive "knob" to tune the level of segmentation without
-the need to re-train the model.
+resolution parameter. However, for few ambiguous regions the resolution parameter can be used as a simple
+and intuitive "knob" to tune the level of segmentation without the need to re-train the model.
 
 In GENUS we have implemented two modes for selecting the resolution parameter:
 - In the automated mode, the value of the resolution parameter is automatically determined
@@ -64,75 +64,51 @@ In GENUS we have implemented two modes for selecting the resolution parameter:
     parameters in order to determine a resolution that produces the desired segmentation.
     The chosen value is then used to perform community detection on the entire graph.
 
+In unambigous situations, this graph-based approach is not needed and each image can be porcessed just once to create
+high quality segmentation masks.
+
+Dynamical Hyperparameters
+-------------------------
+
+In complex ML models, the loss function usually consists of multiple terms. The relative importance of these terms is
+determined by the value of hyper-parameters which need to be finely tuned in
+order to achieve good performance. There is no intuitive way to set these hyper-parameters
+and one usually has to resort to time-consuming hyper-parameter sweeps and cross-validation.
+In GENUS we follow a different strategy. The users specify the ranges
+
+.....
+
+and  rule to set these parameters and
+
+This procedure is  and, frankly, disappointing.
+
+porcedure is time
 
 
-Geco
-----
+the relative
+importance of these terms need to be calibrated usually via cross-validation. This leads to expensive
 
 
+determined by
 
+model achieve good performance only
+if these terms are balanced.
 
+whose
+In gradient-based ML models, the task is ultimately specified via the loss which is designed so that
 
-
-I think an interesting line of thought is to have "ML models with a knob" that can be set by experimentalist to achieve the desired segmentation. CellSegmenter tries to do that using the resolution parameter to do consensus segmentation to tune over-segmentation vs under-segmentation.
-
-
-
-
-
-
-provide enough clues
-
-
-It is then possible to almost unambigously specify
-the desired segmentation by
-
-
-
-
-
-and  glasses, review mirror separately
-
-considered an object however, an equally reasonable
-definition
-
-arbitrary. Is a car an object?
-
-In all but the simplest scenarios, multiple
-
-
-Unsupervised segmentation
-The notion of “object” and “background”can assume arbitrarily complex variations, and the evidencefor the correct segmentation may very well lie outside of thethe domain of still images.  In practice, (P3) subtle modelmisspecification or non-identifiability can override the priorstructure and lead to poor inferences; and this issue is onlyexacerbated by the bias inherent to variational inference.
+function whose minimization
 
 
 
-User defined parameters
------------------------
+
+
+User's choices
+--------------
 
 
 Quick start tutorial can be found hre
 
-
-
-and,   and a
-
-Deep Neural Network
-
-Despite the recent progress in improving, optimizing and standardizing scRNA-seq protocols, the complexity of
-scRNA-seq experiments leaves room for systematic biases and background noise in the raw observations. These nuisances
-can be traced back to undesirable enzymatic processes that produce spurious library fragments, contamination by
-exogeneous or endogenous ambient transcripts, impurity of barcode beads, and barcode swapping during amplification
-and/or sequencing.
-
-The main purpose of CellBender is to take raw gene-by-cell count matrices and molecule-level information produced
-by 3rd party pipelines (e.g. CellRanger, Alevin), to model and remove systematic biases and background noise, and
-to produce improved estimates of gene expression.
-
-As such, CellBender relies on an external tool for primary processing of the raw data obtained from the
-sequencer (e.g. BCL or FASTQ files). These basic processing steps lie outside of the scope of CellBender
-and include (pseudo-)alignment and annotation of reads, barcode error correction, and generation of raw gene-by-cell
-count matrices. Upcoming modules of CellBender will further utilize molecule-level information (e.g. observed reads
-per molecule, transcript equivalent classes, etc.).
 
 Modules
 -------
