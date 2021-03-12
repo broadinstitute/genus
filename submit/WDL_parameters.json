@@ -3,10 +3,10 @@
   "neptune_ml.data_train": "gs://ld-data-bucket/cvpr_rebttal/mnist_train_80x80_n2_6_with_grid.pt",
   "neptune_ml.data_test": "gs://ld-data-bucket/cvpr_rebttal/mnist_test_80x80_n2_6_with_grid.pt",
   "neptune_ml.ground_truth": "gs://ld-data-bucket/cvpr_rebttal/mnist_test_80x80_n4_6_with_grid.pt",
-  "neptune_ml.ckpt": "gs://ld-data-bucket/genus/ckpt_gen290_epoch60.pt",
-  "neptune_ml.git_branch_or_commit": "a981253149bdaf0b3f4a78d9339508dcd106d165",
-"neptune_ml.git_repo": "https://github.com/broadinstitute/genus.git",
-  "neptune_ml.main_file_name": "main_mnist_rebuttal.py"
+  "neptune_ml.ckpt": "gs://ld-data-bucket/genus/ckpt_gen372_epoch300.pt",
+  "neptune_ml.git_branch_or_commit": "a7dfcfa96d0ebf52eef47900949a93d79600a73a",
+  "neptune_ml.git_repo": "https://github.com/broadinstitute/genus.git",
+  "neptune_ml.main_file_name": "main_mnist.py"
 }
 
 
