@@ -67,29 +67,16 @@ class EncoderBackground(nn.Module):
 
         ch_hidden = (CH_BG_MAP + dim_z)//2
 
-        self.bg_map_before = MLP_1by1(ch_in=ch_in, ch_out=CH_BG_MAP, ch_hidden=-1)
-        self.adaptive_avg_2D = nn.AdaptiveAvgPool2d(output_size=LOW_RESOLUTION_BG)
-        self.adaptive_max_2D = nn.AdaptiveAvgPool2d(output_size=LOW_RESOLUTION_BG)
-
         self.convolutional = nn.Sequential(
-            MLP_1by1(ch_in=2 * CH_BG_MAP, ch_out=CH_BG_MAP, ch_hidden=-1),  # 5x5
+            nn.Conv2d(in_channels=ch_in, out_channels=CH_BG_MAP, kernel_size=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=CH_BG_MAP, out_channels=CH_BG_MAP, kernel_size=3),  # 3x3
+            nn.Conv2d(in_channels=CH_BG_MAP, out_channels=ch_hidden, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=CH_BG_MAP, out_channels=CH_BG_MAP, kernel_size=3),  # 1x1
-            nn.ReLU(inplace=True))
-
-        self.linear = nn.Sequential(
-            nn.Linear(in_features=CH_BG_MAP, out_features=ch_hidden),
-            nn.ReLU(inplace=True),
-            nn.Linear(in_features=ch_hidden, out_features=2*self.dim_z))
+            nn.Conv2d(in_channels=ch_hidden, out_channels=2*self.dim_z, kernel_size=3, padding=1))
 
     def forward(self, x: torch.Tensor) -> ZZ:
-        # TODO: see how fast.ai does UNET
-        y1 = self.bg_map_before(x)  # B, 32, small_w, small_h
-        y2 = torch.cat((self.adaptive_avg_2D(y1), self.adaptive_max_2D(y1)), dim=-3)  # 2*ch_bg_map , low_res, low_res
-        y3 = self.convolutional(y2)  # B, 32, 1, 1
-        mu, std = torch.split(self.linear(y3.flatten(start_dim=-3)), self.dim_z, dim=-1)  # B, dim_z
+        y = self.convolutional(x)  # B, 2*dim_z, small_w, small_h
+        mu, std = torch.split(y, self.dim_z, dim=-3)  # (B, dim_z, small_w, small_h) , (B, dim_z, small_w, small_h)
         return ZZ(mu=mu, std=F.softplus(std) + EPS_STD)
 
 
@@ -101,49 +88,46 @@ class DecoderBackground(nn.Module):
         Observation ConvTranspose2D with:
         1. k=4, s=2, p=1 -> double the spatial dimension
     """
-    def __init__(self, ch_out: int, dim_z: int):
+    def __init__(self, ch_out: int, dim_z: int, n_up_conv: int):
         super().__init__()
         self.dim_z = dim_z
         self.ch_out = ch_out
-        self.upsample = nn.Linear(self.dim_z, CH_BG_MAP * LOW_RESOLUTION_BG[0] * LOW_RESOLUTION_BG[1])
-        self.decoder = nn.Sequential(
-            torch.nn.ConvTranspose2d(in_channels=CH_BG_MAP, out_channels=32, kernel_size=4, stride=2, padding=1),  # 10,10
-            torch.nn.ReLU(inplace=True),
-            torch.nn.ConvTranspose2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1),  # 20,20
-            torch.nn.ReLU(inplace=True),
-            torch.nn.ConvTranspose2d(in_channels=32, out_channels=16, kernel_size=4, stride=2, padding=1),  # 40,40
-            torch.nn.ReLU(inplace=True),
-            torch.nn.ConvTranspose2d(in_channels=16, out_channels=self.ch_out, kernel_size=4, stride=2, padding=1),  # 80,80
-        )
+        self.upconv = torch.nn.ModuleList()
 
-    def forward(self, z: torch.Tensor, high_resolution: tuple) -> torch.Tensor:
+        input_ch = self.dim_z
+        for n in range(0, n_up_conv):
+            self.upconv.append(torch.nn.ConvTranspose2d(in_channels=input_ch, out_channels=CH_BG_MAP,
+                                                        kernel_size=4, stride=2, padding=1))
+            self.upconv.append(torch.nn.ReLU(inplace=True))
+            input_ch = CH_BG_MAP
+        self.upconv.append(torch.nn.ConvTranspose2d(in_channels=CH_BG_MAP, out_channels=self.ch_out, kernel_size=1))
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            z: tensor of shape (*, latent_dim)
-            high_resolution: tuple with the width and height of the background
+            z: tensor of shape (*, CH_BG_MAP, small_w, small_h)
 
         Returns:
-            background of shape (*, self.ch_out, high_resolution[0], high_resolution[1])
+            background of shape (*, self.ch_out, W, H)
 
         Note:
             Works for any number of leading dimensions
         """
-        independent_dim = list(z.shape[:-1])
-        x0 = self.upsample(z.flatten(end_dim=-2)).view(-1, CH_BG_MAP, LOW_RESOLUTION_BG[0], LOW_RESOLUTION_BG[1])
-        x1 = self.decoder(x0)
-        x2 = F.interpolate(x1, size=high_resolution, mode='bilinear', align_corners=True)
-        dependent_dim = list(x2.shape[-3:])
-        return x2.view(independent_dim + dependent_dim)
+        independent_dim = list(z.shape[:-3])
+        x = z.flatten(end_dim=-4)
+        for i, module in enumerate(self.upconv):
+            x = module(x)
+        dependent_dim = list(x.shape[-3:])
+        return x.view(independent_dim + dependent_dim)
 
 
 class DecoderConv(nn.Module):
     def __init__(self, size: int, dim_z: int, ch_out: int):
         super().__init__()
         self.width = size
-        assert (self.width == 28 or self.width == 56)
-        # self.last_channel_is_mask = last_channel_is_mask
-        self.dim_z: int = dim_z
-        self.ch_out: int = ch_out
+        assert self.width == 28
+        self.dim_z = dim_z
+        self.ch_out = ch_out
         self.upsample = nn.Linear(self.dim_z, 64 * 7 * 7)
         self.decoder = nn.Sequential(
             torch.nn.ConvTranspose2d(64, 32, 4, 2, 1),  # B,  64,  14,  14

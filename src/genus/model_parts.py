@@ -185,7 +185,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
-                                                                ch_out=config["architecture"]["n_ch_img"])
+                                                                ch_out=config["architecture"]["n_ch_img"],
+                                                                n_up_conv=config["architecture"]["n_max_pool_unet"])
 
         self.decoder_zwhere: Decoder1by1Linear = Decoder1by1Linear(dim_z=config["architecture"]["dim_zwhere"],
                                                                    ch_out=4,
@@ -261,9 +262,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   sample_from_prior=generate_synthetic_data,
                                                   mc_samples=1,
                                                   squeeze_mc=True)
-        zbg_kl = zbg.kl.mean()  # mean over latent dimension and batch
-        out_background_bcwh = self.decoder_zbg(z=zbg.sample, high_resolution=(imgs_bcwh.shape[-2],
-                                                                              imgs_bcwh.shape[-1]))
+        zbg_kl = zbg.kl.sum(dim=(-1, -2)).mean()  # sum over spatial coordinates, mean over channel dimension and batch
+        out_background_bcwh = self.decoder_zbg(z=zbg.sample)
+
         # Compute the bounding boxes
         zwhere_grid: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
                                                           posterior_std=unet_output.zwhere.std,

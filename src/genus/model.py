@@ -942,7 +942,7 @@ def process_one_epoch(model: CompositionalVae,
     with torch.autograd.set_detect_anomaly(mode=False):
 
         # Start loop over minibatches
-        for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
+        for i, (imgs, labels, index) in enumerate(dataloader):
 
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
