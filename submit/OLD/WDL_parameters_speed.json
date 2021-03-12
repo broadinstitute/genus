@@ -1,0 +1,12 @@
+{
+  "speed_ml.credentials_json": "gs://ld-data-bucket/credentials.json",
+  "speed_ml.data_train": "gs://ld-data-bucket/cvpr_rebttal/mnist_train_80x80_n2_6_with_grid.pt",
+  "speed_ml.data_test": "gs://ld-data-bucket/cvpr_rebttal/mnist_test_80x80_n2_6_with_grid.pt",
+  "speed_ml.ground_truth": "gs://ld-data-bucket/cvpr_rebttal/mnist_test_80x80_n4_6_with_grid.pt",
+  "speed_ml.ckpt": "gs://ld-data-bucket/genus/ckpt_gen290_epoch60.pt",
+  "speed_ml.git_branch_or_commit": "74dcf0f0e3e494e9c71cad03863a9198c2b61a92",
+"speed_ml.git_repo": "https://github.com/broadinstitute/genus.git",
+  "speed_ml.main_file_name": "main_speed.py"
+}
+
+
