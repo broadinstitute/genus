@@ -1,4 +1,4 @@
-import json
+import yaml
 import torch
 import numpy
 import dill
@@ -223,30 +223,30 @@ def load_obj(path):
         return torch.load(f, pickle_module=dill)
 
 
-def load_json_as_dict(path) -> dict:
+def load_yaml_as_dict(path) -> dict:
     """
-    Read the content of a json file into a dictionary.
+    Read the content of a YAML file into a dictionary.
 
     Args:
-        path: Path to a json file
+        path: Path to a YAML file
 
     Returns:
-        dictionary with the content of the json file
+        dictionary with the content of the YAML file
     """
-    with open(path, 'rb') as f:
-        return json.load(f)
+    with open(path, 'r') as f:
+        return yaml.load(f, Loader=yaml.FullLoader)
 
 
-def save_dict_as_json(input_dict, path):
+def save_dict_as_yaml(input_dict, path):
     """
-    Save a dictionary to a json file.
+    Save a dictionary to a YAML file.
 
     Args:
         input_dict: Dictionary which will be saved to file
-        path: Path to the json file which will be (over-) written.
+        path: Path to the YAML file which will be (over-) written.
     """
     with open(path, 'w') as f:
-        return json.dump(input_dict, f)
+        return yaml.dump(input_dict, f)
 
 
 def ckpt2file(ckpt: dict, path: str):

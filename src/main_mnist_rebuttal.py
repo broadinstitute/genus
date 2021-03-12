@@ -2,13 +2,11 @@
 # coding: utf-8
 
 import neptune
-# import genus
-from genus.util_logging import log_object_as_artifact, log_model_summary, log_img_only, log_many_metrics
+from genus.util_logging import log_object_as_artifact, log_model_summary, log_many_metrics
 from genus.model import *
-from genus.util_vis import show_batch, plot_tiling, plot_label_contours, \
-    plot_reconstruction_and_inference, plot_generation, plot_segmentation, plot_img_and_seg, plot_concordance
-from genus.util_ml import SpecialDataSet #, ConditionalRandomCrop
-from genus.util import *
+from genus.util_vis import show_batch, plot_reconstruction_and_inference, plot_generation, plot_segmentation
+from genus.util_data import DatasetInMemory
+from genus.util import load_yaml_as_dict, flatten_dict, load_obj, file2ckpt, linear_interpolation, append_to_dict
 
 # Check versions
 import torch
@@ -21,7 +19,8 @@ print("torch.__version__ --> ", torch.__version__)
 torch.manual_seed(0)
 numpy.random.seed(0)
 
-config = load_json_as_dict("./ML_parameters.json")
+
+config = load_yaml_as_dict("./ML_config.yaml")
 
 neptune.set_project(config["neptune_project"])
 exp: neptune.experiments.Experiment = \
@@ -34,47 +33,18 @@ exp: neptune.experiments.Experiment = \
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
 img_test, seg_mask_test, count_test = load_obj("./data_test.pt")
 img_test_out, seg_mask_test_out, count_test_out = load_obj("./ground_truth")  # using the ground truth filename to pass extrapolation test dataset
-BATCH_SIZE = config["simulation"]["batch_size"]
+BATCH_SIZE = config["simulation"]["BATCH_SIZE"]
 
+train_dataset = DatasetInMemory(x=img_train,
+                                y=count_train,
+                                store_in_cuda=False)
 
-train_loader = SpecialDataSet(x=img_train,
-                              x_roi=None,
-                              y=seg_mask_train,
-                              labels=count_train,
-                              data_augmentation=None,
-                              store_in_cuda=False,
-                              batch_size=BATCH_SIZE,
-                              drop_last=True,
-                              shuffle=True)
+test_dataset = DatasetInMemory(x=img_test,
+                               y=count_test,
+                               store_in_cuda=False)
 
-test_loader = SpecialDataSet(x=img_test,
-                             x_roi=None,
-                             y=seg_mask_test,
-                             labels=count_test,
-                             data_augmentation=None,
-                             store_in_cuda=False,
-                             batch_size=BATCH_SIZE,
-                             drop_last=True,
-                             shuffle=True)
-
-test_out_loader = SpecialDataSet(x=img_test_out,
-                                 x_roi=None,
-                                 y=seg_mask_test_out,
-                                 labels=count_test_out,
-                                 data_augmentation=None,
-                                 store_in_cuda=False,
-                                 batch_size=BATCH_SIZE,
-                                 drop_last=True,
-                                 shuffle=True)
-
-train_batch_example_fig = train_loader.check_batch()
-log_img_only(name="train_batch_example", fig=train_batch_example_fig, experiment=exp)
-
-test_batch_example_fig = test_loader.check_batch()
-log_img_only(name="test_batch_example", fig=test_batch_example_fig, experiment=exp)
-
-test_out_batch_example_fig = test_out_loader.check_batch()
-log_img_only(name="test_out_batch_example", fig=test_out_batch_example_fig, experiment=exp)
+train_loader = DataloaderWithLoad(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+test_loader = DataloaderWithLoad(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # Instantiate model, optimizer and checks
 vae = CompositionalVae(config)
@@ -82,12 +52,8 @@ log_model_summary(vae)
 optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 # Make reference images
-index_tmp = torch.tensor([25, 26, 27, 28, 29], dtype=torch.long)
-tmp_imgs, tmp_seg, tmp_count = test_loader.load(index=index_tmp)[:3]
-tmp_out_imgs, tmp_out_seg, tmp_out_count = test_out_loader.load(index=index_tmp)[:3]
-reference_imgs = torch.cat([tmp_imgs, tmp_out_imgs], dim=0)
-reference_count = torch.cat([tmp_count, tmp_out_count], dim=0)
-
+index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
+reference_imgs, reference_count = test_loader.load(index=index_tmp)[:2]
 reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0),
                                 neptune_name="reference_imgs", experiment=exp)
 
@@ -207,35 +173,11 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                      keys_exclude=["wrong_examples"],
                                      verbose=False)
 
-###                    test_out_metrics = process_one_epoch(model=vae,
-###                                                         dataloader=test_out_loader,
-###                                                         optimizer=optimizer,
-###                                                         scheduler=scheduler,
-###                                                         iom_threshold=config["architecture"]["nms_threshold_test"],
-###                                                         verbose=(epoch == 0))
-###                    print("Test Out "+test_out_metrics.pretty_print(epoch))
-###                    history_dict = append_to_dict(source=test_out_metrics,
-###                                                  destination=history_dict,
-###                                                  prefix_exclude="wrong_examples",
-###                                                  prefix_to_add="test_out_")
-###                    log_many_metrics(metrics=test_out_metrics,
-###                                     prefix_for_neptune="test_out_",
-###                                     experiment=exp,
-###                                     keys_exclude=["wrong_examples"],
-###                                     verbose=False)
-
                     if len(test_metrics.wrong_examples) > 0:
                         error_index = torch.tensor(test_metrics.wrong_examples[:5], dtype=torch.long)
                     else:
                         error_index = torch.arange(5, dtype=torch.long)
                     error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
-
-####                    if len(test_out_metrics.wrong_examples) > 0:
-####                        error_index = torch.tensor(test_out_metrics.wrong_examples[:5], dtype=torch.long)
-####                    else:
-####                        error_index = torch.arange(5, dtype=torch.long)
-####                    error_test_out_img = test_out_loader.load(index=error_index)[0].to(reference_imgs.device)
-####                    error_img = torch.cat((error_test_img, error_test_out_img), dim=0)
 
                     error_output: Output = vae.forward(error_test_img,
                                                        iom_threshold=config["architecture"]["nms_threshold_test"],
@@ -272,14 +214,6 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                              noisy_sampling=True,
                                                              iom_threshold=config["architecture"]["nms_threshold_test"])
                     plot_segmentation(segmentation, epoch=epoch, prefix="seg_", experiment=exp)
-
-                    # Here I could add a measure of agreement with the ground truth
-                    #a = segmentation.integer_mask[0, 0].long()
-                    #b = reference_seg.long()
-                    #print("CHECK", a.shape, a.dtype, b.shape, b.dtype)
-                    #concordance_vs_gt = concordance_integer_masks(a,b)
-                    #plot_concordance(concordance=concordance_vs_gt, neptune_name="concordance_vs_gt_")
-                    #log_concordance(concordance=concordance_vs_gt, prefix="concordance_vs_gt_")
 
                     print("generation test")
                     generated: Output = vae.generate(imgs_in=reference_imgs,

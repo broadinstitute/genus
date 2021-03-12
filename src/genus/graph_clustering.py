@@ -8,7 +8,7 @@ import igraph as ig
 from typing import Optional, List, Iterable
 from matplotlib import pyplot as plt
 from .namedtuple import Segmentation, Partition, SparseSimilarity, Suggestion, ConcordanceIntMask
-from .util_neptune import log_img_and_chart
+# from .util_logging import log_img_and_chart
 from .util import concordance_integer_masks, remove_label_gaps
 
 # I HAVE LEARNED:
