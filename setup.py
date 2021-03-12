@@ -39,7 +39,7 @@ setup(
     packages=find_packages('src'),
     package_dir={'': 'src'},
     py_modules=[splitext(basename(path))[0] for path in glob('src/*.py')],
-    package_data={'': ['_default_params_CompositionalVae.json']},
+    package_data={'': ['_default_params_CompositionalVae.yaml']},
     include_package_data=True,
     zip_safe=False,
     # Classifiers help users find your project by categorizing it.

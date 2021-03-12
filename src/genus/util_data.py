@@ -1,7 +1,6 @@
 import torch
 from typing import Optional, Union, Tuple
 from collections import deque
-from .util_vis import plot_img_and_seg
 from torchvision.datasets import ImageFolder
 from torch.utils.data import DataLoader, Dataset
 
@@ -220,6 +219,9 @@ class DatasetInMemory(Dataset):
     Note:
         It can be used in combination with :class:`ConditionalRandomCrop` to create a
         dataset out of a single large image.
+
+    Note:
+        The :method:`__getitem__` returns a tuple (x,y,index) in contrast with usual Dataset which return just (x,y)
     """
 
     def __init__(self,

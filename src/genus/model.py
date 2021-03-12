@@ -2,12 +2,13 @@ import torch
 import torch.nn.functional as F
 import numpy
 import pathlib
-from typing import Tuple, Optional, Callable, List
+from typing import Tuple, Optional
 from .namedtuple import Inference, MetricMiniBatch, Segmentation, SparseSimilarity, Output
 from .util_vis import draw_bounding_boxes, draw_img
+from .util_data import DataloaderWithLoad
 from .model_parts import InferenceAndGeneration
-from .util_ml import MetricsAccumulator, SpecialDataSet
-from .util import load_json_as_dict, save_dict_as_json, roller_2d, flatten_dict
+from .util_ml import MetricsAccumulator
+from .util import load_yaml_as_dict, save_dict_as_yaml, roller_2d
 
 
 class CompositionalVae(torch.nn.Module):
@@ -17,7 +18,7 @@ class CompositionalVae(torch.nn.Module):
     """
 
     PATH_DEFAULT_CONFIG = (pathlib.Path(__file__).parent.absolute()).joinpath('_default_config_CompositionalVae.json')
-    DEFAULT_PARAMS = load_json_as_dict(path=PATH_DEFAULT_CONFIG)
+    DEFAULT_CONFIG = load_yaml_as_dict(PATH_DEFAULT_CONFIG)
 
     def __init__(self, config: dict) -> None:
         """
@@ -30,10 +31,6 @@ class CompositionalVae(torch.nn.Module):
 
         # Save the configuration dictionary as-is. This is usefull to save/restart the simulation
         self._config = config
-
-        # Save the configuration variable as member variables. This is useful for accessing the variable later
-        for key, value in flatten_dict(config, separator='_', prefix='config').items():
-            setattr(self, key, value)
 
         # Instantiate all the modules
         self.inference_and_generator = InferenceAndGeneration(config=self._config)
@@ -48,17 +45,17 @@ class CompositionalVae(torch.nn.Module):
         modify them as necessary before instantiating CompositionalVae.
 
         Note:
-            Can be used in combination with :func:`load_json_as_dict` and :func:`save_dict_as_json` to write/read
+            Can be used in combination with :func:`load_yaml_as_dict` and :func:`save_dict_as_yaml` to write/read
             the default and/or modified parameter to json file
 
         Examples:
             >>> config = CompositionalVae.default_config()
             >>> print(config)
             >>> config["input_image"]["n_objects_max"] = 25
-            >>> save_dict_as_json(input_dict=config, path="./new_config.json")
-            >>> vae = CompositionalVae(config=load_json_as_dict("./new_config.json"))
+            >>> save_dict_as_yaml(input_dict=config, path="./new_config.json")
+            >>> vae = CompositionalVae(config=load_yaml_as_dict("./new_config.json"))
         """
-        return cls.DEFAULT_PARAMS
+        return cls.DEFAULT_CONFIG
 
     def create_ckpt(self,
                     optimizer: Optional[torch.optim.Optimizer] = None,
@@ -242,8 +239,8 @@ class CompositionalVae(torch.nn.Module):
         """
 
         annealing_factor = getattr(self, "annealing_factor", 0.0) if annealing_factor is None else annealing_factor
-        k_objects_max = getattr(self, "config_input_image_max_objects_per_patch") if k_objects_max is None else k_objects_max
-        iom_threshold = getattr(self, "config_architecture_iom_threshold_test") if iom_threshold is None else iom_threshold
+        k_objects_max = self._config["input_image"]["max_objects_per_patch"] if k_objects_max is None else k_objects_max
+        iom_threshold = self._config["architecture"]["nms_threshold_test"] if iom_threshold is None else iom_threshold
 
         return self._segment_internal(batch_imgs=imgs_in,
                                       k_objects_max=k_objects_max,
@@ -297,13 +294,13 @@ class CompositionalVae(torch.nn.Module):
         integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
         fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        bounding_boxes = draw_bounding_boxes(prob=inference.sample_c_k,
+        bounding_boxes = draw_bounding_boxes(prob=inference.sample_prob_k,
                                              bounding_box=inference.sample_bb_k,
                                              width=integer_mask.shape[-2],
                                              height=integer_mask.shape[-1],
                                              color='red') if draw_boxes else None
 
-        bounding_boxes_ideal = draw_bounding_boxes(prob=inference.sample_c_k,
+        bounding_boxes_ideal = draw_bounding_boxes(prob=inference.sample_prob_k,
                                                    bounding_box=inference.sample_bb_ideal_k,
                                                    width=integer_mask.shape[-2],
                                                    height=integer_mask.shape[-1],
@@ -661,7 +658,7 @@ class CompositionalVae(torch.nn.Module):
 
         # Checks
         assert len(imgs_in.shape) == 4
-        assert getattr(self, "config_architecture_n_ch_img") == imgs_in.shape[-3]
+        assert self._config["input_image"]["ch_in"] == imgs_in.shape[-3]
         # End of Checks #
         inference: Inference
         metrics: MetricMiniBatch
@@ -714,7 +711,7 @@ class CompositionalVae(torch.nn.Module):
                                        noisy_sampling=noisy_sampling,
                                        annealing_factor=getattr(self, "annealing_factor", 0.0),
                                        iom_threshold=iom_threshold,
-                                       k_objects_max=getattr(self, "config_input_image_max_objects_per_patch"))
+                                       k_objects_max=self._config["input_image"]["max_objects_per_patch"])
 
     def generate(self,
                  imgs_in: torch.Tensor,
@@ -749,7 +746,7 @@ class CompositionalVae(torch.nn.Module):
                                            noisy_sampling=True,
                                            annealing_factor=0.0,
                                            iom_threshold=-1.0,
-                                           k_objects_max=getattr(self, "config_input_image_max_objects_per_patch"))
+                                           k_objects_max=self._config["input_image"]["max_objects_per_patch"])
 
 
 def load_from_ckpt(ckpt: dict,
@@ -834,41 +831,60 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
         >>> vae = CompositionalVae(param=param)
         >>> optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
     """
-    # split the parameters between GECO and NOT_GECO
-    geco_params, similarity_params, other_params = [], [], []
-    for name, param in model.named_parameters():
-        if ".geco" in name:
-            # print("geco params -->", name)
-            geco_params.append(param)
-        elif ".similarity" in name:
-            # print("similarity params -->", name)
-            similarity_params.append(param)
-        else:
-            other_params.append(param)
 
     if config_optimizer["type"] == "adam":
-        optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"],
-                                       'betas': config_optimizer["betas_geco"]},
-                                      {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"],
-                                       'betas': config_optimizer["betas_similarity"]},
-                                      {'params': other_params, 'lr': config_optimizer["base_lr"],
-                                       'betas': config_optimizer["betas"]}],
-                                     eps=config_optimizer["eps"],
-                                     weight_decay=config_optimizer["weight_decay"])
+        optimizer = torch.optim.Adam(model.parameters(),
+                                     lr=config_optimizer["lr"],
+                                     betas=config_optimizer["betas_adam"])
+
     elif config_optimizer["type"] == "SGD":
-        optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
-                                     {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
-                                     {'params': other_params, 'lr': config_optimizer["base_lr"]}],
-                                    weight_decay=config_optimizer["weight_decay"])
+        optimizer = torch.optim.SGD(model.parameters(),
+                                    lr=config_optimizer["lr"])
+
     elif config_optimizer["type"] == "RMSprop":
-        optimizer = torch.optim.RMSprop([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
-                                         {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
-                                         {'params': other_params, 'lr': config_optimizer["base_lr"]}],
-                                        alpha=config_optimizer["alpha"],
-                                        weight_decay=config_optimizer["weight_decay"])
+        optimizer = torch.optim.RMSprop(model.parameters(),
+                                        lr=config_optimizer["lr"],
+                                        alpha=config_optimizer["alpha_rmsprop"])
+
     else:
         raise Exception("optimizer type is not recognized")
     return optimizer
+
+#     # split the parameters between GECO and NOT_GECO
+#     geco_params, similarity_params, other_params = [], [], []
+#     for name, param in model.named_parameters():
+#         if ".geco" in name:
+#             # print("geco params -->", name)
+#             geco_params.append(param)
+#         elif ".similarity" in name:
+#             # print("similarity params -->", name)
+#             similarity_params.append(param)
+#         else:
+#             other_params.append(param)
+#
+#     if config_optimizer["type"] == "adam":
+#         optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"],
+#                                        'betas': config_optimizer["betas_geco"]},
+#                                       {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"],
+#                                        'betas': config_optimizer["betas_similarity"]},
+#                                       {'params': other_params, 'lr': config_optimizer["base_lr"],
+#                                        'betas': config_optimizer["betas"]}],
+#                                       eps=config_optimizer["eps"],
+#                                       weight_decay=config_optimizer["weight_decay"])
+#     elif config_optimizer["type"] == "SGD":
+#         optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
+#                                      {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
+#                                      {'params': other_params, 'lr': config_optimizer["base_lr"]}],
+#                                     weight_decay=config_optimizer["weight_decay"])
+#     elif config_optimizer["type"] == "RMSprop":
+#         optimizer = torch.optim.RMSprop([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
+#                                          {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
+#                                          {'params': other_params, 'lr': config_optimizer["base_lr"]}],
+#                                         alpha=config_optimizer["alpha"],
+#                                         weight_decay=config_optimizer["weight_decay"])
+#     else:
+#         raise Exception("optimizer type is not recognized")
+#     return optimizer
 
 
 def instantiate_scheduler(optimizer: torch.optim.Optimizer,
@@ -914,7 +930,7 @@ def instantiate_scheduler(optimizer: torch.optim.Optimizer,
 
 
 def process_one_epoch(model: CompositionalVae,
-                      dataloader: SpecialDataSet,
+                      dataloader: DataloaderWithLoad,
                       optimizer: torch.optim.Optimizer,
                       scheduler: torch.optim.lr_scheduler._LRScheduler = None,
                       verbose: bool = False,
@@ -926,8 +942,8 @@ def process_one_epoch(model: CompositionalVae,
     Args:
         model: An instace of the `class:`CompositionalVae` which process a batch of images and returns a
             metric namedtuple which must include the ".loss" member
-        dataloader: An instace of the `class:`SpeacialDataset` which
-            returns images, pixel_level_labels, image_level_labels and index of the image
+        dataloader: An instace of the `class:`DataloaderWithLoad` which
+            returns (images, image_level_labels, index) of the image
         optimizer: Any torch optimizer
         scheduler: Any torch learning rate scheduler
         verbose: if true information are printed for each mini-batch.
@@ -947,13 +963,14 @@ def process_one_epoch(model: CompositionalVae,
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
+            # model.forward returns metric and other stuff
             metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
                                                      iom_threshold=iom_threshold,
                                                      noisy_sampling=noisy_sampling,
                                                      draw_image=False,
                                                      draw_bg=False,
                                                      draw_boxes=False,
-                                                     draw_boxes_ideal=False).metrics  # forward return metric and other stuff
+                                                     draw_boxes_ideal=False).metrics
 
             # Only if training I apply backward
             if model.training:

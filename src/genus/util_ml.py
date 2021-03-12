@@ -3,13 +3,11 @@ import numpy
 import torch.nn.functional as F
 from torch.distributions.utils import broadcast_all
 from typing import Union, Optional, Tuple
-from collections import OrderedDict, deque
+from collections import OrderedDict
 from torch.distributions.distribution import Distribution
 from torch.distributions import constraints
-from .util import invert_convert_to_box_list, convert_to_box_list, are_broadcastable
-from .util_vis import plot_img_and_seg
+from .util import are_broadcastable
 from .namedtuple import DIST
-from torchvision.datasets import ImageFolder
 
 
 class MetricsAccumulator(object):

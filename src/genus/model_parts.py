@@ -165,28 +165,26 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # modules
         self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
-                                 length_scale_min_max=config["input_image"]["DPP_length_min_max"],
                                  weight=config["input_image"]["DPP_weight"],
-                                 weight_min_max=config["input_image"]["DPP_weight_min_max"],
-                                 learnable_params=config["input_image"]["DPP_learnable"])
+                                 learnable_params=False)
 
-        self.unet: UNet = UNet(n_max_pool=config["architecture"]["n_max_pool_unet"],
-                               level_zwhere_and_logit_output=config["architecture"]["level_zwherelogit_unet"],
-                               level_background_output=config["architecture"]["n_max_pool_unet"],
-                               n_ch_output_features=config["architecture"]["n_ch_output_features"],
-                               ch_after_preprocessing=config["architecture"]["n_ch_after_preprocessing"],
-                               downsampling_factor_preprocessing=config["architecture"]["downsampling_factor_preprocessing"],
+        self.unet: UNet = UNet(n_max_pool=config["architecture"]["unet_n_max_pool"],
+                               level_zwhere_and_logit_output=config["architecture"]["unet_level_boundingboxes"],
+                               level_background_output=config["architecture"]["unet_n_max_pool"],
+                               n_ch_output_features=config["architecture"]["unet_ch_feature_map"],
+                               ch_after_preprocessing=config["architecture"]["unet_ch_before_first_max_pool"],
+                               downsampling_factor_preprocessing=config["architecture"]["unet_spatial_downsampling_before_first_max_pool"],
                                dim_zbg=config["architecture"]["dim_zbg"],
                                dim_zwhere=config["architecture"]["dim_zwhere"],
                                dim_logit=1,
-                               ch_raw_image=config["architecture"]["n_ch_img"],
+                               ch_raw_image=config["input_image"]["ch_in"],
                                concatenate_raw_image_to_fmap=True,
                                grad_logit_max=config["loss"]["grad_logit_max"])
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
-                                                                ch_out=config["architecture"]["n_ch_img"],
-                                                                n_up_conv=config["architecture"]["n_max_pool_unet"])
+                                                                ch_out=config["input_image"]["ch_in"],
+                                                                n_up_conv=config["architecture"]["unet_n_max_pool"])
 
         self.decoder_zwhere: Decoder1by1Linear = Decoder1by1Linear(dim_z=config["architecture"]["dim_zwhere"],
                                                                    ch_out=4,
@@ -194,10 +192,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         self.decoder_zinstance: DecoderConv = DecoderConv(size=config["architecture"]["glimpse_size"],
                                                           dim_z=config["architecture"]["dim_zinstance"],
-                                                          ch_out=config["architecture"]["n_ch_img"] + 1)
+                                                          ch_out=config["input_image"]["ch_in"] + 1)
 
         self.encoder_zinstance: EncoderConv = EncoderConv(size=config["architecture"]["glimpse_size"],
-                                                          ch_in=config["architecture"]["n_ch_output_features"],
+                                                          ch_in=config["architecture"]["unet_ch_feature_map"],
                                                           dim_z=config["architecture"]["dim_zinstance"])
 
         # Geco values
@@ -215,15 +213,15 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(100.0),
                                                                        dtype=torch.float), requires_grad=True)
 
-        # Geco ncell
-        self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
-        self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
-        lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
-        lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
-        self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
-        self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
-        self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
-                                                                         dtype=torch.float), requires_grad=True)
+##         # Geco ncell
+##         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
+##         self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
+##         lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
+##         lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
+##         self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
+##         self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
+##         self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
+##                                                                         dtype=torch.float), requires_grad=True)
 
         # Geco fg_fraction
         self.geco_target_fgfraction_min = abs(float(config["input_image"]["target_fgfraction_min_max"][0]))
@@ -456,7 +454,8 @@ class InferenceAndGeneration(torch.nn.Module):
             g_fgfraction = 2.0 * fgfraction_in_range - 1.0
 
             # NCELL_AV
-            lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
+            lambda_ncell = torch.tensor(0.0)
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
             # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
             #                                       max=self.geco_rawlambda_ncell_max)
             # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
