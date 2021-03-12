@@ -185,7 +185,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
-                                                                ch_out=config["architecture"]["n_ch_img"])
+                                                                ch_out=config["architecture"]["n_ch_img"],
+                                                                n_up_conv=config["architecture"]["n_max_pool_unet"])
 
         self.decoder_zwhere: Decoder1by1Linear = Decoder1by1Linear(dim_z=config["architecture"]["dim_zwhere"],
                                                                    ch_out=4,
@@ -259,14 +260,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   prior_std=torch.ones_like(unet_output.zbg.std),
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data,
-                                                  mc_samples=1 if generate_synthetic_data else self.n_mc_samples,
-                                                  squeeze_mc=False)
-        zbg_kl = zbg.kl.mean()  # mean over latent dimension and batch
+                                                  mc_samples=1,
+                                                  squeeze_mc=True)
+        zbg_kl = zbg.kl.sum(dim=(-1, -2)).mean()  # sum over spatial coordinates, mean over channel dimension and batch
+        out_background_bcwh = self.decoder_zbg(z=zbg.sample)
 
-        # TODO: remove sigmoid from here. Background is not limited to be in (0,1)
-        out_background_mbcwh = torch.sigmoid(self.decoder_zbg(z=zbg.sample,
-                                                              high_resolution=(imgs_bcwh.shape[-2],
-                                                                               imgs_bcwh.shape[-1])))
         # Compute the bounding boxes
         zwhere_grid: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
                                                           posterior_std=unet_output.zwhere.std,
@@ -274,8 +272,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           prior_std=torch.ones_like(unet_output.zwhere.std),
                                                           noisy_sampling=noisy_sampling,
                                                           sample_from_prior=generate_synthetic_data,
-                                                          mc_samples=1 if generate_synthetic_data else self.n_mc_samples,
-                                                          squeeze_mc=False)
+                                                          mc_samples=1,
+                                                          squeeze_mc=True)
 
         bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere_grid.sample)),
                                           width_input_image=width_raw_image,
@@ -286,23 +284,24 @@ class InferenceAndGeneration(torch.nn.Module):
         # NMS + top-K operation
         with torch.no_grad():
 
-            # Sample c_grid form either prior or posterior
-            mc_samples = 1 if generate_synthetic_data else self.n_mc_samples
-            squeeze_mc = False
             if generate_synthetic_data:
                 # sample from dpp prior
-                c_tmp = self.grid_dpp.sample(size=torch.Size([mc_samples] + list(unet_prob_b1wh.shape)))
+                c_grid_before_nms_mcsamples = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
             else:
                 # sample from posterior
-                prob_expanded = unet_prob_b1wh.expand([mc_samples] + list(unet_prob_b1wh.shape))
-                c_tmp = torch.rand_like(prob_expanded) < prob_expanded if noisy_sampling else (0.5 < prob_expanded)
-            c_grid_before_nms = c_tmp.squeeze(dim=0) if squeeze_mc else c_tmp
+                prob_expanded = unet_prob_b1wh.expand([self.n_mc_samples] + list(unet_prob_b1wh.shape))
+                c_grid_before_nms_mcsamples = (torch.rand_like(prob_expanded) < prob_expanded)
+                if not noisy_sampling:
+                    c_grid_before_nms_mcsamples[0] = (prob_expanded[0] > 0.5)
+
+            # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
+            c_grid_before_nms = c_grid_before_nms_mcsamples[0]
 
             # During pretraining I select the boxes according to: score = (1-a) * (c+p) + a * ranking
             if annealing_factor == 0:
                 prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
             else:
-                av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_mbcwh).abs(),
+                av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_bcwh).abs(),
                                                                 bounding_box=bounding_box_bn)
                 ranking_bn = compute_ranking(av_intensity_in_box_bn)
                 prob_from_ranking_bn = (ranking_bn + 1).float() / (ranking_bn.shape[-1] + 1)
@@ -324,21 +323,18 @@ class InferenceAndGeneration(torch.nn.Module):
             c_grid_after_nms = c_grid_before_nms * k_mask_grid
 
         # Gather all relevant quantities from the selected boxes
-        bounding_box_mbk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
-                                  by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
-                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
-                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
-        prob_mbk = torch.gather(convert_to_box_list(unet_prob_b1wh.expand_as(c_grid_before_nms)).squeeze(-1),
-                                dim=-1, index=nms_output.indices_k)
-        c_detached_mbk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1),
-                                      dim=-1, index=nms_output.indices_k)
-        zwhere_kl_mbk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
-                                     dim=-1, index=nms_output.indices_k)
+        bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
+                                 by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
+                                 bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
+                                 bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
+        prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
+                                    dim=-1, index=nms_output.indices_k)
 
         # Crop the unet_features according to the selected boxes
-        mc_samples, batch_size, k_boxes = bounding_box_mbk.bx.shape
-        unet_features_expanded = unet_output.features.unsqueeze(-4).expand(mc_samples, batch_size, k_boxes, -1, -1, -1)
-        cropped_feature_map = Cropper.crop(bounding_box=bounding_box_mbk,
+        batch_size, k_boxes = bounding_box_bk.bx.shape
+        unet_features_expanded = unet_output.features.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1)
+        cropped_feature_map = Cropper.crop(bounding_box=bounding_box_bk,
                                            big_stuff=unet_features_expanded,
                                            width_small=self.glimpse_size,
                                            height_small=self.glimpse_size)
@@ -354,31 +350,33 @@ class InferenceAndGeneration(torch.nn.Module):
                                                             sample_from_prior=generate_synthetic_data,
                                                             mc_samples=1,
                                                             squeeze_mc=True)
-        zinstance_kl_mbk = zinstance_few.kl.mean(dim=-1)  # mean over latent dimension
+        zinstance_kl_bk = zinstance_few.kl.mean(dim=-1)  # mean over latent dimension
 
         # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the bounding boxes
-        # TODO: Apply sigmoid to mask only
-        small_stuff = torch.sigmoid(self.decoder_zinstance.forward(zinstance_few.sample))
-        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_mbk,
-                                     small_stuff=small_stuff,
+        small_stuff_tmp = self.decoder_zinstance.forward(zinstance_few.sample)
+        small_img, small_weight = torch.split(small_stuff_tmp,
+                                              split_size_or_sections=(small_stuff_tmp.shape[-3] - 1, 1),
+                                              dim=-3)
+        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                     small_stuff=torch.cat((small_img, torch.sigmoid(small_weight)), dim=-3),
                                      width_big=width_raw_image,
-                                     height_big=height_raw_image)  # shape: n_box, batch, ch, w, h
-        out_img_mbkcwh, out_mask_mbk1wh = torch.split(big_stuff,
-                                                      split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
-                                                      dim=-3)
+                                     height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
+        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff,
+                                                    split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
+                                                    dim=-3)
 
         # Compute the mixing (using a softmax-like function)
-        p_times_mask_mbk1wh = prob_mbk[..., None, None, None] * out_mask_mbk1wh
-        mixing_mbk1wh = p_times_mask_mbk1wh / torch.sum(p_times_mask_mbk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mixing_fg_mb1wh = mixing_mbk1wh.sum(dim=-4)  # sum over k_boxes
-        mixing_bg_mb1wh = torch.ones_like(mixing_fg_mb1wh) - mixing_fg_mb1wh
+        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
+        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
+        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # Compute mse
-        mse_fg_mbkcwh = ((out_img_mbkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_mbcwh = ((out_background_mbcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_av = torch.mean((mixing_mbk1wh * mse_fg_mbkcwh).sum(dim=-4) + mixing_bg_mb1wh * mse_bg_mbcwh)
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+        mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
 
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
@@ -390,10 +388,10 @@ class InferenceAndGeneration(torch.nn.Module):
         # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
         entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms.detach(),
+        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
         with torch.no_grad():
-            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms.squeeze(-3).detach())
+            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
             distance_from_reinforce_baseline = d_mb.abs().mean()  # for debug
@@ -406,32 +404,35 @@ class InferenceAndGeneration(torch.nn.Module):
 
         logit_kl = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
 
-        # KL is at full strength if the object is certain and lower strenght otherwise.
-        # I clamp indicator_mbk to 0.1 to avoid numerical instabilities.
-        indicator_mbk = prob_mbk.clamp(min=0.1).detach()
-        zwhere_kl = (zwhere_kl_mbk * indicator_mbk).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_mbk * indicator_mbk).sum(dim=-1).mean()
+        # KL is at full strength if the object is certain and lower strength otherwise.
+        # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
+        indicator_bk = prob_bk.clamp(min=0.1).detach()
+        zwhere_kl = (zwhere_kl_bk * indicator_bk).sum(dim=-1).mean()
+        zinstance_kl = (zinstance_kl_bk * indicator_bk).sum(dim=-1).mean()
 
         # Loss for non-overlapping masks
         # TODO: I observe that this loss makes the mask shrink and the fg_fraction go down.
         #   The intended behavior is to avoid the overlaps not to drive down the fg_fraction.
         #   Maybe I should write this loss function in terms of mixing.
-        mask_overlap_mb1wh = mixing_mbk1wh.sum(dim=-4).pow(2) - mixing_mbk1wh.pow(2).sum(dim=-4)
-        loss_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_mb1wh, dim=(-1, -2, -3)).mean()
+        mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
+        loss_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_b1wh, dim=(-1, -2, -3)).mean()
 
         # Loss to ideal bounding boxes
         with torch.no_grad():
-            area_mask_mbk = mixing_mbk1wh.sum(dim=(-1, -2, -3))
-            area_bb_mbk = bounding_box_mbk.bw * bounding_box_mbk.bh
-            ratio_mbk = area_mask_mbk / area_bb_mbk
-            is_active_mbk = ratio_mbk < 0.8  # this is a trick so that you do not start expanding empty squares
-        bb_ideal_mbk, bb_regression_mbk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_mbk1wh,
-                                                                               bounding_boxes_k=bounding_box_mbk,
-                                                                               pad_size=self.pad_size_bb,
-                                                                               min_box_size=self.min_box_size,
-                                                                               max_box_size=self.max_box_size)
-        loss_bb_regression = self.bb_regression_strength * (prob_mbk.detach() * is_active_mbk *
-                                                            bb_regression_mbk).sum(dim=-1).mean()
+            # This is a trick to identify active boxes, i.e boxes which are turned on and whose mask is not stupid
+            # (like a featureless box)
+            area_mask_bk = (mixing_bk1wh > 0.5).sum(dim=(-1, -2, -3)).float()
+            area_bb_bk = bounding_box_bk.bw * bounding_box_bk.bh
+            ratio_bk = area_mask_bk / area_bb_bk
+            is_active_bk = (ratio_bk < 0.8) * (prob_bk > 0.5)
+            area_mask_over_area_bb_av = (is_active_bk * ratio_bk).sum() / is_active_bk.sum().clamp(min=1.0)
+            similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
+        bb_ideal_bk, bb_regression_bk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_bk1wh,
+                                                                             bounding_boxes_k=bounding_box_bk,
+                                                                             pad_size=self.pad_size_bb,
+                                                                             min_box_size=self.min_box_size,
+                                                                             max_box_size=self.max_box_size)
+        loss_bb_regression = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
 
         # GECO
         with torch.no_grad():
@@ -447,7 +448,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # FG_FRACTION
             self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
                                                        max=self.geco_rawlambda_fgfraction_max)
-            fgfraction_av = mixing_fg_mb1wh.mean()
+            fgfraction_av = mixing_fg_b1wh.mean()
             lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
                                 torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
             fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
@@ -455,22 +456,23 @@ class InferenceAndGeneration(torch.nn.Module):
             g_fgfraction = 2.0 * fgfraction_in_range - 1.0
 
             # NCELL_AV
-            self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
-                                                  max=self.geco_rawlambda_ncell_max)
-            ncell_av = (prob_mbk > 0.5).float().sum(dim=-1).mean()
-            lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
-                           torch.sign(ncell_av - self.geco_target_ncell_min)
-            ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-                             (ncell_av < self.geco_target_ncell_max)
-            g_ncell = 2.0 * ncell_in_range - 1.0
+            lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
+            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
+            #                                       max=self.geco_rawlambda_ncell_max)
+            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
+            #                torch.sign(ncell_av - self.geco_target_ncell_min)
+            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
+            #                  (ncell_av < self.geco_target_ncell_max)
+            # g_ncell = 2.0 * ncell_in_range - 1.0
 
         # Outside torch.no_grad()
         # TODO: insert loss_geco_ncell back
         loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
         loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
-                               lambda_fgfraction.detach() * mixing_fg_mb1wh.sum(dim=(-1, -2, -3)).mean()
-        loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
-                          lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
+                               lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
+        # loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
+        #                   lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
 
         # Add all the losses together
         # TODO: additional losses should be multiplied by geco_lambda_mse
@@ -478,24 +480,17 @@ class InferenceAndGeneration(torch.nn.Module):
                logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
                loss_geco_mse + loss_geco_fgfraction  # + loss_geco_ncell
 
-        # Other stuff I want to monitor
-        with torch.no_grad():
-            area_mask_over_area_bb_av = (c_detached_mbk * ratio_mbk).sum() / c_detached_mbk.sum().clamp(min=1.0)
-            similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
-
-        # TODO: Remove a lot of stuff and keep only mixing_bk1wh without squeezing the mc_samples
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
-                              background_cwh=out_background_mbcwh,
-                              foreground_kcwh=out_img_mbkcwh,
-                              sum_c_times_mask_1wh=torch.sum(c_detached_mbk[..., None, None, None] * out_mask_mbk1wh,
-                                                             dim=-4),
-                              mixing_k1wh=mixing_mbk1wh,
+                              background_cwh=out_background_bcwh,
+                              foreground_kcwh=out_img_bkcwh,
+                              mask_overlap_1wh=mask_overlap_b1wh,
+                              mixing_k1wh=mixing_bk1wh,
                               sample_c_grid_before_nms=c_grid_before_nms,
                               sample_c_grid_after_nms=c_grid_after_nms,
-                              sample_c_k=c_detached_mbk,
-                              sample_bb_k=bounding_box_mbk,
-                              sample_bb_ideal_k=bb_ideal_mbk)
+                              sample_prob_k=prob_bk,
+                              sample_bb_k=bounding_box_bk,
+                              sample_bb_ideal_k=bb_ideal_bk)
 
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
@@ -505,8 +500,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  kl_zwhere=zwhere_kl.detach().item(),
                                  cost_mask_overlap_av=loss_mask_overlap.detach().item(),
                                  cost_bb_regression_av=loss_bb_regression.detach().item(),
-                                 ncell_av=ncell_av.detach().item(),
-                                 prob_av=prob_mbk.sum(dim=-1).mean().detach().item(),
+                                 ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
+                                 prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  distance_from_reinforce_baseline=distance_from_reinforce_baseline.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
                                  area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
@@ -515,7 +510,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
-                                 count_prediction=torch.sum(c_detached_mbk[0], dim=-1).detach().cpu().numpy(),
+                                 count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)
 

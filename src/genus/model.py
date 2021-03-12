@@ -297,13 +297,13 @@ class CompositionalVae(torch.nn.Module):
         integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
         fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        bounding_boxes = draw_bounding_boxes(c=inference.sample_c_k,
+        bounding_boxes = draw_bounding_boxes(prob=inference.sample_c_k,
                                              bounding_box=inference.sample_bb_k,
                                              width=integer_mask.shape[-2],
                                              height=integer_mask.shape[-1],
                                              color='red') if draw_boxes else None
 
-        bounding_boxes_ideal = draw_bounding_boxes(c=inference.sample_c_k,
+        bounding_boxes_ideal = draw_bounding_boxes(prob=inference.sample_c_k,
                                                    bounding_box=inference.sample_bb_ideal_k,
                                                    width=integer_mask.shape[-2],
                                                    height=integer_mask.shape[-1],
@@ -917,7 +917,6 @@ def process_one_epoch(model: CompositionalVae,
                       dataloader: SpecialDataSet,
                       optimizer: torch.optim.Optimizer,
                       scheduler: torch.optim.lr_scheduler._LRScheduler = None,
-                      weight_clipper: Optional[Callable[[None], None]] = None,
                       verbose: bool = False,
                       noisy_sampling: bool = True,
                       iom_threshold: float = 0.5) -> MetricMiniBatch:
@@ -931,9 +930,8 @@ def process_one_epoch(model: CompositionalVae,
             returns images, pixel_level_labels, image_level_labels and index of the image
         optimizer: Any torch optimizer
         scheduler: Any torch learning rate scheduler
-        weight_clipper: If specified the model's weights are clipped after each optimization step
         verbose: if true information are printed for each mini-batch.
-        noisy_sampling: value which is passed to the model.forward method
+        noisy_sampling: value which is passed to the model.forward method.
         iom_threshold: value which is passed to the model.forward method
     """
     metric_accumulator = MetricsAccumulator()  # initialize an empty accumulator
@@ -944,7 +942,7 @@ def process_one_epoch(model: CompositionalVae,
     with torch.autograd.set_detect_anomaly(mode=False):
 
         # Start loop over minibatches
-        for i, (imgs, seg_mask, labels, index) in enumerate(dataloader):
+        for i, (imgs, labels, index) in enumerate(dataloader):
 
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
@@ -983,9 +981,9 @@ def process_one_epoch(model: CompositionalVae,
                 metric_accumulator.set_value(key="accuracy", value=-1.0)
 
                 # apply the weight clipper
-                if weight_clipper is not None:
-                    model.__self__.apply(weight_clipper)
-                    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
+                # if weight_clipper is not None:
+                #    model.__self__.apply(weight_clipper)
+                #    # torch.nn.utils.clip_grad_value_(parameters=model.parameters(), clip_value=clipping_value)
 
         # End of loop over minibatches
 
