@@ -44,4 +44,4 @@ RUN yes | pip install neptune-contrib
 RUN yes | pip install --upgrade Pillow
 RUN yes | pip install pyro-ppl==1.4.0
 RUN yes | pip install ipython==7.13.0
-                                             
+RUN yes | pip install pyyaml
