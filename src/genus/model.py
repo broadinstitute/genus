@@ -17,7 +17,7 @@ class CompositionalVae(torch.nn.Module):
     `CellSegmenter paper <https://arxiv.org/abs/2011.12482/>`_.
     """
 
-    PATH_DEFAULT_CONFIG = (pathlib.Path(__file__).parent.absolute()).joinpath('_default_config_CompositionalVae.json')
+    PATH_DEFAULT_CONFIG = (pathlib.Path(__file__).parent.absolute()).joinpath('_default_config_CompositionalVae.yaml')
     DEFAULT_CONFIG = load_yaml_as_dict(PATH_DEFAULT_CONFIG)
 
     def __init__(self, config: dict) -> None:
