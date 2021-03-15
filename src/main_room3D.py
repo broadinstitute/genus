@@ -55,16 +55,25 @@ batch_size = config["simulation"]["BATCH_SIZE"]
 train_loader = DataloaderWithLoad(train_dataset, batch_size=batch_size, shuffle=True)
 test_loader = DataloaderWithLoad(test_dataset, batch_size=batch_size, shuffle=True)
 
-# Instantiate model, optimizer and checks
-vae = CompositionalVae(config)
-log_model_summary(vae)
-optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
+# Visualize example from the train and test datasets
+test_img_example = test_loader.load(n_example=10)[:1]
+show_batch(test_img_example, n_col=5, title="example test imgs",
+           figsize=(12, 6), experiment=exp, neptune_name="example_test_imgs")
+
+train_img_example = train_loader.load(n_example=10)[:1]
+show_batch(train_img_example, n_col=5, title="example train imgs",
+           figsize=(12, 6), experiment=exp, neptune_name="example_train_imgs")
 
 # Make reference images
 index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
 reference_imgs, reference_count = test_loader.load(index=index_tmp)[:2]
-reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0),
+reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0), title="reference imgs",
                                 neptune_name="reference_imgs", experiment=exp)
+
+# Instantiate model, optimizer and checks
+vae = CompositionalVae(config)
+log_model_summary(vae)
+optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 if torch.cuda.is_available():
     reference_imgs = reference_imgs.cuda()

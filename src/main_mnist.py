@@ -20,19 +20,18 @@ torch.manual_seed(0)
 numpy.random.seed(0)
 
 
-config = load_yaml_as_dict("./ML_config.yaml")
+config = load_yaml_as_dict("./config.yaml")
 
 neptune.set_project(config["neptune_project"])
 exp: neptune.experiments.Experiment = \
     neptune.create_experiment(params=flatten_dict(config),
-                              upload_source_files=["./main_mnist_rebuttal.py", "./ML_parameters.json"],
+                              upload_source_files=["./main_mnist.py", "./config.yaml"],
                               upload_stdout=True,
                               upload_stderr=True)
 
 # Get the training and test data
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
 img_test, seg_mask_test, count_test = load_obj("./data_test.pt")
-img_test_out, seg_mask_test_out, count_test_out = load_obj("./ground_truth")  # using the ground truth filename to pass extrapolation test dataset
 BATCH_SIZE = config["simulation"]["BATCH_SIZE"]
 
 train_dataset = DatasetInMemory(x=img_train,
@@ -46,16 +45,25 @@ test_dataset = DatasetInMemory(x=img_test,
 train_loader = DataloaderWithLoad(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 test_loader = DataloaderWithLoad(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-# Instantiate model, optimizer and checks
-vae = CompositionalVae(config)
-log_model_summary(vae)
-optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
+# Visualize example from the train and test datasets
+test_img_example = test_loader.load(n_example=10)[:1]
+show_batch(test_img_example, n_col=5, title="example test imgs",
+           figsize=(6, 12), experiment=exp, neptune_name="example_test_imgs")
+
+train_img_example = train_loader.load(n_example=10)[:1]
+show_batch(train_img_example, n_col=5, title="example train imgs",
+           figsize=(6, 12), experiment=exp, neptune_name="example_train_imgs")
 
 # Make reference images
 index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
 reference_imgs, reference_count = test_loader.load(index=index_tmp)[:2]
-reference_imgs_fig = show_batch(reference_imgs, n_col=5, normalize_range=(0.0, 1.0),
-                                neptune_name="reference_imgs", experiment=exp)
+reference_imgs_fig = show_batch(reference_imgs, n_col=5, title="reference imgs",
+                                normalize_range=(0.0, 1.0), neptune_name="reference_imgs", experiment=exp)
+
+# Instantiate model, optimizer and checks
+vae = CompositionalVae(config)
+log_model_summary(vae)
+optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 if torch.cuda.is_available():
     reference_imgs = reference_imgs.cuda()
@@ -200,11 +208,11 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                  draw_bg=True)
 
                     plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_", experiment=exp)
-                    reference_n_cells_inferred = (output.inference.sample_prob_k > 0.5).sum().item()
-                    reference_n_cells_truth = reference_count.sum().item()
-                    delta_n_cells = reference_n_cells_inferred - reference_n_cells_truth
-                    tmp_dict = {"reference_n_cells_inferred": reference_n_cells_inferred,
-                                "reference_delta_n_cells": delta_n_cells}
+                    reference_n_objs_inferred = (output.inference.sample_prob_k > 0.5).sum().item()
+                    reference_n_objs_truth = reference_count.sum().item()
+                    delta_n_objs = reference_n_objs_inferred - reference_n_objs_truth
+                    tmp_dict = {"reference_n_objs_inferred": reference_n_objs_inferred,
+                                "reference_delta_n_objs": delta_n_objs}
                     log_many_metrics(tmp_dict, prefix_for_neptune="test_", experiment=exp)
                     history_dict = append_to_dict(source=tmp_dict,
                                                   destination=history_dict)
@@ -228,6 +236,6 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                         ckpt = vae.create_ckpt(optimizer=optimizer,
                                                epoch=epoch,
                                                history_dict=history_dict)
-                        log_object_as_artifact(name="last_ckpt_"+str(epoch), obj=ckpt, experiment=exp)  # log file into neptune
+                        log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
                     print("Done epoch")
 exp.stop()
