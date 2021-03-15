@@ -58,7 +58,7 @@ task train {
 #    }
     
     runtime {
-         docker: "us.gcr.io/broad-dsde-methods/pyro_matplotlib:0.0.7"
+         docker: "us.gcr.io/broad-dsde-methods/genus:latest"
          bootDiskSizeGb: 100
          memory: "26G"
          cpu: 4
