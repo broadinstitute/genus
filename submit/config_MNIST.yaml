@@ -19,7 +19,7 @@ architecture:
   dim_zwhere: 4
 
   # Integer. Latent dimension for z_background
-  dim_zbg: 20
+  dim_zbg: 4
 
   # currently only glimpse_size = 28 will work
   glimpse_size: 28
@@ -107,7 +107,7 @@ loss:
   # In between the two, the parameter is decreased linearly.
   # For small-datasets choose values like [50, 100]
   # For large-datasets smaller value will suffice [5, 10]
-  annealing_times: [0, 0]
+  annealing_times: [50, 100]
 
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
