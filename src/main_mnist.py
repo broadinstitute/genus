@@ -46,17 +46,17 @@ train_loader = DataloaderWithLoad(train_dataset, batch_size=BATCH_SIZE, shuffle=
 test_loader = DataloaderWithLoad(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 
 # Visualize example from the train and test datasets
-test_img_example = test_loader.load(n_example=10)[:1]
+test_img_example, _, _ = test_loader.load(n_example=10)
 show_batch(test_img_example, n_col=5, title="example test imgs",
            figsize=(6, 12), experiment=exp, neptune_name="example_test_imgs")
 
-train_img_example = train_loader.load(n_example=10)[:1]
+train_img_example, _, _ = train_loader.load(n_example=10)
 show_batch(train_img_example, n_col=5, title="example train imgs",
            figsize=(6, 12), experiment=exp, neptune_name="example_train_imgs")
 
 # Make reference images
 index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
-reference_imgs, reference_count = test_loader.load(index=index_tmp)[:2]
+reference_imgs, reference_count, _ = test_loader.load(index=index_tmp)
 reference_imgs_fig = show_batch(reference_imgs, n_col=5, title="reference imgs",
                                 normalize_range=(0.0, 1.0), neptune_name="reference_imgs", experiment=exp)
 
