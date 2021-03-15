@@ -440,7 +440,7 @@ def compute_average_in_box(delta_imgs: torch.Tensor, bounding_box: BB) -> torch.
     # AREA_1 = (x3-x1)*(y3-y1)
     # AREA_2 = bounding_box_nb.bw * bounding_box_nb.bh
     # The difference is that for out-of-bound boxes AREA_1 < AREA_2
-    area = (x3 - x1) * (y3 - y1)
+    area = ((x3 - x1) * (y3 - y1)).float()
 
     # compute the average intensity
     index_independent_dim = torch.arange(start=0, end=x1.shape[0], step=1,
@@ -455,5 +455,5 @@ def compute_average_in_box(delta_imgs: torch.Tensor, bounding_box: BB) -> torch.
                     cum_sum_wh[index_independent_dim, x1-1, y3-1] * x1_ge_1 * y3_ge_1 - \
                     cum_sum_wh[index_independent_dim, x3-1, y1-1] * x3_ge_1 * y1_ge_1
 
-    av_intensity = (tot_intensity / area).view_as(bounding_box.bx)
+    av_intensity = (tot_intensity.float() / area).view_as(bounding_box.bx)
     return av_intensity
