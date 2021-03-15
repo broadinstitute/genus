@@ -6,9 +6,9 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 128
-  MAX_EPOCHS: 601
-  TEST_FREQUENCY: 5
-  CHECKPOINT_FREQUENCY: 50
+  MAX_EPOCHS: 301
+  TEST_FREQUENCY: 1
+  CHECKPOINT_FREQUENCY: 10
 
 # architecture parameters
 architecture:
@@ -19,7 +19,7 @@ architecture:
   dim_zwhere: 4
 
   # Integer. Latent dimension for z_background
-  dim_zbg: 20
+  dim_zbg: 4
 
   # currently only glimpse_size = 28 will work
   glimpse_size: 28
@@ -27,13 +27,13 @@ architecture:
   # Ingeter parameters which determines how many max-pool are in the unet.
   # Every max-pool lead to a reduction in spatial extension by a factor of 2
   # Usually it is 3,4 or 5
-  unet_n_max_pool: 4
+  unet_n_max_pool: 5
 
   # Integer in the range 0 - unet_n_max_pool (included)
   # It determines the level in the unet at which the bounding boxes are extracted
   # The larger the number the closest to the bottom of the unet the bounding_boxes are extracted
   # Usually it is 1 or 2 less than unet_n_max_pool
-  unet_level_boundingboxes: 3
+  unet_level_boundingboxes: 4
 
   # This parameter should be a power of 2.
   # At the momnet only 1 = pow(2,0) will work.
@@ -58,19 +58,19 @@ architecture:
 # parameters describing the input image
 input_image:
   # Integer. Number of channels of the image
-  ch_in: 1
+  ch_in: 3
 
   # Integer. Size, in pixels, of the patches to analyze.
   # This is useful if a large image is processed by random crops
-  patch_size: 80
+  patch_size: 128
 
   # Integer. Maximum number of objects in each patch of square size patch_size x patch_size.
   # A too large value will lead to waste computations.
   # Small value will force the model to group distinct objects together.
-  max_objects_per_patch: 8
+  max_objects_per_patch: 12
 
   # Tuple with the range (in pixel) ofor the size of the objects
-  range_object_size: [10, 35]
+  range_object_size: [5, 35]
 
   # Desired value for pixel-averaged Mean Square Error, i.e. MSE = pixel_mean_of (x-x_reconstructed)**2
   # Small value lead to more accurate reconstruction.
@@ -78,12 +78,12 @@ input_image:
   # The goal is to segment the scene into objects not to achieve perfect reconstruction.
   # Therefore use a not-to-small value.
   # For example, if the image intensity is the range (0,1) then use 0.1
-  target_mse_max: 0.075
+  target_mse_max: 0.1
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
-  target_fgfraction_min_max: [0.05, 0.15]
+  target_fgfraction_min_max: [0.02, 0.10]
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # At the current moment these parameters are NOT learnable and need to be chosen differently for each dataset.
@@ -91,12 +91,12 @@ input_image:
   # Note that this is just the prior, the inferred number of object in each scene will in general deviate from the prior.
   # In future releases, we will make these parameters learnable.
   DPP_learnable: False
-  DPP_length: 5.0
-  DPP_weight: 0.2
+  DPP_length: 4.0
+  DPP_weight: 1.0
   # In the current release the following parameters are not used
   # DPP_length_min_max: [2.0, 50.0]
   # DPP_weight_min_max: [0.01, 100.0]
-  # target_ncell_min_max: [2.0, 6.0]
+  # target_nav_obj_min_max: [2.0, 6.0]
 
 # parameter related to the loss function
 loss:
@@ -107,7 +107,7 @@ loss:
   # In between the two, the parameter is decreased linearly.
   # For small-datasets choose values like [50, 100]
   # For large-datasets smaller value will suffice [5, 10]
-  annealing_times: [0, 0]
+  annealing_times: [5, 10]
 
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
@@ -159,4 +159,4 @@ scheduler:
   step_size: 500
 
   # The "multistep_LR" scheduler decays the learning rate by gamma once the number of epoch reaches one of the milestones.
-  milestones: [200, 500]
+  milestones: [50, 100]

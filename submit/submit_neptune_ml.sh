@@ -4,13 +4,13 @@
 DEFAULT_BUCKET="gs://ld-tmp-storage/input_jsons"
 DEFAULT_WDL="neptune_ml.wdl"
 DEFAULT_WDL_JSON="WDL_parameters.json"
-DEFAULT_ML_JSON="ML_parameters.json"
+DEFAULT_ML_CONFIG="ML_parameters.json"
 
 # Set variables to default
 BUCKET=$DEFAULT_BUCKET
 WDL=$DEFAULT_WDL
 WDL_JSON=$DEFAULT_WDL_JSON
-ML_JSON=$DEFAULT_ML_JSON
+ML_CONFIG=$DEFAULT_ML_CONFIG
 HERE=${PWD}
 SCRIPTNAME=$( echo $0 | sed 's#.*/##g' )
 
@@ -22,12 +22,12 @@ display_help() {
   echo -e " Submit wdl workflow using cromshell."
   echo -e ""
   echo -e " Example usage:"
-  echo -e "   $SCRIPTNAME $WDL --wdl $WDL_JSON --ml $ML_JSON -b $BUCKET"
+  echo -e "   $SCRIPTNAME $WDL --wdl $WDL_JSON --ml $ML_CONFIG -b $BUCKET"
   echo -e "   $SCRIPTNAME -h"
   echo -e ""
   echo -e " Supported Flags:"
   echo -e "   -h or --help     Display this message"
-  echo -e "   -m or --ml       Name of json file with all the parameters of the ML model. This file will be provided as-is to pytorch code"
+  echo -e "   -m or --ml       Name of file with all the parameters for the ML model. This file will be provided as-is to pytorch code"
   echo -e "   -w or --wdl      Name of json file with all the parameters for the WDL." 
   echo -e "   -b or --bucket   Name of google bucket where local files will be copied (VM will then localize those files)"
   echo -e "   -t or --template Show the template for $WDL_JSON" 
@@ -36,7 +36,7 @@ display_help() {
   echo -e "   If no inputs are specified the default values will be used:"
   echo -e "   wdl_file -----------> $WDL"
   echo -e "   wdl_json_file ------> $WDL_JSON"
-  echo -e "   ml_json_file -------> $ML_JSON"
+  echo -e "   ml_config_file -------> $ML_CONFIG"
   echo -e "   bucket -------------> $BUCKET"
   echo -e ""
   echo -e ""
@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
 			shift 2
 			;;
 		-m|--ml)
-			ML_JSON=$2
+			ML_CONFIG=$2
 			shift 2
 			;;
 		-b|--bucket)
@@ -103,20 +103,20 @@ while [[ $# -gt 0 ]]; do
 done  # end of while loop
 
 # At this point I have these trhee values:
-echo "Current values: -->" $WDL $WDL_JSON $ML_JSON $BUCKET
+echo "Current values: -->" $WDL $WDL_JSON $ML_CONFIG $BUCKET
 
-# 1. copy ML_JSON in the cloud with random hash
+# 1. copy ML_CONFIG in the cloud with random hash
 echo
-echo "Step1: copying $ML_JSON  into google bucket"
+echo "Step1: copying $ML_CONFIG  into google bucket"
 RANDOM_HASH=$(cat /dev/urandom | env LC_CTYPE=C tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
-ML_JSON_CLOUD="$BUCKET/ml_${RANDOM_HASH}.json"
-gsutil cp $ML_JSON $ML_JSON_CLOUD 
+ML_CONFIG_CLOUD="$BUCKET/${RANDOM_HASH}_$ML_CONFIG"
+gsutil cp $ML_CONFIG $ML_CONFIG_CLOUD 
 
 # 2. create the json file which will be passed to cromshell
 echo
 echo "Step2: crerating input.json file for cromshell"
-key_for_ML_parameters=$(womtool inputs $WDL | jq 'keys[]' | grep "ML_par")
-echo '{' "$key_for_ML_parameters" : '"'"$ML_JSON_CLOUD"'" }' > tmp.json
+key_for_ML_parameters=$(womtool inputs $WDL | jq 'keys[]' | grep "ML_config")
+echo '{' "$key_for_ML_parameters" : '"'"$ML_CONFIG_CLOUD"'" }' > tmp.json
 jq -s '.[0] * .[1]' tmp.json $WDL_JSON | tee input.json
 rm -rf tmp.json
 

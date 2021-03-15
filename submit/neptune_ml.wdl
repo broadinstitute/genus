@@ -5,7 +5,7 @@ version 1.0
 
 task train {
     input {
-        File ML_parameters
+        File ML_config
         File data_train
         File data_test
         File ckpt
@@ -33,11 +33,11 @@ task train {
         
         # 2. link the file which have been localized to checkout_dir/src
         # and give them the name the main.py expects
-        ln -s ~{ML_parameters} ./src/ML_parameters.json
+        ln -s ~{ML_config} ./src/config.yaml
         ln -s ~{data_train} ./src/data_train.pt
         ln -s ~{data_test} ./src/data_test.pt
         ln -s ~{ckpt} ./src/ckpt.pt
-        ln -s ~{ground_truth} ./src/ground_truth
+        ln -s ~{ground_truth} ./src/ground_truth.pt
         echo "AFTER CHANGING NAMES --> Content of checkout dir"
         echo $(ls)
 
@@ -74,7 +74,7 @@ task train {
 workflow neptune_ml {
 
     input {
-        File ML_parameters 
+        File ML_config 
         File data_train 
         File data_test
         File ckpt
@@ -87,7 +87,7 @@ workflow neptune_ml {
 
     call train { 
         input :
-            ML_parameters = ML_parameters,
+            ML_config = ML_config,
             credentials_json = credentials_json,
             data_train = data_train,
             data_test = data_test,
