@@ -444,7 +444,7 @@ class Grid_DPP(torch.nn.Module):
                  weight_min_max: Optional[Tuple[float, float]] = None,
                  pbc: bool = False,
                  eps: float = 1E-4,
-                 learnable_params: bool = True):
+                 learnable_params: bool = False):
         """ See :class:`SimilarityKernel` for an explanation of the arguments. If :attr:`learnable_params` = False
             the parameters :attr:`lenght_scale` and :attr:`weight` are fixed.
         """
