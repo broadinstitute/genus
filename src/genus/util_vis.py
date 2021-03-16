@@ -186,21 +186,33 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
     return fig
 
 
-def draw_img(inference: Inference,
+def draw_img(imgs_in: torch.Tensor,
+             inference: Inference,
              draw_bg: bool,
              draw_boxes: bool,
-             draw_ideal_boxes: bool):
-    """ Draw the image. It works for any number of leading dimensions """
+             draw_ideal_boxes: bool) -> Tuple[torch.Tensor, torch.Tensor]:
+    """ Draw the reconstructed image and input image with the bounding box on top.
+        It works for any number of leading dimensions """
 
+    # Draw the input imga witht eh bounding box on top
+    bb_all = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                 width=imgs_in.shape[-2],
+                                 height=imgs_in.shape[-1],
+                                 prob=torch.ones_like(inference.sample_prob_k),
+                                 color="red")
+    mask_no_bb_all = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
+    imgs_in_with_all_bb = mask_no_bb_all * imgs_in + ~mask_no_bb_all * bb_all
+
+    # Draw the reconstructed image
     rec_imgs_no_bb = (inference.mixing_k1wh * inference.foreground_kcwh).sum(dim=-4)  # sum over boxes
     fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
     background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
 
-    bb = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                             width=rec_imgs_no_bb.shape[-2],
-                             height=rec_imgs_no_bb.shape[-1],
-                             prob=inference.sample_prob_k,
-                             color="red") if draw_boxes else torch.zeros_like(fg_mask)
+    bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                      width=rec_imgs_no_bb.shape[-2],
+                                      height=rec_imgs_no_bb.shape[-1],
+                                      prob=inference.sample_prob_k,
+                                      color="red") if draw_boxes else torch.zeros_like(fg_mask)
 
     bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
                                    width=rec_imgs_no_bb.shape[-2],
@@ -208,9 +220,11 @@ def draw_img(inference: Inference,
                                    prob=inference.sample_prob_k,
                                    color="green") if draw_ideal_boxes else torch.zeros_like(fg_mask)
 
-    bb_all = bb + bb_ideal
-    mask_no_bb = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
-    return mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb_all
+    bb = bb_inferred + bb_ideal
+    mask_no_bb = (torch.sum(bb, dim=-3, keepdim=True) == 0)
+    imgs_rec_with_bb = mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb
+
+    return imgs_rec_with_bb, imgs_in_with_all_bb
 
 
 def draw_bounding_boxes(bounding_box: BB,
@@ -458,10 +472,28 @@ def plot_generation(output: Output,
                        experiment=experiment,
                        neptune_name=prefix + "bg" + postfix)
 
+    fig_e = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=False,
+                       title='fg_mask, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"fg_mask"+postfix)
+
+    fig_f = show_batch(output.bb_imgs,
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=False,
+                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"bb_selection"+postfix)
+
     if verbose:
         print("leaving plot_generation")
 
-    return fig_a, fig_b, fig_c, fig_d
+    return fig_a, fig_b, fig_c, fig_d, fig_e
 
 
 def plot_reconstruction_and_inference(output: Output,
@@ -544,10 +576,21 @@ def plot_reconstruction_and_inference(output: Output,
                        title='overlap, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"overlap"+postfix)
+
+    fig_h = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=True,
+                       normalize_range=(0.0, 2.0),
+                       title='fg_mask, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"fg_mask"+postfix)
+
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h
 
 
 def plot_segmentation(segmentation: Segmentation,

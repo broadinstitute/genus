@@ -672,14 +672,15 @@ class CompositionalVae(torch.nn.Module):
 
         with torch.no_grad():
             if draw_image:
-                imgs_rec = draw_img(inference=inference,
-                                    draw_bg=draw_bg,
-                                    draw_boxes=draw_boxes,
-                                    draw_ideal_boxes=draw_boxes_ideal)
+                imgs_rec_bb, bb_imgs_in = draw_img(imgs_in=imgs_in,
+                                                   inference=inference,
+                                                   draw_bg=draw_bg,
+                                                   draw_boxes=draw_boxes,
+                                                   draw_ideal_boxes=draw_boxes_ideal)
             else:
-                imgs_rec = None  # -1*torch.ones_like(imgs_in)
+                imgs_rec_bb, bb_imgs_in = None, None  # -1*torch.ones_like(imgs_in)
 
-        return Output(metrics=metrics, inference=inference, imgs=imgs_rec)
+        return Output(metrics=metrics, inference=inference, imgs=imgs_rec_bb, bb_imgs=bb_imgs_in)
 
     def forward(self,
                 imgs_in: torch.tensor,

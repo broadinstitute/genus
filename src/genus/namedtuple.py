@@ -272,3 +272,4 @@ class Output(NamedTuple):
     metrics: MetricMiniBatch
     inference: Inference
     imgs: Optional[torch.Tensor]
+    bb_imgs: Optional[torch.Tensor]
