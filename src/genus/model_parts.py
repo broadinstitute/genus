@@ -210,8 +210,8 @@ class InferenceAndGeneration(torch.nn.Module):
         lambda_mse_max = abs(float(config["loss"]["lambda_mse_min_max"][1]))
         self.geco_rawlambda_mse_min = inverse_linear_exp_activation(lambda_mse_min)
         self.geco_rawlambda_mse_max = inverse_linear_exp_activation(lambda_mse_max)
-        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(100.0),
-                                                                       dtype=torch.float), requires_grad=True)
+        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_rawlambda_mse_max, dtype=torch.float),
+                                                     requires_grad=True)
 
 ##         # Geco ncell
 ##         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
