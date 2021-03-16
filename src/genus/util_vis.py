@@ -587,10 +587,19 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"fg_mask"+postfix)
 
+    fig_i = show_batch(output.bb_imgs,
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=False,
+                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"bb_selection"+postfix)
+
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h, fig_i
 
 
 def plot_segmentation(segmentation: Segmentation,
