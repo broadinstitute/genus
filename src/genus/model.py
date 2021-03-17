@@ -192,7 +192,6 @@ class CompositionalVae(torch.nn.Module):
 
     def segment(self, imgs_in: torch.Tensor,
                 k_objects_max: Optional[int] = None,
-                annealing_factor: Optional[float] = None,
                 topk_only: bool = False,
                 iom_threshold: float = 0.3,
                 noisy_sampling: bool = False,
@@ -209,9 +208,6 @@ class CompositionalVae(torch.nn.Module):
                 If this number is too low some foreground objects will be missed. If it is too high, computational
                 resources will be wasted. It might be beneficial to use a larger value than the one used during
                 training. If it is not specified, it is set to the value used during training.
-            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
-                poorly reconstructed by the background component. See :meth:`process_batch_imgs` for details. This value
-                should be zero except during the early phase of training.
             topk_only: This value should be set to False. See :meth:`process_batch_imgs` for details.
             iom_threshold: This value has effect only if :attr:`topk_only` is False. Threshold value of the
                 IntersectionOverMinimum between two bounding boxes before the non-max-suppressison kicks-in.
@@ -238,13 +234,11 @@ class CompositionalVae(torch.nn.Module):
             >>> segmentation = vae.segment(imgs_in=img_to_segment)
         """
 
-        annealing_factor = getattr(self, "annealing_factor", 0.0) if annealing_factor is None else annealing_factor
         k_objects_max = self._config["input_image"]["max_objects_per_patch"] if k_objects_max is None else k_objects_max
         iom_threshold = self._config["architecture"]["nms_threshold_test"] if iom_threshold is None else iom_threshold
 
         return self._segment_internal(batch_imgs=imgs_in,
                                       k_objects_max=k_objects_max,
-                                      annealing_factor=annealing_factor,
                                       iom_threshold=iom_threshold,
                                       noisy_sampling=noisy_sampling,
                                       topk_only=topk_only,
@@ -258,7 +252,6 @@ class CompositionalVae(torch.nn.Module):
     def _segment_internal(self,
                           batch_imgs: torch.tensor,
                           k_objects_max: int,
-                          annealing_factor: float,
                           iom_threshold: float,
                           noisy_sampling: bool,
                           topk_only: bool,
@@ -283,7 +276,6 @@ class CompositionalVae(torch.nn.Module):
         metrics: MetricMiniBatch
         inference, metrics = self.inference_and_generator(imgs_bcwh=batch_imgs,
                                                           generate_synthetic_data=False,
-                                                          annealing_factor=annealing_factor,
                                                           iom_threshold=iom_threshold,
                                                           k_objects_max=k_objects_max,
                                                           topk_only=topk_only,
@@ -337,7 +329,6 @@ class CompositionalVae(torch.nn.Module):
                             patch_size: Optional[Tuple[int, int]] = None,
                             stride: Optional[Tuple[int, int]] = None,
                             k_objects_max_per_patch: Optional[int] = None,
-                            annealing_factor: float = 0.0,
                             topk_only: bool = False,
                             iom_threshold: float = 0.3,
                             radius_nn: int = 5,
@@ -377,9 +368,6 @@ class CompositionalVae(torch.nn.Module):
                 If this number is too low some foreground objects will be missed. If it is too high, computational
                 resources will be wasted. It might be beneficial to use a larger value than the one used during
                 training. If it is not specified, it is set to the value used during training.
-            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on regions which are
-                poorly reconstructed by the background component. See :meth:`process_batch_imgs` for details. This value
-                should be zero except during the early phase of training.
             topk_only: This value should be set to False. See :meth:`process_batch_imgs` for details.
             iom_threshold: This value has effect only if :attr:`topk_only` is False. Threshold value of the
                 IntersectionOverMinimum between two bounding boxes before the non-max-suppressison kicks-in.
@@ -410,7 +398,6 @@ class CompositionalVae(torch.nn.Module):
             >>>                                  patch_size=(80, 80),
             >>>                                  stride=(40, 40),
             >>>                                  k_objects_max_per_patch=25,
-            >>>                                  annealing_factor=0,
             >>>                                  iom_threshold=0.4,
             >>>                                  radius_nn=10,
             >>>                                  batch_size=64)
@@ -515,7 +502,6 @@ class CompositionalVae(torch.nn.Module):
 
                 segmentation = self._segment_internal(batch_imgs=batch_imgs.to(self.sigma_fg.device),
                                                       k_objects_max=k_objects_max_per_patch,
-                                                      annealing_factor=annealing_factor,
                                                       iom_threshold=iom_threshold,
                                                       noisy_sampling=True,
                                                       topk_only=topk_only,
@@ -580,7 +566,6 @@ class CompositionalVae(torch.nn.Module):
                            draw_boxes: bool,
                            draw_boxes_ideal: bool,
                            noisy_sampling: bool,
-                           annealing_factor: float,
                            iom_threshold: float,
                            k_objects_max: int) -> Output:
         """
@@ -605,9 +590,6 @@ class CompositionalVae(torch.nn.Module):
                 If true the optimal object bounding boxes are added to the output images in blue.
             noisy_sampling: If true a random sample from either the prior or the posterior (depending on the value of
                 :attr:`generate_synthetic_data` ) is used. If false the mode of the prior or posterior is used.
-            annealing_factor: Number in (0,1) used to encourage the model to focus its attentions on
-                regions which are poorly reconstructed by the background component. The typical
-                use is to anneal :attr:`annealing_factor` from 1.0 to 0 during the initial phase of training.
             iom_threshold:  This value has effect only if :attr:`topk_only` is False. Threshold value of the
                 IntersectionOverMinimum between two bounding boxes before the non-max-suppressison kicks-in.
                 Typical values are :math:`0.3 - 0.5`.
@@ -651,7 +633,6 @@ class CompositionalVae(torch.nn.Module):
             >>>                                 draw_bg=False,
             >>>                                 draw_boxes=False,
             >>>                                 noisy_sampling=True,
-            >>>                                 annealing_factor=0.0,
             >>>                                 iom_threshold=0.3,
             >>>                                 n_objects_max=-25)
         """
@@ -664,7 +645,6 @@ class CompositionalVae(torch.nn.Module):
         metrics: MetricMiniBatch
         inference, metrics = self.inference_and_generator(imgs_bcwh=imgs_in,
                                                           generate_synthetic_data=generate_synthetic_data,
-                                                          annealing_factor=annealing_factor,
                                                           iom_threshold=iom_threshold,
                                                           k_objects_max=k_objects_max,
                                                           topk_only=topk_only,
@@ -710,7 +690,6 @@ class CompositionalVae(torch.nn.Module):
                                        draw_boxes=draw_boxes,
                                        draw_boxes_ideal=draw_boxes_ideal,
                                        noisy_sampling=noisy_sampling,
-                                       annealing_factor=getattr(self, "annealing_factor", 0.0),
                                        iom_threshold=iom_threshold,
                                        k_objects_max=self._config["input_image"]["max_objects_per_patch"])
 
@@ -745,7 +724,6 @@ class CompositionalVae(torch.nn.Module):
                                            draw_boxes=draw_boxes,
                                            draw_boxes_ideal=draw_boxes_ideal,
                                            noisy_sampling=True,
-                                           annealing_factor=0.0,
                                            iom_threshold=-1.0,
                                            k_objects_max=self._config["input_image"]["max_objects_per_patch"])
 

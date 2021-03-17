@@ -141,11 +141,6 @@ torch.cuda.empty_cache()
 for delta_epoch in range(1, NUM_EPOCHS+1):
     epoch = delta_epoch+epoch_restart    
 
-    vae.annealing_factor = linear_interpolation(epoch,
-                                                values=(1.0, 0.0),
-                                                times=config["loss"]["annealing_times"])
-    exp.log_metric("annealing_factor", vae.annealing_factor)
-
     with torch.autograd.set_detect_anomaly(False):
         with torch.enable_grad():
             vae.train()

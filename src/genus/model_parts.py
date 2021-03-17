@@ -153,6 +153,8 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        self.gaussian_mixture = config["simulation"]["gaussian_mixture"]
+
         # variables
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
@@ -198,11 +200,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                                           ch_in=config["architecture"]["unet_ch_feature_map"],
                                                           dim_z=config["architecture"]["dim_zinstance"])
 
-        # Geco values
+        # Observation model
         self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
+
+        # Annealing
+        self.annealing_factor = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+
         # Geco MSE
         self.geco_target_mse_min = 0.0
         self.geco_target_mse_max = 1.0
@@ -212,16 +218,6 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_rawlambda_mse_max = inverse_linear_exp_activation(lambda_mse_max)
         self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_rawlambda_mse_max, dtype=torch.float),
                                                      requires_grad=True)
-
-##         # Geco ncell
-##         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
-##         self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
-##         lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
-##         lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
-##         self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
-##         self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
-##         self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
-##                                                                         dtype=torch.float), requires_grad=True)
 
         # Geco fg_fraction
         self.geco_target_fgfraction_min = abs(float(config["input_image"]["target_fgfraction_min_max"][0]))
@@ -233,9 +229,18 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
                                                                               dtype=torch.float), requires_grad=True)
 
+#         # Geco ncell
+#         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
+#         self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
+#         lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
+#         lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
+#         self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
+#         self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
+#         self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
+#                                                                         dtype=torch.float), requires_grad=True)
+
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
-                annealing_factor: float,
                 iom_threshold: float,
                 k_objects_max: int,
                 topk_only: bool,
@@ -295,9 +300,12 @@ class InferenceAndGeneration(torch.nn.Module):
             # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
             c_grid_before_nms = c_grid_before_nms_mcsamples[0]
 
-            # During pretraining I select the boxes according to: score = (1-a) * (c+p) + a * ranking
-            if annealing_factor == 0:
+            # During pretraining, annealing factor is > 0 and I select the boxes according to:
+            # score = (1-a) * (c+p) + a * ranking
+            self.annealing_factor.data.clamp_(min=0, max=1.0)
+            if self.annealing_factor == 0:
                 prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
+                score_grid = c_grid_before_nms.float() + unet_prob_b1wh
             else:
                 av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_bcwh).abs(),
                                                                 bounding_box=bounding_box_bn)
@@ -307,8 +315,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                     original_width=unet_prob_b1wh.shape[-2],
                                                                     original_height=unet_prob_b1wh.shape[-1])
 
-            score_grid = (1 - annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
-                         annealing_factor * 2 * prob_from_ranking_grid
+                score_grid = (1 - self.annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
+                             self.annealing_factor * prob_from_ranking_grid
+            # Now I have the score_grid to select the boxes
+
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
@@ -372,9 +382,13 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # Compute mse
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
+        if self.gaussian_mixture:
+            mu_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
+            mse_av = ((mu_bcwh - imgs_bcwh) / self.sigma_fg).pow(2).mean()
+        else:
+            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+            mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
@@ -434,6 +448,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # GECO
         with torch.no_grad():
+
             # MSE
             self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
                                                 max=self.geco_rawlambda_mse_max)
@@ -441,7 +456,7 @@ class InferenceAndGeneration(torch.nn.Module):
                          torch.sign(mse_av - self.geco_target_mse_min)
             mse_in_range = (mse_av > self.geco_target_mse_min) & \
                            (mse_av < self.geco_target_mse_max)
-            g_mse = 2.0 * mse_in_range - 1.0
+            g_mse = 2.0 * mse_in_range - 1.0  # positive if in range negative otherwise
 
             # FG_FRACTION
             self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
@@ -467,6 +482,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Outside torch.no_grad()
         # TODO: insert loss_geco_ncell back
+        g_annealing = 2 * (mse_av < 1.5 * self.geco_target_mse_max) - 1
+        loss_annealing = self.annealing_factor * g_annealing
         loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
         loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
                                lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
@@ -475,7 +492,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Add all the losses together
         # TODO: additional losses should be multiplied by geco_lambda_mse
-        loss = loss_mask_overlap + loss_bb_regression + \
+        loss = loss_annealing + loss_mask_overlap + loss_bb_regression + \
                logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
                loss_geco_mse + loss_geco_fgfraction  # + loss_geco_ncell
 
@@ -509,6 +526,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
+                                 annealing_factor=self.annealing_factor.detach().item(),
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)
