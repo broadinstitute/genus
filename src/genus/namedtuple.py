@@ -240,6 +240,7 @@ class MetricMiniBatch(NamedTuple):
     similarity_l: float
     similarity_w: float
     annealing_factor: float
+    is_active_av: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray

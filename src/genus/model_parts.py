@@ -482,7 +482,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Outside torch.no_grad()
         # TODO: insert loss_geco_ncell back
-        g_annealing = 2 * (mse_av < 1.5 * self.geco_target_mse_max) - 1
+        g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
         loss_annealing = self.annealing_factor * g_annealing
         loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
         loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
@@ -527,6 +527,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=self.annealing_factor.detach().item(),
+                                 is_active_av=is_active_bk.sum(dim=-1).float().mean().detach().item(),
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)
