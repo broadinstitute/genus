@@ -386,10 +386,15 @@ class InferenceAndGeneration(torch.nn.Module):
         if self.gaussian_mixture:
             mu_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
             mse_av = ((mu_bcwh - imgs_bcwh) / self.sigma_fg).pow(2).mean()
+            fraction = mixing_fg_b1wh.mean()
+            mse_fg_av = mse_av * fraction
+            mse_bg_av = mse_av * (1.0 - fraction)
         else:
             mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-            mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
+            mse_fg_av = (mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4).mean()  # dividing by # of all point, i.e. (bg+fg)
+            mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).mean()  # dividing by # of all point, i.e. (bg+fg)
+            mse_av = mse_fg_av + mse_bg_av
 
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
@@ -512,8 +517,12 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk)
 
+        weighted_mse_fg_av = mse_fg_av / fgfraction_av.clamp(min=1E-3)
+        weighted_mse_bg_av = mse_bg_av / (1.0 - fgfraction_av).clamp(min=1E-3)
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
+                                 mse_av_bg=weighted_mse_bg_av.detach().item(),
+                                 mse_av_fg=weighted_mse_fg_av.detach().item(),
                                  kl_logit=logit_kl.detach().item(),
                                  kl_zinstance=zinstance_kl.detach().item(),
                                  kl_zbg=zbg_kl.detach().item(),
