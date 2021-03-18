@@ -154,6 +154,7 @@ class InferenceAndGeneration(torch.nn.Module):
         super().__init__()
 
         self.gaussian_mixture = config["simulation"]["gaussian_mixture"]
+        self.bb_regression_always_active = config["simulation"]["bb_regression_always_active"]
 
         # variables
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
@@ -444,7 +445,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
-        loss_bb_regression = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
+        if self.bb_regression_always_active:
+            loss_bb_regression = self.bb_regression_strength * bb_regression_bk.sum(dim=-1).mean()
+        else:
+            loss_bb_regression = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
 
         # GECO
         with torch.no_grad():
