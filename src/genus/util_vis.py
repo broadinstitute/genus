@@ -194,33 +194,38 @@ def draw_img(imgs_in: torch.Tensor,
     """ Draw the reconstructed image and input image with the bounding box on top.
         It works for any number of leading dimensions """
 
-    # Draw the input imga witht eh bounding box on top
-    bb_all = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                                 width=imgs_in.shape[-2],
-                                 height=imgs_in.shape[-1],
-                                 prob=torch.ones_like(inference.sample_prob_k),
-                                 color="red")
+    bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                      width=imgs_in.shape[-2],
+                                      height=imgs_in.shape[-1],
+                                      prob=inference.sample_prob_k,
+                                      color="red")
+
+    bb_proposed = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                      width=imgs_in.shape[-2],
+                                      height=imgs_in.shape[-1],
+                                      prob=1.0 - inference.sample_prob_k,
+                                      color="blue")
+
+    bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
+                                   width=imgs_in.shape[-2],
+                                   height=imgs_in.shape[-1],
+                                   prob=inference.sample_prob_k,
+                                   color="green")
+
+    # Draw inferred and proposed bb on top of the input image.
+    # This is helpful to debug the recognition network
+    bb_all = bb_inferred + bb_proposed
     mask_no_bb_all = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
     imgs_in_with_all_bb = mask_no_bb_all * imgs_in + ~mask_no_bb_all * bb_all
 
-    # Draw the reconstructed image
+    # Draw inferred and ideal bb on top of reconstructed image
     rec_imgs_no_bb = (inference.mixing_k1wh * inference.foreground_kcwh).sum(dim=-4)  # sum over boxes
     fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
+
     background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
-
-    bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                                      width=rec_imgs_no_bb.shape[-2],
-                                      height=rec_imgs_no_bb.shape[-1],
-                                      prob=inference.sample_prob_k,
-                                      color="red") if draw_boxes else torch.zeros_like(fg_mask)
-
-    bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
-                                   width=rec_imgs_no_bb.shape[-2],
-                                   height=rec_imgs_no_bb.shape[-1],
-                                   prob=inference.sample_prob_k,
-                                   color="green") if draw_ideal_boxes else torch.zeros_like(fg_mask)
-
-    bb = bb_inferred + bb_ideal
+    bb1 = bb_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb2 = bb_ideal if draw_ideal_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb = bb1 + bb2
     mask_no_bb = (torch.sum(bb, dim=-3, keepdim=True) == 0)
     imgs_rec_with_bb = mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb
 
