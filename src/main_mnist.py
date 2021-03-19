@@ -177,40 +177,58 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                      verbose=False)
 
                     if len(test_metrics.wrong_examples) > 0:
-                        error_index = torch.tensor(test_metrics.wrong_examples[:5], dtype=torch.long)
+                        error_index = torch.tensor(test_metrics.wrong_examples[:10], dtype=torch.long)
                     else:
-                        error_index = torch.arange(5, dtype=torch.long)
+                        error_index = torch.arange(10, dtype=torch.long)
                     error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
 
-                    error_output: Output = vae.forward(error_test_img,
-                                                       iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                       noisy_sampling=True,
-                                                       draw_image=True,
-                                                       draw_boxes=True,
-                                                       draw_boxes_ideal=True,
-                                                       draw_bg=True)
+                    error_output_noisy: Output = vae.forward(error_test_img,
+                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                             noisy_sampling=True,
+                                                             draw_image=True,
+                                                             draw_boxes=True,
+                                                             draw_boxes_ideal=True,
+                                                             draw_bg=True)
+                    plot_reconstruction_and_inference(error_output_noisy,
+                                                      epoch=epoch,
+                                                      prefix="error_noisy_",
+                                                      experiment=exp)
 
-                    in_out = torch.cat((error_output.imgs, error_test_img.expand_as(error_output.imgs)), dim=0)
-                    _ = show_batch(in_out, n_col=in_out.shape[0]//2, title="error epoch="+str(epoch),
-                                   experiment=exp, neptune_name="test_errors")
+                    error_output_clean: Output = vae.forward(error_test_img,
+                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                             noisy_sampling=False,
+                                                             draw_image=True,
+                                                             draw_boxes=True,
+                                                             draw_boxes_ideal=True,
+                                                             draw_bg=True)
+                    plot_reconstruction_and_inference(error_output_clean,
+                                                      epoch=epoch,
+                                                      prefix="error_clean_",
+                                                      experiment=exp)
 
-                    output: Output = vae.forward(reference_imgs,
-                                                 iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                 noisy_sampling=False,
-                                                 draw_image=True,
-                                                 draw_boxes=True,
-                                                 draw_boxes_ideal=True,
-                                                 draw_bg=True)
+                    ref_output_noisy: Output = vae.forward(reference_imgs,
+                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                           noisy_sampling=True,
+                                                           draw_image=True,
+                                                           draw_boxes=True,
+                                                           draw_boxes_ideal=True,
+                                                           draw_bg=True)
+                    plot_reconstruction_and_inference(ref_output_noisy,
+                                                      epoch=epoch,
+                                                      prefix="ref_noisy_",
+                                                      experiment=exp)
 
-                    plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_", experiment=exp)
-                    reference_n_objs_inferred = (output.inference.sample_prob_k > 0.5).sum().item()
-                    reference_n_objs_truth = reference_count.sum().item()
-                    delta_n_objs = reference_n_objs_inferred - reference_n_objs_truth
-                    tmp_dict = {"reference_n_objs_inferred": reference_n_objs_inferred,
-                                "reference_delta_n_objs": delta_n_objs}
-                    log_many_metrics(tmp_dict, prefix_for_neptune="test_", experiment=exp)
-                    history_dict = append_to_dict(source=tmp_dict,
-                                                  destination=history_dict)
+                    ref_output_clean: Output = vae.forward(reference_imgs,
+                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                           noisy_sampling=False,
+                                                           draw_image=True,
+                                                           draw_boxes=True,
+                                                           draw_boxes_ideal=True,
+                                                           draw_bg=True)
+                    plot_reconstruction_and_inference(ref_output_clean,
+                                                      epoch=epoch,
+                                                      prefix="ref_clean_",
+                                                      experiment=exp)
 
                     print("segmentation")
                     segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,

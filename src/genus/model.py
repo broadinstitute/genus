@@ -32,7 +32,7 @@ class CompositionalVae(torch.nn.Module):
         # Save the configuration dictionary as-is. This is usefull to save/restart the simulation
         self._config = config
 
-        # Instantiate all the modules
+        # Instantiate all thprocess_one_epoche modules
         self.inference_and_generator = InferenceAndGeneration(config=self._config)
 
         if torch.cuda.is_available():
