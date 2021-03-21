@@ -1,7 +1,7 @@
 import torch
 import numpy
 import torch.nn.functional as F
-from torch.distributions.utils import broadcast_all
+from torch.distributions.utils import broadcast_all, lazy_property
 from typing import Union, Optional, Tuple
 from collections import OrderedDict
 from torch.distributions.distribution import Distribution
@@ -202,6 +202,7 @@ class FiniteDPP(Distribution):
         It relies on svd decomposition which can become unstable on GPU or CPU, see
         https://github.com/pytorch/pytorch/issues/28293
     """
+    # Thuis cause problems if they are None
     arg_constraints = {'K': constraints.positive_definite,
                        'L': constraints.positive_definite,
                        'eigen_L': constraints.positive_definite}
@@ -254,10 +255,11 @@ class FiniteDPP(Distribution):
             self._K = K
             batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
 
-        self._eigen_l = eigen_L
+        self._eigen_L = eigen_L
+        print(self.__dict__)
         super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
 
-    @property
+    @lazy_property
     def K(self):
         if self._K is None:
             # print("svd from L")
@@ -268,10 +270,10 @@ class FiniteDPP(Distribution):
                 u, s_l, v = torch.svd(self._L + 1e-3 * self._L.mean() * torch.ones_like(self._L))
             s_k = s_l / (1.0 + s_l)
             self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-            self._eigen_l = s_l
+            self._eigen_L = s_l
         return self._K
 
-    @property
+    @lazy_property
     def L(self):
         if self._L is None:
             # print("svd from K")
@@ -280,13 +282,13 @@ class FiniteDPP(Distribution):
             except:
                 # torch.svd may have convergence issues for GPU and CPU.
                 u, s_k, v = torch.svd(self._K + 1e-3 * self._K.mean() * torch.ones_like(self._K))
-            self._eigen_l = s_k / (1.0 - s_k)
-            self._L = torch.matmul(u * self._eigen_l.unsqueeze(-2), v.transpose(-1, -2))
+            self._eigen_L = s_k / (1.0 - s_k)
+            self._L = torch.matmul(u * self._eigen_L.unsqueeze(-2), v.transpose(-1, -2))
         return self._L
 
-    @property
-    def eigen_l(self):
-        if self._eigen_l is None:
+    @lazy_property
+    def eigen_L(self):
+        if self._eigen_L is None:
             # print("eigen from L")
             try:
                 u, s_l, v = torch.svd(self.L)
@@ -295,17 +297,17 @@ class FiniteDPP(Distribution):
                 u, s_l, v = torch.svd(self.L + 1e-3 * self.L.mean() * torch.ones_like(self.L))
             s_k = s_l / (1.0 + s_l)
             self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-            self._eigen_l = s_l
-        return self._eigen_l
+            self._eigen_L = s_l
+        return self._eigen_L
 
     @property
     def n_mean(self):
-        p = self.eigen_l / (1 + self.eigen_l)
+        p = self.eigen_L / (1 + self.eigen_L)
         return p.sum()
 
     @property
     def n_variance(self):
-        p = self.eigen_l / (1 + self.eigen_l)
+        p = self.eigen_L / (1 + self.eigen_L)
         return torch.sum(p*(1-p))
 
     @property
@@ -430,7 +432,7 @@ class FiniteDPP(Distribution):
 
         # Compute the log_determinant of the full and submatrices
         logdet_Ls = torch.logdet(matrix).view(independet_dims)
-        logdet_L_plus_I = (self.eigen_l + 1).log().sum(dim=-1)  # sum over the event_shape
+        logdet_L_plus_I = (self.eigen_L + 1).log().sum(dim=-1)  # sum over the event_shape
         return (logdet_Ls - logdet_L_plus_I).squeeze(0)  # trick to make it work even if not-batched
 
 
