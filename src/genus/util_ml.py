@@ -7,7 +7,7 @@ from collections import OrderedDict
 from torch.distributions.distribution import Distribution
 from torch.distributions import constraints
 from .util import are_broadcastable
-from .namedtuple import DIST
+from .namedtuple import DIST, VQ
 
 
 class MetricsAccumulator(object):
@@ -75,6 +75,71 @@ class MetricsAccumulator(object):
     def set_value(self, key, value):
         """ Set a key value pair in the internal OrderDictionary to do the accumulation """
         self._dict_accumulate[key] = value
+
+
+class Quantizer(torch.nn.Module):
+    """
+    Module that quantizes the incoming vectors using a finite dictionary.
+    Useful for implementing a VQ-VAE model.
+
+    Note:
+        Last dimension will be used as space in which to quantize. All other dimensions are considered independent
+    """
+    def __init__(self, num_embeddings: int, embedding_dim: int, decay: float = 0.99, epsilon: float = 1E-6):
+        """
+        Args:
+            num_embeddings: the number of element in the dictionary
+            embedding_dim: the size of the embedding
+            decay: decay for the moving averages of the element in the dictionary
+            epsilon: small float constant to avoind numerical instabilities
+        """
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.num_embeddings = num_embeddings
+
+        self.embeddings = torch.nn.Parameter(data=torch.randn((self.embedding_dim, self.num_embeddings),
+                                                              dtype=torch.float),
+                                             requires_grad=False)
+
+        # Variables used for moving averages calculation
+        self._decay = decay
+        self._epsilon = epsilon
+        self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float),
+                                     requires_grad=False)
+        self._m = torch.nn.Parameter(data=torch.zeros((self.embedding_dim, self.num_embeddings),
+                                                      dtype=torch.float),
+                                     requires_grad=False)
+
+    def forward(self, x):
+        z = x.flatten(end_dim=-2)  # shape = (*, embedding_dim)
+
+        with torch.no_grad():
+            # dist(z,y)=||z-y||^2 = z^2 + y^2 - 2*z*y
+            z2 = z.pow(2).sum(dim=-1, keepdim=True)  # shape = (*, 1)
+            y2 = self.embeddings.pow(2).sum(dim=-2, keepdim=True)  # shape = (1, num_embeddings)
+            yz = torch.matmul(z, self.embeddings)  # shape = (*, num_embeddings)
+            embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
+            iq = embed_indices.view_as(x[..., 0]).unsqueeze(-1)  # same shape as original data but last dimension is 1
+
+            #  If the model is in training mode then the embedding are update using the moving averages
+            if self.training:
+                one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
+                dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
+                dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
+                self._n.data = self._decay * self._n + (1-self._decay) * dn
+                self._m.data = self._decay * self._m + (1-self._decay) * dm
+
+                # Compute the mean embedding but make sure not to divide by zero
+                n_tot = torch.sum(self._n)
+                n = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
+                self.embeddings.data = self._m / n
+
+        # Compute the quantized vectors
+        zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)
+        xq = zq.view_as(x)  # same shape as original vector
+        commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
+
+        return VQ(xq=x + (xq - x).detach(), iq=iq, commitment_cost=commitment_cost)
 
 
 class SimilarityKernel(torch.nn.Module):
@@ -202,23 +267,19 @@ class FiniteDPP(Distribution):
         It relies on svd decomposition which can become unstable on GPU or CPU, see
         https://github.com/pytorch/pytorch/issues/28293
     """
-    # Thuis cause problems if they are None
     arg_constraints = {'K': constraints.positive_definite,
-                       'L': constraints.positive_definite,
-                       'eigen_L': constraints.positive_definite}
+                       'L': constraints.positive_definite}
     support = constraints.boolean
     has_rsample = False
 
-    def __init__(self, K=None, L=None, eigen_L=None, validate_args=None):
+    def __init__(self, K=None, L=None, validate_args=None):
         """
-        A Finite DPP is FULLY specified by the correlation matrix (K), the likelihood matrix (L)
-        and the L_eigenvalues. All three are necessary to perform different operations.
+        A Finite DPP can be specified by either by the correlation matrix (K) or the likelihood matrix (L).
         For example:
         (1) the computation of the log_probability of a configuration requires the L matrix and L_eigenvalues.
         (2) Drawing a new random sample requires the K matrix
 
-        The MINIMAL specification of the DPP is by either the K or L matrix. The remaining information can be obtained
-        via SVD decomposition. If all three elements are specified, no svd decomposition will be performed.
+        Given either L and K can be obtained from each other via SVD decomposition.
 
         Args:
             K: correlation matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
@@ -227,7 +288,6 @@ class FiniteDPP(Distribution):
             L: likelihood matrix of shape :math:`(*, n, n)` is positive-semidefinite, symmetric with
                 eigenvalues in :math:`>= 0`. Any expoentially decaying similarity kernel will give rise
                 to a valid likelihood matrix.
-            eigen_L: the eigenvalues of the L matrix
 
         Note:
             This class is often used in combination with :class:`SimilarityKernel`.
@@ -239,64 +299,62 @@ class FiniteDPP(Distribution):
         """
 
         if (K is None) and (L is None):
-            raise Exception("One between K and L need to be defined")
-        elif L is None:
-            self._L = None
-            self._K = 0.5 * (K + K.transpose(-1, -2))
-            batch_shape, event_shape = self._K.shape[:-2], self._K.shape[-1:]
-        elif K is None:
-            self._K = None
-            self._L = 0.5 * (L + L.transpose(-1, -2))
-            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
-        else:
-            # neither is none
-            assert L.shape == K.shape
-            self._L = L
-            self._K = K
-            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+            raise ValueError("Either `K` or `L` must be specified, but not both.")
 
-        self._eigen_L = eigen_L
-        print(self.__dict__)
+        if L is not None:
+            self.L = 0.5 * (L + L.transpose(-1, -2))
+        else:
+            self.K = 0.5 * (K + K.transpose(-1, -2))
+
+        self._eigen_L = None
+        self._param = self.L if L is not None else self.K
+        batch_shape, event_shape = self._param.shape[:-2], self._param.shape[-1:]
         super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
+
+    def expand(self, batch_shape, _instance=None):
+        new = self._get_checked_instance(FiniteDPP, _instance)
+        batch_shape = torch.Size(batch_shape)
+        kernel_shape = batch_shape + self.event_shape + self.event_shape
+        value_shape = batch_shape + self.event_shape
+
+        if 'L' in self.__dict__:
+            new.L = self.L.expand(kernel_shape)
+            new._param = new.L
+        if 'K' in self.__dict__:
+            new.K = self.K.expand(kernel_shape)
+            new._param = new.K
+
+        new._eigen_L = None if self._eigen_L is None else self._eigen_L.expand(value_shape)
+
+        super(FiniteDPP, new).__init__(batch_shape, self.event_shape, validate_args=False)
+        new._validate_args = self._validate_args
+        return new
 
     @lazy_property
     def K(self):
-        if self._K is None:
-            # print("svd from L")
-            try:
-                u, s_l, v = torch.svd(self._L)
-            except:
-                # torch.svd may have convergence issues for GPU and CPU.
-                u, s_l, v = torch.svd(self._L + 1e-3 * self._L.mean() * torch.ones_like(self._L))
-            s_k = s_l / (1.0 + s_l)
-            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-            self._eigen_L = s_l
-        return self._K
+        u, s_l, v = torch.svd(self.L)
+        s_k = s_l / (1.0 + s_l)
+        self._eigen_L = s_l
+        return torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
 
     @lazy_property
     def L(self):
-        if self._L is None:
-            # print("svd from K")
-            try:
-                u, s_k, v = torch.svd(self._K)
-            except:
-                # torch.svd may have convergence issues for GPU and CPU.
-                u, s_k, v = torch.svd(self._K + 1e-3 * self._K.mean() * torch.ones_like(self._K))
-            self._eigen_L = s_k / (1.0 - s_k)
-            self._L = torch.matmul(u * self._eigen_L.unsqueeze(-2), v.transpose(-1, -2))
-        return self._L
+        u, s_k, v = torch.svd(self.K)
+        s_l = s_k / (1.0 - s_k)
+        self._eigen_L = s_l
+        return torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
 
-    @lazy_property
+    @property
     def eigen_L(self):
         if self._eigen_L is None:
-            # print("eigen from L")
-            try:
+            if 'L' in self.__dict__:
                 u, s_l, v = torch.svd(self.L)
-            except:
-                # torch.svd may have convergence issues for GPU and CPU.
-                u, s_l, v = torch.svd(self.L + 1e-3 * self.L.mean() * torch.ones_like(self.L))
-            s_k = s_l / (1.0 + s_l)
-            self._K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+                s_k = s_l / (1.0 + s_l)
+                self.K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+            elif 'K' in self.__dict__:
+                u, s_k, v = torch.svd(self.K)
+                s_l = s_k / (1.0 - s_k)
+                self.L = torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
             self._eigen_L = s_l
         return self._eigen_L
 
@@ -313,23 +371,6 @@ class FiniteDPP(Distribution):
     @property
     def n_stddev(self):
         return self.n_variance.sqrt()
-
-    def expand(self, batch_shape, _instance=None):
-        """
-        :meta private:
-        """
-        new = self._get_checked_instance(FiniteDPP, _instance)
-        batch_shape = torch.Size(batch_shape)
-        kernel_shape = batch_shape + self.event_shape + self.event_shape
-        value_shape = batch_shape + self.event_shape
-        new._eigen_l = None if self._eigen_l is None else self._eigen_l.expand(value_shape)
-        new._L = None if self._L is None else self._L.expand(kernel_shape)
-        new._K = None if self._K is None else self._K.expand(kernel_shape)
-        super(FiniteDPP, new).__init__(batch_shape,
-                                       self.event_shape,
-                                       validate_args=False)
-        new._validate_args = self._validate_args
-        return new
 
     def sample(self, sample_shape=torch.Size()):
         """
@@ -374,7 +415,7 @@ class FiniteDPP(Distribution):
     def log_prob(self, value):
         """
         Computes the log_probability of the configuration given the current value of the correlation matrix (K) or
-        likelihood matrix (L) used to initialize the instance. It requires the L matrix and L_eigenvalues
+        likelihood matrix (L) used to initialize the instance.
 
         Args:
             value: The binarized configuration of shape :math:`(*, \\text{event_shape})`
