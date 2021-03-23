@@ -1,6 +1,5 @@
 import torch
-from .unet_parts import DownBlock, DoubleConvolutionBlock, UpBlock
-from .encoders_decoders import Encoder1by1, MLP_1by1, EncoderBackground
+from .conv import UnetUpBlock, UnetDownBlock, Mlp1by1, SameSpatialResolution
 from collections import deque
 from .namedtuple import UNEToutput
 from typing import Optional
@@ -46,13 +45,16 @@ class UNet(torch.nn.Module):
         self.ch_list = [ch]
 
         # Down path to center
-        self.down_path = torch.nn.ModuleList([DoubleConvolutionBlock(self.ch_raw_image, self.ch_list[-1])])
+        self.down_path = torch.nn.ModuleList([SameSpatialResolution(ch_in=self.ch_raw_image,
+                                                                    ch_out=self.ch_list[-1],
+                                                                    double_or_single="double",
+                                                                    reflection_padding=True)])
         for i in range(0, self.n_max_pool):
             j = j * 2
             ch = ch * 2
             self.ch_list.append(ch)
             self.j_list.append(j)
-            self.down_path.append(DownBlock(self.ch_list[-2], self.ch_list[-1]))
+            self.down_path.append(UnetDownBlock(ch_in=self.ch_list[-2], ch_out=self.ch_list[-1]))
 
         # Up path
         self.up_path = torch.nn.ModuleList()
@@ -61,28 +63,30 @@ class UNet(torch.nn.Module):
             ch = int(ch // 2)
             self.ch_list.append(ch)
             self.j_list.append(j)
-            self.up_path.append(UpBlock(self.ch_list[-2], self.ch_list[-1]))
+            self.up_path.append(UnetUpBlock(ch_in=self.ch_list[-2], ch_out=self.ch_list[-1]))
 
         # Prediction maps
+        # TODO: remove this concatenation
         ch_out_fmap = self.n_ch_output_features - \
                       self.ch_raw_image if self.concatenate_raw_image_to_fmap else self.n_ch_output_features
-        self.pred_features = MLP_1by1(ch_in=self.ch_list[-1],
-                                      ch_out=ch_out_fmap,
-                                      ch_hidden=-1)  # this means there is NO hidden layer
+        self.pred_features = Mlp1by1(ch_in=self.ch_list[-1],
+                                     ch_out=ch_out_fmap,
+                                     ch_hidden=-1)  # this means there is NO hidden layer
 
         self.ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_zwhere = Encoder1by1(ch_in=self.ch_in_zwhere,
-                                         dim_z=self.dim_zwhere,
-                                         ch_hidden=(self.ch_in_zwhere + self.dim_zwhere)//2)
+        self.encode_zwhere = Mlp1by1(ch_in=self.ch_in_zwhere,
+                                     ch_out=self.dim_zwhere,
+                                     ch_hidden=(self.ch_in_zwhere + self.dim_zwhere)//2)
 
         self.ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_logit = MLP_1by1(ch_in=self.ch_in_logit,
-                                     ch_out=self.dim_logit,
-                                     ch_hidden=(self.ch_in_logit + self.dim_logit) // 2)
+        self.encode_logit = Mlp1by1(ch_in=self.ch_in_logit,
+                                    ch_out=self.dim_logit,
+                                    ch_hidden=(self.ch_in_logit + self.dim_logit) // 2)
 
         self.ch_in_bg = self.ch_list[-self.level_background_output - 1]
-        self.pred_background = EncoderBackground(ch_in=self.ch_in_bg,
-                                                 dim_z=self.dim_zbg)
+        self.encode_background = Mlp1by1(ch_in=self.ch_in_bg,
+                                         ch_out=self.dim_zbg,
+                                         ch_hidden=(self.ch_in_bg + self.dim_zbg) // 2)
 
     def forward(self, x: torch.Tensor, verbose: bool):
         # input_w, input_h = x.shape[-2:]
@@ -113,13 +117,14 @@ class UNet(torch.nn.Module):
                     logit.register_hook(lambda grad: grad.clamp(min=-self.grad_logit_max, max=self.grad_logit_max))
 
             if dist_to_end_of_net == self.level_background_output:
-                zbg = self.pred_background(x)  # only few channels needed for predicting bg
+                zbg = self.encode_background(x)  # only few channels needed for predicting bg
 
             x = up(to_be_concatenated.pop(), x, verbose)
             if verbose:
                 print("up     ", i, " shape ", x.shape)
 
         # always add a pred_map to the rightmost layer (which had distance 0 from the end of the net)
+        # TODO: Remove this concatenation
         if self.concatenate_raw_image_to_fmap:
             features = torch.cat((self.pred_features(x), raw_image), dim=-3)  # Here I am concatenating the raw image
         else:

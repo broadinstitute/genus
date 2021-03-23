@@ -81,9 +81,6 @@ class Quantizer(torch.nn.Module):
     """
     Module that quantizes the incoming vectors using a finite dictionary.
     Useful for implementing a VQ-VAE model.
-
-    Note:
-        Last dimension will be used as space in which to quantize. All other dimensions are considered independent
     """
     def __init__(self, num_embeddings: int, embedding_dim: int, decay: float = 0.99, epsilon: float = 1E-6):
         """
@@ -101,27 +98,41 @@ class Quantizer(torch.nn.Module):
                                                               dtype=torch.float),
                                              requires_grad=False)
 
-        # Variables used for moving averages calculation
+        # Variables used to keep track of the moving averages of the cluster means
         self._decay = decay
         self._epsilon = epsilon
-        self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float),
-                                     requires_grad=False)
+        self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float), requires_grad=False)
         self._m = torch.nn.Parameter(data=torch.zeros((self.embedding_dim, self.num_embeddings),
-                                                      dtype=torch.float),
-                                     requires_grad=False)
+                                                      dtype=torch.float), requires_grad=False)
 
-    def forward(self, x):
-        z = x.flatten(end_dim=-2)  # shape = (*, embedding_dim)
+    @staticmethod
+    def _swap(x, axis_to_quantize):
+        if (axis_to_quantize == -1) or (axis_to_quantize == len(x)):
+            return x
+        else:
+            return torch.swapaxes(x, axis0=axis_to_quantize, axis1=-1)
+
+    def forward(self, x, axis_to_quantize: int, generate_synthetic_data: bool):
+
+        # TODO: to generate synthetic data I need to...
+        if generate_synthetic_data:
+            raise NotImplementedError
+
+        # Put the dimension to quantize last and flatten the array
+        x_swapped = self._swap(x, axis_to_quantize=axis_to_quantize)
+        z = x_swapped.flatten(end_dim=-2)  # shape: (*, embedding_dim)
 
         with torch.no_grad():
             # dist(z,y)=||z-y||^2 = z^2 + y^2 - 2*z*y
             z2 = z.pow(2).sum(dim=-1, keepdim=True)  # shape = (*, 1)
             y2 = self.embeddings.pow(2).sum(dim=-2, keepdim=True)  # shape = (1, num_embeddings)
             yz = torch.matmul(z, self.embeddings)  # shape = (*, num_embeddings)
-            embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
-            iq = embed_indices.view_as(x[..., 0]).unsqueeze(-1)  # same shape as original data but last dimension is 1
 
-            #  If the model is in training mode then the embedding are update using the moving averages
+            # Find the indices corresponding to the closest code in the dictionary
+            embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
+
+            # If the model is in training mode then the embeddings are update using
+            # the moving averages of the cluster means
             if self.training:
                 one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
                 dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
@@ -131,15 +142,22 @@ class Quantizer(torch.nn.Module):
 
                 # Compute the mean embedding but make sure not to divide by zero
                 n_tot = torch.sum(self._n)
-                n = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
-                self.embeddings.data = self._m / n
+                n_tmp = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
+                self.embeddings.data = self._m / n_tmp
 
         # Compute the quantized vectors
         zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)
-        xq = zq.view_as(x)  # same shape as original vector
-        commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
 
-        return VQ(xq=x + (xq - x).detach(), iq=iq, commitment_cost=commitment_cost)
+        # Make the quantized vector of the same shape as input
+        xq_swapped = zq.view_as(x_swapped)
+        iq_swapped = embed_indices.view_as(x_swapped[..., 0]).unsqueeze(-1)
+
+        # Undo the swap if necessary
+        xq = self._swap(xq_swapped, axis_to_quantize=axis_to_quantize)
+        iq = self._swap(iq_swapped, axis_to_quantize=axis_to_quantize)
+
+        commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
+        return VQ(value=x + (xq - x).detach(), index=iq, commitment_cost=commitment_cost)
 
 
 class SimilarityKernel(torch.nn.Module):

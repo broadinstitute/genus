@@ -146,8 +146,8 @@ class Partition(NamedTuple):
 
 class VQ(NamedTuple):
     """ Container for the Vector Quantization """
-    xq: torch.Tensor
-    iq: torch.Tensor
+    value: torch.Tensor
+    index: torch.Tensor
     commitment_cost: torch.Tensor
 
 
@@ -190,8 +190,8 @@ class Segmentation(NamedTuple):
 
 
 class UNEToutput(NamedTuple):
-    zwhere: ZZ
-    zbg: ZZ
+    zwhere: torch.Tensor
+    zbg: torch.Tensor
     logit: torch.Tensor
     features: torch.Tensor
 
