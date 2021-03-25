@@ -87,8 +87,8 @@ class Quantizer(torch.nn.Module):
         Args:
             num_embeddings: the number of element in the dictionary
             embedding_dim: the size of the embedding
-            decay: decay for the moving averages of the element in the dictionary
-            epsilon: small float constant to avoind numerical instabilities
+            decay: decay for calculation of the moving averages of the element in the dictionary
+            epsilon: small float constant to avoid numerical instabilities
         """
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -107,7 +107,8 @@ class Quantizer(torch.nn.Module):
 
     @staticmethod
     def _swap(x, axis_to_quantize):
-        if (axis_to_quantize == -1) or (axis_to_quantize == len(x)):
+        """ Put the axis to quantize last. To undo the swap simply apply this operation twice """
+        if (axis_to_quantize == -1) or (axis_to_quantize == len(x.shape)):
             return x
         else:
             return torch.swapaxes(x, axis0=axis_to_quantize, axis1=-1)
@@ -115,8 +116,9 @@ class Quantizer(torch.nn.Module):
     def forward(self, x, axis_to_quantize: int, generate_synthetic_data: bool):
 
         # TODO: to generate synthetic data I need to...
-        if generate_synthetic_data:
-            raise NotImplementedError
+        #   For now just ignore and pretend generate_synthetic_data is always False
+        # if generate_synthetic_data:
+        #     raise NotImplementedError
 
         # Put the dimension to quantize last and flatten the array
         x_swapped = self._swap(x, axis_to_quantize=axis_to_quantize)

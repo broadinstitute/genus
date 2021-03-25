@@ -215,7 +215,7 @@ class InferenceAndGeneration(torch.nn.Module):
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
-        # Annealing
+        # Geco Annealing Factor
         self.annealing_factor = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
         # Geco MSE
@@ -263,12 +263,15 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
-        bg_vq: VQ = self.bg_quantizer(unet_output.zbg, axis_to_quantize=-3, generate_synthetic_data=False)
+        bg_vq: VQ = self.bg_quantizer(unet_output.zbg,
+                                      axis_to_quantize=-3,
+                                      generate_synthetic_data=generate_synthetic_data)
         out_background_bcwh = self.decoder_zbg(z=bg_vq.value)
-        print(out_background_bcwh.shape, imgs_bcwh.shape)
 
         # 3. Bounding-Box decoding
-        where_vq: VQ = self.where_quantizer(unet_output.zwhere, axis_to_quantize=-3, generate_synthetic_data=False)
+        where_vq: VQ = self.where_quantizer(unet_output.zwhere,
+                                            axis_to_quantize=-3,
+                                            generate_synthetic_data=generate_synthetic_data)
         bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(where_vq.value)),
                                           width_input_image=width_raw_image,
                                           height_input_image=height_raw_image,
@@ -305,8 +308,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # During pretraining, annealing factor is > 0 and I select the boxes according to:
             # score = (1-a) * (c+p) + a * ranking
-            score_grid = (1 - self.annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
-                         self.annealing_factor * prob_from_ranking_grid
+            score_grid = (torch.ones_like(self.annealing_factor) - self.annealing_factor) * \
+                         (c_grid_before_nms.float() + unet_prob_b1wh) + self.annealing_factor * prob_from_ranking_grid
 
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
@@ -324,10 +327,11 @@ class InferenceAndGeneration(torch.nn.Module):
         #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
         # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
         # minimization w.r.t. "a" leads to high entropy posteriors.
+        #
         # The derivative of the second term w.r.t. "DPP" can be estimated by simple MONTE CARLO samples and makes
-        # DPP prior parameters adjust to the seen configurations.
-        # This is computed only if grid_dpp.learnable_params = True
-        # The derivative of the second term w.r.t. "a" can be estimated by simple REINFORCE ESTIMATOR and makes
+        # DPP prior parameters adjust to the seen configurations. This is computed only if grid_dpp.learnable_params = True
+        #
+        # The derivative of the second term w.r.t. "a" can be estimated by REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
         entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
@@ -392,7 +396,7 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_av = ((mu_bcwh - imgs_bcwh) / self.sigma_fg).pow(2).mean()
             fraction = mixing_fg_b1wh.mean()
             mse_fg_av = mse_av * fraction
-            mse_bg_av = mse_av * (1.0 - fraction)
+            mse_bg_av = mse_av * (torch.ones_like(fraction) - fraction)
         else:
             mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
@@ -402,74 +406,71 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 13. Put together all the costs
 
-        # Loss for non-overlapping masks
+        # Cost for non-overlapping masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * torch.sum(mask_overlap_b1wh, dim=(-1, -2, -3)).mean()
 
-        # Loss to ideal bounding boxes
+        # Cost for ideal bounding boxes
         bb_ideal_bk, bb_regression_bk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_bk1wh,
                                                                              bounding_boxes_k=bounding_box_bk,
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
+        # TODO: Remove this option
         if self.bb_regression_always_active:
             bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum(dim=-1).mean()
         else:
             is_active_bk = (prob_bk > 0.5)
             bb_regression_cost = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
 
-        loss = where_vq.commitment_cost + bb_regression_cost + mask_overlap_cost + \
-               instance_vq.commitment_cost + bg_vq.commitment_cost + logit_kl + mse_av
+        # GECO
+        with torch.no_grad():
 
-#        # GECO
-#        with torch.no_grad():
-#
-#            # MSE
-#            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
-#                                                max=self.geco_rawlambda_mse_max)
-#            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
-#                         torch.sign(mse_av - self.geco_target_mse_min)
-#            mse_in_range = (mse_av > self.geco_target_mse_min) & \
-#                           (mse_av < self.geco_target_mse_max)
-#            g_mse = 2.0 * mse_in_range - 1.0  # positive if in range negative otherwise
-#
-#            # FG_FRACTION
-#            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
-#                                                       max=self.geco_rawlambda_fgfraction_max)
-#            fgfraction_av = mixing_fg_b1wh.mean()
-#            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
-#                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
-#            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
-#                                  (fgfraction_av < self.geco_target_fgfraction_max)
-#            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
-#
-#            # NCELL_AV
-#            lambda_ncell = torch.tensor(0.0)
-#            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
-#            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
-#            #                                       max=self.geco_rawlambda_ncell_max)
-#            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
-#            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
-#            #                torch.sign(ncell_av - self.geco_target_ncell_min)
-#            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-#            #                  (ncell_av < self.geco_target_ncell_max)
-#            # g_ncell = 2.0 * ncell_in_range - 1.0
-#
-#        # Outside torch.no_grad()
-#        # TODO: insert loss_geco_ncell back
-#        g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
-#        loss_annealing = self.annealing_factor * g_annealing
-#        loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
-#        loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
-#                               lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
-#        # loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
-#        #                   lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
-#
-#        # Add all the losses together
-#        # TODO: additional losses should be multiplied by geco_lambda_mse
-#        loss = loss_annealing + loss_mask_overlap + loss_bb_regression + \
-#               logit_kl + zbg_cost + zwhere_kl + zinstance_kl + \
-#               loss_geco_mse + loss_geco_fgfraction  # + loss_geco_ncell
+            # MSE
+            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
+                                                max=self.geco_rawlambda_mse_max)
+            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
+                         torch.sign(mse_av - self.geco_target_mse_min)
+            mse_in_range = (mse_av > self.geco_target_mse_min) & \
+                           (mse_av < self.geco_target_mse_max)
+            g_mse = 2.0 * mse_in_range - 1.0  # positive if in range negative otherwise
+
+            # ANNEALING
+            g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
+
+            # FG_FRACTION
+            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
+                                                       max=self.geco_rawlambda_fgfraction_max)
+            fgfraction_av = mixing_fg_b1wh.mean()
+            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
+                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
+            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
+                                  (fgfraction_av < self.geco_target_fgfraction_max)
+            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
+
+            # NCELL_AV
+            lambda_ncell = torch.tensor(0.0)
+            # TODO: insert loss_geco_ncell back to make parameters of DPP learnable
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
+            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
+            #                                       max=self.geco_rawlambda_ncell_max)
+            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
+            #                torch.sign(ncell_av - self.geco_target_ncell_min)
+            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
+            #                  (ncell_av < self.geco_target_ncell_max)
+            # g_ncell = 2.0 * ncell_in_range - 1.0
+            # loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
+            #                   lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
+
+        # Outside torch.no_grad()
+        loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
+                               lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
+        loss_geco_annealing = self.annealing_factor * g_annealing
+        loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
+        loss = bb_regression_cost + mask_overlap_cost + logit_kl + \
+               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
+               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -484,29 +485,28 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_bb_ideal_k=bb_ideal_bk)
 
         weighted_mse_fg_av = mse_fg_av / fgfraction_av.clamp(min=1E-3)
-        weighted_mse_bg_av = mse_bg_av / (1.0 - fgfraction_av).clamp(min=1E-3)
+        weighted_mse_bg_av = mse_bg_av / (torch.ones_like(fgfraction_av) - fgfraction_av).clamp(min=1E-3)
+        similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
+
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
                                  mse_av_bg=weighted_mse_bg_av.detach().item(),
                                  mse_av_fg=weighted_mse_fg_av.detach().item(),
                                  kl_logit=logit_kl.detach().item(),
-                                 kl_zinstance=zinstance_kl.detach().item(),
-                                 kl_zbg=zbg_cost.detach().item(),
-                                 kl_zwhere=zwhere_kl.detach().item(),
-                                 cost_mask_overlap_av=loss_mask_overlap.detach().item(),
-                                 cost_bb_regression_av=loss_bb_regression.detach().item(),
+                                 commitment_zinstance=instance_vq.commitment_cost.detach().item(),
+                                 commitment_zbg=bg_vq.commitment_cost.detach().item(),
+                                 commitment_zwhere=where_vq.commitment_cost.detach().item(),
+                                 cost_mask_overlap_av=mask_overlap_cost.detach().item(),
+                                 cost_bb_regression_av=bb_regression_cost.detach().item(),
                                  ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
-                                 distance_from_reinforce_baseline=distance_from_reinforce_baseline.detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
-                                 area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
                                  lambda_mse=lambda_mse.detach().item(),
                                  lambda_ncell=lambda_ncell.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=self.annealing_factor.detach().item(),
-                                 is_active_av=is_active_bk.sum(dim=-1).float().mean().detach().item(),
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)

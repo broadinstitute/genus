@@ -211,82 +211,78 @@ class Inference(NamedTuple):
     sample_bb_ideal_k: BB
 
 
+####class MetricMiniBatch(NamedTuple):
+####    loss: torch.Tensor
+####    mse_av: float
+####    cost_commitment: float
+####    count_prediction: numpy.ndarray
+####    wrong_examples: numpy.ndarray
+####    accuracy: float
+####
+####
+####    def pretty_print(self, epoch: int = 0) -> str:
+####        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, commitment={3:.3f}".format(epoch,
+####                                                                                  self.loss,
+####                                                                                  self.mse_av,
+####                                                                                  self.cost_commitment)
+####        return s
+
+
+
 class MetricMiniBatch(NamedTuple):
-    loss: torch.Tensor
+    """
+    Container for all metric of interest to monitor the behaviour of the model during training.
+    One special element of the metric is the loss which is the only one which will be directly optimized by
+    gradient-based methods.
+
+    Note:
+        Loss is the only member which is a torch.Tensor because it need to be differentiated.
+        All other members are float or numpy.array and are simply quantities which are monitored but
+        not differentiated during training.
+
+    Note:
+        All entries should be scalars obtained by averaging over minibatch
+    """
+    loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
-    cost_commitment: float
+    mse_av_bg: float
+    mse_av_fg: float
+    kl_logit: float
+    commitment_zinstance: float
+    commitment_zbg: float
+    commitment_zwhere: float
+    cost_mask_overlap_av: float
+    cost_bb_regression_av: float
+    ncell_av: float
+    prob_av: float
+    fgfraction_av: float
+    # geco
+    lambda_mse: float
+    lambda_ncell: float
+    lambda_fgfraction: float
+    # I am learning the right things?
+    similarity_l: float
+    similarity_w: float
+    annealing_factor: float
+    # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray
     accuracy: float
 
-
     def pretty_print(self, epoch: int = 0) -> str:
-        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, commitment={3:.3f}".format(epoch,
-                                                                                  self.loss,
-                                                                                  self.mse_av,
-                                                                                  self.cost_commitment)
+        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
+             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
+             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
+                                                                     self.loss,
+                                                                     self.mse_av,
+                                                                     self.cost_mask_overlap_av,
+                                                                     self.cost_bb_regression_av,
+                                                                     self.fgfraction_av,
+                                                                     self.ncell_av,
+                                                                     self.lambda_mse,
+                                                                     self.lambda_ncell,
+                                                                     self.lambda_fgfraction)
         return s
-
-
-
-###class MetricMiniBatch(NamedTuple):
-###    """
-###    Container for all metric of interest to monitor the behaviour of the model during training.
-###    One special element of the metric is the loss which is the only one which will be directly optimized by
-###    gradient-based methods.
-###
-###    Note:
-###        Loss is the only member which is a torch.Tensor because it need to be differentiated.
-###        All other members are float or numpy.array and are simply quantities which are monitored but
-###        not differentiated during training.
-###
-###    Note:
-###        All entries should be scalars obtained by averaging over minibatch
-###    """
-###
-###    loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
-###    mse_av: float
-###    mse_av_bg: float
-###    mse_av_fg: float
-###    kl_logit: float
-###    kl_zinstance: float
-###    kl_zbg: float
-###    kl_zwhere: float
-###    cost_mask_overlap_av: float
-###    cost_bb_regression_av: float
-###    ncell_av: float
-###    prob_av: float
-###    distance_from_reinforce_baseline: float
-###    fgfraction_av: float
-###    area_mask_over_area_bb_av: float
-###    # geco
-###    lambda_mse: float
-###    lambda_ncell: float
-###    lambda_fgfraction: float
-###    # I am learning the right things?
-###    similarity_l: float
-###    similarity_w: float
-###    annealing_factor: float
-###    is_active_av: float
-###    # conting accuracy
-###    count_prediction: numpy.ndarray
-###    wrong_examples: numpy.ndarray
-###    accuracy: float
-###
-###    def pretty_print(self, epoch: int = 0) -> str:
-###        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
-###             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
-###             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
-###                                                                     self.loss,
-###                                                                     self.mse_av,
-###                                                                     self.cost_mask_overlap_av,
-###                                                                     self.cost_bb_regression_av,
-###                                                                     self.fgfraction_av,
-###                                                                     self.ncell_av,
-###                                                                     self.lambda_mse,
-###                                                                     self.lambda_ncell,
-###                                                                     self.lambda_fgfraction)
-###        return s
 
 
 class Output(NamedTuple):
