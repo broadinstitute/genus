@@ -111,7 +111,7 @@ class Quantizer(torch.nn.Module):
         if (axis_to_quantize == -1) or (axis_to_quantize == len(x.shape)):
             return x
         else:
-            return torch.swapaxes(x, axis0=axis_to_quantize, axis1=-1)
+            return torch.transpose(x, dim0=axis_to_quantize, dim1=-1)
 
     def forward(self, x, axis_to_quantize: int, generate_synthetic_data: bool):
 

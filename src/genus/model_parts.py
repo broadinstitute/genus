@@ -83,6 +83,7 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
         ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
 
     # Outside the torch.no_grad() compute the regression cost
+    # TODO: regression cost should be quandratic
     cost_bb_regression = torch.abs(ideal_bx_k - bounding_boxes_k.bx) + \
                          torch.abs(ideal_by_k - bounding_boxes_k.by) + \
                          torch.abs(ideal_bw_k - bounding_boxes_k.bw) + \
