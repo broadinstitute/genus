@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy
 
 CH_BG_MAP = 32
 
@@ -31,10 +32,7 @@ class HalvesSpatialResolution(nn.Module):
                 nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=0, bias=True)
             )
         else:
-            self.conv_half = nn.Sequential(
-                nn.ConstantPad2d(padding=1, value=0.0),
-                nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=0, bias=True)
-            )
+            self.conv_half = nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=1, bias=True)
 
     def forward(self, x, verbose=False):
         y = self.conv_half(x)
@@ -64,10 +62,7 @@ class SameSpatialResolution(nn.Module):
                     nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=0, bias=True)
                 )
             else:
-                self.conv_same = nn.Sequential(
-                    nn.ConstantPad2d(padding=1, value=0.0),
-                    nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True)
-                )
+                self.conv_same = nn.Conv2d(ch_in, ch_out, kernel_size=3, stride=1, padding=1, bias=True)
 
         elif double_or_single == "double":
             if reflection_padding:
@@ -175,114 +170,99 @@ class Mlp1by1(nn.Module):
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
 
-class DecoderBackground(nn.Module):
-    """
-    Decode zbg to background.
-    The corresponding encoder is the contracting path of the UNET
-
-    Note:
-        It relies on :class:`DoubleSpatialResolution` which doubles the spatial resolution of the tensor
-        at each application.
-    """
-
-    def __init__(self, ch_in: int, ch_out: int, n_up_conv: int):
-        """
-        Args:
-             ch_in: int, number of channels of the latent code
-             ch_out: int, number of channels of the output
-             n_up_conv: int, number of application of :class:`DoubleSpatialResolution`.
-                Each application double the spatial resolution
-        """
-
-        super().__init__()
-        self.ch_in = ch_in
-        self.ch_out = ch_out
-        self.upconv = torch.nn.ModuleList()
-
-        input_ch = self.ch_in
-        for n in range(0, n_up_conv-1):
-            self.upconv.append(DoubleSpatialResolution(ch_in=input_ch, ch_out=CH_BG_MAP))
-            self.upconv.append(torch.nn.ReLU(inplace=True))
-            input_ch = CH_BG_MAP
-        self.upconv.append(DoubleSpatialResolution(ch_in=CH_BG_MAP, ch_out=self.ch_out))
-
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            z: tensor of shape (*, ch_in, small_w, small_h)
-
-        Returns:
-            background of shape (*, ch_out, W, H) where :math:`W = small_W \times 2**n_up_conv`
-
-        Note:
-            Works for any number of leading dimensions
-
-        """
-        x = z.flatten(end_dim=-4)
-        for i, module in enumerate(self.upconv):
-            x = module(x)
-        return x.view(list(z.shape[:-3]) + list(x.shape[-3:]))
-
-
 class EncoderConv(nn.Module):
     """
-    Encode the glimpse into zinstance.
+    Encode a large patch into a smaller patch.
+
+    Note:
+        It is opposite to :class:`DecoderConv`
 
     Note:
         It relies on :class:`HalvesSpatialResolution` which halves the spatial resolution of the tensor
         at each application.
     """
+    CH_MIN_ENCODER = 32
 
-    def __init__(self, size: int, ch_in: int, ch_out: int):
+    def __init__(self, ch_in: int, ch_out: int, scale_factor: int):
+        """
+        Args:
+            ch_in: int, number of channels in the input
+            ch_out: int, number of channels in the output
+            scale_factor: integer factor of 2, describes the reduction in the spatial extension from input to output
+        """
+
         super().__init__()
+        n_levels = numpy.log2(float(scale_factor))
+        assert (n_levels % 1.0 == 0)  and n_levels >= 1 # make sure that scale_factor is a power of two and larger than 2
         self.ch_in = ch_in
         self.ch_out = ch_out
-        self.width = size
-        assert self.width == 32
 
-        self.conv = nn.Sequential(
-            HalvesSpatialResolution(ch_in=self.ch_in, ch_out=2*self.ch_in),  # 16 x 16
-            nn.ReLU(inplace=True),
-            HalvesSpatialResolution(ch_in=2*self.ch_in, ch_out=4*self.ch_in),  # 8 x 8
-            nn.ReLU(inplace=True),
-            HalvesSpatialResolution(ch_in=4*self.ch_in, ch_out=8*self.ch_in),  # 4 x 4
-            nn.ReLU(inplace=True),
-            HalvesSpatialResolution(ch_in=8*self.ch_in, ch_out=self.ch_out)  # 2 x 2
-        )
+        self.encoder = torch.nn.ModuleList()
+        ch_in = self.ch_in
+        ch_out = max(int(self.ch_out * 2**(n_levels-1)), self.CH_MIN_ENCODER)
+        ch_out_half = max(ch_out // 2, self.CH_MIN_ENCODER)
+        for n in range(0, int(n_levels)-1):
+            self.encoder.append(HalvesSpatialResolution(ch_in=ch_in, ch_out=ch_out, reflection_padding=False))
+            self.encoder.append(nn.ReLU(inplace=True))
+            self.encoder.append(Mlp1by1(ch_in=ch_out, ch_out=ch_out_half, ch_hidden=-1))
+            self.encoder.append(nn.ReLU(inplace=True))
+            ch_in = max(ch_out // 2, self.CH_MIN_ENCODER)
+            ch_out = max(ch_in, self.CH_MIN_ENCODER)
+            ch_out_half = max(ch_in//2, self.CH_MIN_ENCODER)
+        self.encoder.append(HalvesSpatialResolution(ch_in=ch_in, ch_out=ch_in, reflection_padding=False))
+        self.encoder.append(nn.ReLU(inplace=True))
+        self.encoder.append(Mlp1by1(ch_in=ch_in, ch_out=self.ch_out, ch_hidden=-1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = self.conv(x.flatten(end_dim=-4))
+        y = x.flatten(end_dim=-4)
+        for i, module in enumerate(self.encoder):
+            y = module(y)
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
 
 class DecoderConv(nn.Module):
     """
-    Decode zinstance into a glimpse.
+    Decode a small patch into a larger patch.
+
+    Note:
+        It is opposite to :class:`EncoderConv`
 
     Note:
         It relies on :class:`DoubleSpatialResolution` which doubles the spatial resolution of the tensor
         at each application.
     """
+    CH_MIN_DECODER = 32
 
-    def __init__(self, size: int, ch_in: int, ch_out: int):
+    def __init__(self, ch_in: int, ch_out: int, scale_factor: int):
+        """
+        Args:
+            ch_in: int, number of channels in the input
+            ch_out: int, number of channels in the output
+            scale_factor: integer factor of 2, describes the increase in the spatial extension from input to output
+        """
         super().__init__()
+        n_levels = numpy.log2(float(scale_factor))
+        assert (n_levels % 1.0 == 0) and (n_levels >= 1) # scale_factor is a power of 2 and larger than 2
         self.ch_in = ch_in
         self.ch_out = ch_out
-        self.width = size
-        assert self.width == 32
 
-        self.decoder = nn.Sequential(
-            DoubleSpatialResolution(self.ch_in, self.ch_in//2),  # 4 x 4
-            nn.ReLU(inplace=True),
-            DoubleSpatialResolution(self.ch_in//2, self.ch_in//4),  # 8 x 8
-            nn.ReLU(inplace=True),
-            DoubleSpatialResolution(self.ch_in//4, self.ch_in//8),  # 16 x 16
-            nn.ReLU(inplace=True),
-            DoubleSpatialResolution(self.ch_in//8, self.ch_out)  # 32 x 32
-        )
+        ch = self.ch_in
+        ch_half = max(ch // 2, self.CH_MIN_DECODER)
+        self.decoder = torch.nn.ModuleList()
+        for n in range(0, int(n_levels)-1):
+            self.decoder.append(DoubleSpatialResolution(ch, ch))
+            self.decoder.append(nn.ReLU(inplace=True))
+            self.decoder.append(Mlp1by1(ch_in=ch, ch_out=ch_half, ch_hidden=-1))
+            self.decoder.append(nn.ReLU(inplace=True))
+            ch = ch_half
+            ch_half = max(ch // 2, self.CH_MIN_DECODER)
+        self.decoder.append(DoubleSpatialResolution(ch, ch))
+        self.decoder.append(nn.ReLU(inplace=True))
+        self.decoder.append(Mlp1by1(ch_in=ch, ch_out=self.ch_out, ch_hidden=-1))
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        y = self.decoder(z.flatten(end_dim=-4))
-        return y.view(list(z.shape[:-3]) + list(y.shape[-3:]))
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = x.flatten(end_dim=-4)
+        for i, module in enumerate(self.decoder):
+            y = module(y)
+        return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 

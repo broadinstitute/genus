@@ -4,7 +4,7 @@ import numpy
 
 from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
-from .conv import DecoderBackground, EncoderConv, DecoderConv, Mlp1by1
+from .conv import EncoderConv, DecoderConv, Mlp1by1
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, Quantizer
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, VQ
@@ -195,18 +195,17 @@ class InferenceAndGeneration(torch.nn.Module):
         self.where_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zwhere_dim"],
                                                     num_embeddings=config["architecture"]["zwhere_K"])
 
-        self.decoder_zbg: DecoderBackground = DecoderBackground(ch_in=config["architecture"]["zbg_dim"],
-                                                                ch_out=config["input_image"]["ch_in"],
-                                                                n_up_conv=config["architecture"]["unet_n_max_pool"])
+        self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
+                                                    ch_out=config["input_image"]["ch_in"],
+                                                    scale_factor=2**config["architecture"]["unet_n_max_pool"])
 
         self.decoder_zwhere: Mlp1by1 = Mlp1by1(ch_in=config["architecture"]["zwhere_dim"], ch_out=4, ch_hidden=-1)
 
-
-        self.decoder_zinstance: DecoderConv = DecoderConv(size=config["architecture"]["glimpse_size"],
+        self.decoder_zinstance: DecoderConv = DecoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
                                                           ch_in=config["architecture"]["zinstance_dim"],
                                                           ch_out=config["input_image"]["ch_in"] + 1)
 
-        self.encoder_zinstance: EncoderConv = EncoderConv(size=config["architecture"]["glimpse_size"],
+        self.encoder_zinstance: EncoderConv = EncoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
                                                           ch_in=config["architecture"]["unet_ch_feature_map"],
                                                           ch_out=config["architecture"]["zinstance_dim"])
 
@@ -267,7 +266,7 @@ class InferenceAndGeneration(torch.nn.Module):
         bg_vq: VQ = self.bg_quantizer(unet_output.zbg,
                                       axis_to_quantize=-3,
                                       generate_synthetic_data=generate_synthetic_data)
-        out_background_bcwh = self.decoder_zbg(z=bg_vq.value)
+        out_background_bcwh = self.decoder_zbg(bg_vq.value)
 
         # 3. Bounding-Box decoding
         where_vq: VQ = self.where_quantizer(unet_output.zwhere,
