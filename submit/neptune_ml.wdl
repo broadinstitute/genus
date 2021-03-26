@@ -18,23 +18,21 @@ task train {
 
 
     command <<<
-        set -e
+        echo "CAZZO"       
+ 
         exec_dir=$(pwd)
         echo "--> $exec_dir"
         echo "START --> Content of exectution dir"
         echo $(ls)
         
-        # 1. extract the neptune and github token from json file using regexpression
-        neptune_token=$(cat ~{credentials_json} | grep -o '"NEPTUNE_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$')
-        github_token=$(cat ~{credentials_json} | grep -o '"GITHUB_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$' | sed 's/"//g')
-        export NEPTUNE_API_TOKEN=$neptune_token
         
         # 2. clone the repository in the checkout_dir
         # for public repository use:
-        # git clone ~{git_repo} ./checkout_dir
+        git clone ~{git_repo} ./checkout_dir
         # for private repository use:
-        git_repo_with_token=$(echo ~{git_repo} | sed "s/github/$github_token@github/")
-        git clone $git_repo_with_token ./checkout_dir 
+        # github_token=$(cat ~{credentials_json} | grep -o '"GITHUB_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$' | sed 's/"//g')
+        # git_repo_with_token=$(echo ~{git_repo} | sed "s/github/$github_token@github/")
+        # git clone $git_repo_with_token ./checkout_dir 
 
         # 3. checkout the branch
         cd ./checkout_dir
@@ -53,7 +51,9 @@ task train {
         echo $(ls)
 
         # 5. run python code only if NEPTUNE credentials are found
+        neptune_token=$(cat ~{credentials_json} | grep -o '"NEPTUNE_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$')
         if [ ! -z $neptune_token ]; then
+           export NEPTUNE_API_TOKEN=$neptune_token
            cd ./src 
            python ~{main_file_name}
         fi
