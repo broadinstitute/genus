@@ -199,7 +199,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                     ch_out=config["input_image"]["ch_in"],
                                                     scale_factor=2**config["architecture"]["unet_n_max_pool"])
 
-        self.decoder_zwhere: Mlp1by1 = Mlp1by1(ch_in=config["architecture"]["zwhere_dim"], ch_out=4, ch_hidden=-1)
+        self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
+                                                               out_channels=4,
+                                                               kernel_size=1,
+                                                               groups=4)
 
         self.decoder_zinstance: DecoderConv = DecoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
                                                           ch_in=config["architecture"]["zinstance_dim"],
