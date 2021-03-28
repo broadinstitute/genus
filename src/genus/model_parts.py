@@ -374,20 +374,21 @@ class InferenceAndGeneration(torch.nn.Module):
         # 10. The last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the bounding boxes
+        # TEST
         small_img, small_weight = torch.split(small_stuff_tmp,
                                               split_size_or_sections=(small_stuff_tmp.shape[-3] - 1, 1),
                                               dim=-3)
-        out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                         small_stuff=small_img,
-                                         width_big=width_raw_image,
-                                         height_big=height_raw_image)
-        out_mask_bk1wh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                          small_stuff=torch.sigmoid(small_weight),
-                                          width_big=width_raw_image,
-                                          height_big=height_raw_image)
+        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                     small_stuff=torch.cat((small_img, torch.sigmoid(small_weight)), dim=-3),
+                                     width_big=width_raw_image,
+                                     height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
+        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff,
+                                                    split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
+                                                    dim=-3)
 
         # 11. Compute the mixing (using a softmax-like function)
         # TODO: Double check what Space and Spair do
+        #   Remove this clamp
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
