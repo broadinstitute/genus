@@ -557,7 +557,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='logit_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"logit_unet"+postfix)
-    fig_d = show_batch(torch.sigmoid(output.inference.logit_grid),
+    fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -565,7 +565,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet"+postfix)
-    fig_e = show_batch(output.inference.prob_from_ranking_grid,
+    fig_f = show_batch(output.inference.prob_from_ranking_grid,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -574,7 +574,7 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"prob_ranking"+postfix)
 
-    fig_f = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+    fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -582,7 +582,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
-    fig_g = show_batch(output.inference.mask_overlap_1wh,
+    fig_h = show_batch(output.inference.mask_overlap_1wh,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -592,17 +592,25 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"overlap"+postfix)
 
-    fig_h = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4)
+    fig_i = show_batch(mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
-                       normalize=True,
-                       normalize_range=(0.0, 2.0),
+                       normalize=False,
                        title='fg_mask, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"fg_mask"+postfix)
 
-    fig_i = show_batch(output.bb_imgs,
+    mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+    fig_l = show_batch(mixing_bg_b1wh,
+                       n_col=5,
+                       n_padding=4,
+                       normalize=False,
+                       title='bg_mask, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"bg_mask"+postfix)
+
+    fig_m = show_batch(output.bb_imgs,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -614,7 +622,7 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("leaving plot_reconstruction_and_inference")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h, fig_i
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h, fig_i, fig_l, fig_m
 
 
 def plot_segmentation(segmentation: Segmentation,
