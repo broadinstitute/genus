@@ -471,9 +471,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
         loss_geco_annealing = self.annealing_factor * g_annealing
         loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
-        loss = bb_regression_cost + mask_overlap_cost + logit_kl + \
-               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
-               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
+        # TODO: remove this debug
+#        loss = bb_regression_cost + mask_overlap_cost + logit_kl + \
+#               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
+#               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
+
+        loss = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).mean() + bg_vq.commitment_cost
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
