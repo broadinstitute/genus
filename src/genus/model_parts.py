@@ -467,12 +467,8 @@ class InferenceAndGeneration(torch.nn.Module):
 #               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
 
         # DOES NOT WORK
+        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + loss_geco_fgfraction
         # loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + where_vq.commitment_cost + loss_geco_fgfraction
-
-        # GAUSSIAN MIXTURE
-        mu = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
-        mse_av = ((imgs_bcwh - mu)/ self.sigma_fg).pow(2).mean()
-        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + where_vq.commitment_cost + loss_geco_fgfraction
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
