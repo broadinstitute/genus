@@ -466,8 +466,7 @@ class InferenceAndGeneration(torch.nn.Module):
 #               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
 #               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
 
-        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost
-        #+ where_vq.commitment_cost + \
+        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + where_vq.commitment_cost + loss_geco_fgfraction
         #       bb_regression_cost + mask_overlap_cost + logit_kl
 
         inference = Inference(logit_grid=unet_output.logit,
