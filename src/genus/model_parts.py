@@ -388,7 +388,6 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 11. Compute the mixing (using a softmax-like function)
         # TODO: Double check what Space and Spair do
-        #   Remove this clamp
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
