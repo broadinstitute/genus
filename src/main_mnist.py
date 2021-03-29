@@ -62,7 +62,7 @@ reference_imgs_fig = show_batch(reference_imgs, n_col=5, title="reference imgs",
 
 # Instantiate model, optimizer and checks
 vae = CompositionalVae(config)
-log_model_summary(vae)
+log_model_summary(vae, experiment=exp)
 optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 if torch.cuda.is_available():

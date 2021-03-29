@@ -477,7 +477,9 @@ def plot_generation(output: Output,
                        experiment=experiment,
                        neptune_name=prefix + "bg" + postfix)
 
-    fig_e = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
+
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4)
+    fig_e = show_batch(mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -486,7 +488,17 @@ def plot_generation(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"fg_mask"+postfix)
 
-    fig_f = show_batch(output.bb_imgs,
+    mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+    fig_f = show_batch(mixing_bg_b1wh,
+                       n_col=5,
+                       n_padding=4,
+                       n_mc_samples=2,
+                       normalize=False,
+                       title='fg_mask, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix+"bg_mask"+postfix)
+
+    fig_g = show_batch(output.bb_imgs,
                        n_col=5,
                        n_padding=4,
                        n_mc_samples=2,
@@ -498,7 +510,7 @@ def plot_generation(output: Output,
     if verbose:
         print("leaving plot_generation")
 
-    return fig_a, fig_b, fig_c, fig_d, fig_e
+    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
 
 
 def plot_reconstruction_and_inference(output: Output,
