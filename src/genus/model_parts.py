@@ -393,21 +393,10 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
-        # 12. Observation model (i.e. MSE)
-        if self.gaussian_mixture:
-            mu_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
-            mse_av = ((mu_bcwh - imgs_bcwh) / self.sigma_fg).pow(2).mean()
-            fraction = mixing_fg_b1wh.mean()
-            mse_fg_av = mse_av * fraction
-            mse_bg_av = mse_av * (torch.ones_like(fraction) - fraction)
-        else:
-            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-            mse_fg_av = (mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4).mean()  # dividing by # of all point, i.e. (bg+fg)
-            mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).mean()  # dividing by # of all point, i.e. (bg+fg)
-            mse_av = mse_fg_av + mse_bg_av
-
-        # 13. Put together all the costs
+        # Observation model
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+        mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + (mixing_bg_b1wh * mse_bg_bcwh)).mean()
 
         # Cost for non-overlapping masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
@@ -419,6 +408,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              pad_size=self.pad_size_bb,
                                                                              min_box_size=self.min_box_size,
                                                                              max_box_size=self.max_box_size)
+
         # TODO: Remove this option
         if self.bb_regression_always_active:
             bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum(dim=-1).mean()
@@ -476,7 +466,9 @@ class InferenceAndGeneration(torch.nn.Module):
 #               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
 #               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
 
-        loss = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).mean() + bg_vq.commitment_cost
+        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost
+        #+ where_vq.commitment_cost + \
+        #       bb_regression_cost + mask_overlap_cost + logit_kl
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -490,14 +482,10 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk)
 
-        weighted_mse_fg_av = mse_fg_av / fgfraction_av.clamp(min=1E-3)
-        weighted_mse_bg_av = mse_bg_av / (torch.ones_like(fgfraction_av) - fgfraction_av).clamp(min=1E-3)
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
-                                 mse_av_bg=weighted_mse_bg_av.detach().item(),
-                                 mse_av_fg=weighted_mse_fg_av.detach().item(),
                                  kl_logit=logit_kl.detach().item(),
                                  commitment_zinstance=instance_vq.commitment_cost.detach().item(),
                                  commitment_zbg=bg_vq.commitment_cost.detach().item(),

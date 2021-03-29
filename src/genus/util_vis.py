@@ -351,7 +351,7 @@ def plot_img_and_seg(img: torch.Tensor,
 def show_batch(images: torch.Tensor,
                n_col: int = 4,
                n_padding: int = 10,
-               n_mc_samples: Optional[int] = None,
+               n_mc_samples: int = 1,
                title: Optional[str] = None,
                pad_value: int = 1,
                normalize: bool = False,
@@ -365,7 +365,7 @@ def show_batch(images: torch.Tensor,
     """
     assert len(images.shape) >= 4  # *, ch, width, height
 
-    if n_mc_samples is not None and len(images.shape) == 5:
+    if len(images.shape) > 4:
         images = images[:n_mc_samples].flatten(end_dim=-4)
     else:
         images = images.flatten(end_dim=-4)  # -1, ch, width, height
@@ -482,7 +482,6 @@ def plot_generation(output: Output,
     fig_e = show_batch(mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='fg_mask, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
@@ -492,9 +491,8 @@ def plot_generation(output: Output,
     fig_f = show_batch(mixing_bg_b1wh,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
-                       title='fg_mask, epoch= {0:6d}'.format(epoch),
+                       title='bg_mask, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg_mask"+postfix)
 
