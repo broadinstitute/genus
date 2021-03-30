@@ -439,7 +439,7 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco_annealing = self.annealing_factor * g_annealing.detach()
 
         # Put all together with logit_KL
-        loss = loss_boxes + loss_fg + loss_bg # + loss_mixing #+ logit_kl + loss_geco_annealing
+        loss = loss_bg # + loss_boxes + loss_fg + loss_mixing #+ logit_kl + loss_geco_annealing
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,

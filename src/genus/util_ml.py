@@ -137,7 +137,7 @@ class Quantizer(torch.nn.Module):
             one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
             dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
             dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
-            p = torch.mean(dn, dim=0, keepdim=True)  # probability of each codewordi. Shape = (num_embeddings)
+            p = dn / torch.sum(dn)  # probability of each codeword. Shape = (num_embeddings)
             perplexity = - (p * torch.log(p + 1E-8)).sum()  # this is actually the entropy of the codeword distribution
 
         # Compute the quantized vectors
