@@ -439,7 +439,7 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco_annealing = self.annealing_factor * g_annealing.detach()
 
         # Put all together with logit_KL
-        loss = loss_boxes + loss_fg + loss_bg + loss_mixing #+ logit_kl + loss_geco_annealing
+        loss = loss_boxes + loss_fg + loss_bg # + loss_mixing #+ logit_kl + loss_geco_annealing
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -456,23 +456,34 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
         metric = MetricMiniBatch(loss=loss,
-                                 mse_av=mse_av.detach().item(),
-                                 loss_boxes=loss_boxes.detach().item(),
-                                 loss_fg=loss_fg.detach().item(),
-                                 loss_bg=loss_bg.detach().item(),
+                                 # related to mixing
                                  loss_mixing=loss_mixing.detach().item(),
-                                 kl_logit=logit_kl.detach().item(),
-                                 commitment_zinstance=instance_vq.commitment_cost.detach().item(),
-                                 commitment_zbg=bg_vq.commitment_cost.detach().item(),
-                                 commitment_zwhere=where_vq.commitment_cost.detach().item(),
+                                 mse_av=mse_av.detach().item(),
                                  cost_mask_overlap_av=mask_overlap_cost.detach().item(),
+                                 cost_fgfraction=fgfraction_cost.detach().item(),
+                                 fgfraction_av=fgfraction_av.detach().item(),
+                                 # related to boxes
+                                 loss_boxes=loss_boxes.detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
+                                 commitment_zwhere=where_vq.commitment_cost.detach().item(),
+                                 perplexity_zwhere=where_vq.perplexity.detach().item(),
+                                 # related to foreground
+                                 loss_fg=loss_fg.detach().item(),
+                                 commitment_zinstance=instance_vq.commitment_cost.detach().item(),
+                                 perplexity_zinstance=instance_vq.perplexity.detach().item(),
+                                 # related to background
+                                 loss_bg=loss_bg.detach().item(),
+                                 commitment_zbg=bg_vq.commitment_cost.detach().item(),
+                                 perplexity_zbg=bg_vq.perplexity.detach().item(),
+                                 # related to probability
+                                 kl_logit=logit_kl.detach().item(),
                                  ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
-                                 fgfraction_av=fgfraction_av.detach().item(),
+                                 # debug
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=self.annealing_factor.detach().item(),
+                                 # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)

@@ -133,19 +133,12 @@ class Quantizer(torch.nn.Module):
             # Find the indices corresponding to the closest code in the dictionary
             embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
 
-            # If the model is in training mode then the embeddings are update using
-            # the moving averages of the cluster means
-            if self.training:
-                one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
-                dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
-                dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
-                self._n.data = self._decay * self._n + (1-self._decay) * dn
-                self._m.data = self._decay * self._m + (1-self._decay) * dm
-
-                # Compute the mean embedding but make sure not to divide by zero
-                n_tot = torch.sum(self._n)
-                n_tmp = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
-                self.embeddings.data = self._m / n_tmp
+            # Compute the utilization of the dictionary
+            one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
+            dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
+            dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
+            p = torch.mean(dn, dim=0, keepdim=True)  # probability of each codewordi. Shape = (num_embeddings)
+            perplexity = - (p * torch.log(p + 1E-8)).sum()  # this is actually the entropy of the codeword distribution
 
         # Compute the quantized vectors
         zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)
@@ -159,7 +152,20 @@ class Quantizer(torch.nn.Module):
         iq = self._swap(iq_swapped, axis_to_quantize=axis_to_quantize)
 
         commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
-        return VQ(value=x + (xq - x).detach(), index=iq, commitment_cost=commitment_cost)
+
+        # If the model is in training mode then the embeddings are update using the moving averages
+        if self.training:
+            with torch.no_grad():
+                self._n.data = self._decay * self._n + (1-self._decay) * dn
+                self._m.data = self._decay * self._m + (1-self._decay) * dm
+
+                # Compute the mean embedding but make sure not to divide by zero
+                n_tot = torch.sum(self._n)
+                n_tmp = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
+                self.embeddings.data = self._m / n_tmp
+
+
+        return VQ(value=x + (xq - x).detach(), index=iq, commitment_cost=commitment_cost, perplexity=perplexity)
 
 
 class SimilarityKernel(torch.nn.Module):

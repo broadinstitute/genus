@@ -149,6 +149,7 @@ class VQ(NamedTuple):
     value: torch.Tensor
     index: torch.Tensor
     commitment_cost: torch.Tensor
+    perplexity: torch.Tensor
 
 
 class DIST(NamedTuple):
@@ -244,20 +245,29 @@ class MetricMiniBatch(NamedTuple):
         All entries should be scalars obtained by averaging over minibatch
     """
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
-    mse_av: float
-    loss_boxes: float
-    loss_fg: float
-    loss_bg: float
+    # related to mixing
     loss_mixing: float
-    kl_logit: float
-    commitment_zinstance: float
-    commitment_zbg: float
-    commitment_zwhere: float
+    mse_av: float
     cost_mask_overlap_av: float
+    cost_fgfraction: float
+    fgfraction_av: float
+    # related to boxes
+    loss_boxes: float
     cost_bb_regression_av: float
+    commitment_zwhere: float
+    perplexity_zwhere: float
+    # related to learning foreground
+    loss_fg: float
+    commitment_zinstance: float
+    perplexity_zinstance: float
+    # related to learning background
+    loss_bg: float
+    commitment_zbg: float
+    perplexity_zbg: float
+    # probability
+    kl_logit: float
     ncell_av: float
     prob_av: float
-    fgfraction_av: float
     # I am learning the right things?
     similarity_l: float
     similarity_w: float
