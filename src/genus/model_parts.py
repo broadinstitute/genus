@@ -83,11 +83,10 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
         ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
 
     # Outside the torch.no_grad() compute the regression cost
-    # TODO: regression cost should be quandratic
-    cost_bb_regression = torch.abs(ideal_bx_k - bounding_boxes_k.bx) + \
-                         torch.abs(ideal_by_k - bounding_boxes_k.by) + \
-                         torch.abs(ideal_bw_k - bounding_boxes_k.bw) + \
-                         torch.abs(ideal_bh_k - bounding_boxes_k.bh)
+    cost_bb_regression = (ideal_bx_k - bounding_boxes_k.bx).pow(2) + \
+                         (ideal_by_k - bounding_boxes_k.by).pow(2) + \
+                         (ideal_bw_k - bounding_boxes_k.bw).pow(2) + \
+                         (ideal_bh_k - bounding_boxes_k.bh).pow(2)
 
     return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k), cost_bb_regression
 
@@ -366,24 +365,30 @@ class InferenceAndGeneration(torch.nn.Module):
                                            width_small=self.glimpse_size,
                                            height_small=self.glimpse_size)
 
+        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+                                     width_small=self.glimpse_size,
+                                     height_small=self.glimpse_size)
+
         # 9. Encode, Quantize, Decode zinstance
         zinstance = self.encoder_zinstance.forward(cropped_feature_map)  # shape: batch, k, ch, 2, 2
         instance_vq: VQ = self.instance_quantizer(zinstance, axis_to_quantize=-3, generate_synthetic_data=False)
-        small_stuff_tmp = self.decoder_zinstance.forward(instance_vq.value)
+        small_stuff_out = self.decoder_zinstance.forward(instance_vq.value)
 
         # 10. The last channel is a mask (i.e. there is a sigmoid non-linearity applied)
         # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
         # except inside the bounding boxes
-        # TEST
-        small_img, small_weight = torch.split(small_stuff_tmp,
-                                              split_size_or_sections=(small_stuff_tmp.shape[-3] - 1, 1),
-                                              dim=-3)
-        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                     small_stuff=torch.cat((small_img, torch.sigmoid(small_weight)), dim=-3),
-                                     width_big=width_raw_image,
-                                     height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
-        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff,
-                                                    split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
+        small_imgs_out, small_weights_out = torch.split(small_stuff_out,
+                                                        split_size_or_sections=(small_stuff_out.shape[-3] - 1, 1),
+                                                        dim=-3)
+
+        big_stuff_out = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                         small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out)), dim=-3),
+                                         width_big=width_raw_image,
+                                         height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
+
+        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff_out,
+                                                    split_size_or_sections=(big_stuff_out.shape[-3] - 1, 1),
                                                     dim=-3)
 
         # 11. Compute the mixing (using a softmax-like function)
@@ -393,14 +398,16 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
-        # Observation model
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + (mixing_bg_b1wh * mse_bg_bcwh)).mean()
+        # Cost fg_fraction
+        fgfraction_av = mixing_fg_b1wh.mean()
+        fgfraction_too_small = (fgfraction_av < self.geco_target_fgfraction_min).detach()
+        fgfraction_too_large = (fgfraction_av > self.geco_target_fgfraction_max).detach()
+        fgfraction_cost = (fgfraction_av - self.geco_target_fgfraction_min).pow(2) * fgfraction_too_small + \
+                          (fgfraction_av - self.geco_target_fgfraction_max).pow(2) * fgfraction_too_large
 
         # Cost for non-overlapping masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
-        mask_overlap_cost = self.mask_overlap_strength * torch.sum(mask_overlap_b1wh, dim=(-1, -2, -3)).mean()
+        mask_overlap_cost = mask_overlap_b1wh.mean()
 
         # Cost for ideal bounding boxes
         bb_ideal_bk, bb_regression_bk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_bk1wh,
@@ -411,64 +418,28 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # TODO: Remove this option
         if self.bb_regression_always_active:
-            bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum(dim=-1).mean()
+            bb_regression_cost = bb_regression_bk.mean()
         else:
             is_active_bk = (prob_bk > 0.5)
-            bb_regression_cost = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
+            bb_regression_cost = (is_active_bk * bb_regression_bk).mean()
 
-        # GECO
-        with torch.no_grad():
+        # Losses (these 3 are self-tuning)
+        loss_boxes = bb_regression_cost + where_vq.commitment_cost
+        loss_bg = (out_background_bcwh - imgs_bcwh.detach()).pow(2).mean() + bg_vq.commitment_cost
+        loss_fg = (small_imgs_out - small_imgs_in.detach()).pow(2).mean() + instance_vq.commitment_cost
 
-            # MSE
-            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
-                                                max=self.geco_rawlambda_mse_max)
-            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
-                         torch.sign(mse_av - self.geco_target_mse_min)
-            mse_in_range = (mse_av > self.geco_target_mse_min) & \
-                           (mse_av < self.geco_target_mse_max)
-            g_mse = 2.0 * mse_in_range - 1.0  # positive if in range negative otherwise
+        # Loss mixing (this is the triky one)
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2).detach()
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).detach()
+        mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
+        loss_mixing = mse_av + mask_overlap_cost + fgfraction_cost
 
-            # ANNEALING
-            g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
+        # Loss annealing (to automatically adjust annealing factor)
+        g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
+        loss_geco_annealing = self.annealing_factor * g_annealing.detach()
 
-            # FG_FRACTION
-            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
-                                                       max=self.geco_rawlambda_fgfraction_max)
-            fgfraction_av = mixing_fg_b1wh.mean()
-            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
-                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
-            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
-                                  (fgfraction_av < self.geco_target_fgfraction_max)
-            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
-
-            # NCELL_AV
-            lambda_ncell = torch.tensor(0.0)
-            # TODO: insert loss_geco_ncell back to make parameters of DPP learnable
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
-            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
-            #                                       max=self.geco_rawlambda_ncell_max)
-            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
-            #                torch.sign(ncell_av - self.geco_target_ncell_min)
-            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-            #                  (ncell_av < self.geco_target_ncell_max)
-            # g_ncell = 2.0 * ncell_in_range - 1.0
-            # loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
-            #                   lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
-
-        # Outside torch.no_grad()
-        loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
-                               lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
-        loss_geco_annealing = self.annealing_factor * g_annealing
-        loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
-        # TODO: remove this debug
-#        loss = bb_regression_cost + mask_overlap_cost + logit_kl + \
-#               where_vq.commitment_cost + instance_vq.commitment_cost + bg_vq.commitment_cost + \
-#               loss_geco_mse + loss_geco_annealing + loss_geco_fgfraction
-
-        # DOES NOT WORK
-        loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + loss_geco_fgfraction
-        # loss = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost + where_vq.commitment_cost + loss_geco_fgfraction
+        # Put all together with logit_KL
+        loss = loss_boxes + loss_fg + loss_bg + loss_mixing + logit_kl + loss_geco_annealing
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -486,6 +457,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         metric = MetricMiniBatch(loss=loss,
                                  mse_av=mse_av.detach().item(),
+                                 loss_boxes=loss_boxes.detach().item(),
+                                 loss_fg=loss_fg.detach().item(),
+                                 loss_bg=loss_bg.detach().item(),
+                                 loss_mixing=loss_mixing.detach().item(),
                                  kl_logit=logit_kl.detach().item(),
                                  commitment_zinstance=instance_vq.commitment_cost.detach().item(),
                                  commitment_zbg=bg_vq.commitment_cost.detach().item(),
@@ -495,9 +470,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
-                                 lambda_mse=lambda_mse.detach().item(),
-                                 lambda_ncell=lambda_ncell.detach().item(),
-                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=self.annealing_factor.detach().item(),

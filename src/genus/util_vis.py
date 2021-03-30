@@ -478,7 +478,7 @@ def plot_generation(output: Output,
                        neptune_name=prefix + "bg" + postfix)
 
 
-    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4)
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
     fig_e = show_batch(mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
@@ -499,7 +499,6 @@ def plot_generation(output: Output,
     fig_g = show_batch(output.bb_imgs,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
@@ -520,17 +519,14 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    # mc_samples = output.inference.sample_c_grid_before_nms.shape[-5]
-    # batch_size = output.inference.sample_c_grid_before_nms.shape[-4]
-
     fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='imgs, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"imgs"+postfix)
+
     fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
                        n_col=5,
                        n_padding=4,
@@ -539,6 +535,7 @@ def plot_reconstruction_and_inference(output: Output,
                        title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"c_grid_before_nms"+postfix)
+
     fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
                        n_col=5,
                        n_padding=4,
@@ -551,24 +548,23 @@ def plot_reconstruction_and_inference(output: Output,
     fig_d = show_batch(output.inference.logit_grid,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=True,
                        normalize_range=(-3, 3),
                        title='logit_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"logit_unet"+postfix)
+
     fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='prob_unet, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_unet"+postfix)
+
     fig_f = show_batch(output.inference.prob_from_ranking_grid,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='prob_ranking, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
@@ -577,22 +573,21 @@ def plot_reconstruction_and_inference(output: Output,
     fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=False,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"bg"+postfix)
+
     fig_h = show_batch(output.inference.mask_overlap_1wh,
                        n_col=5,
                        n_padding=4,
-                       n_mc_samples=2,
                        normalize=True,
                        normalize_range=(0.0, 2.0),
                        title='overlap, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"overlap"+postfix)
 
-    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4)
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
     fig_i = show_batch(mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
@@ -601,8 +596,7 @@ def plot_reconstruction_and_inference(output: Output,
                        experiment=experiment,
                        neptune_name=prefix+"fg_mask"+postfix)
 
-    mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
-    fig_l = show_batch(mixing_bg_b1wh,
+    fig_l = show_batch(torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh,
                        n_col=5,
                        n_padding=4,
                        normalize=False,

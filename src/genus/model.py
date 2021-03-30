@@ -811,59 +811,51 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
         >>> optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
     """
 
+##    if config_optimizer["type"] == "adam":
+##        optimizer = torch.optim.Adam(model.parameters(),
+##                                     lr=config_optimizer["lr"],
+##                                     betas=config_optimizer["betas_adam"])
+##
+##    elif config_optimizer["type"] == "SGD":
+##        optimizer = torch.optim.SGD(model.parameters(),
+##                                    lr=config_optimizer["lr"])
+##
+##    elif config_optimizer["type"] == "RMSprop":
+##        optimizer = torch.optim.RMSprop(model.parameters(),
+##                                        lr=config_optimizer["lr"],
+##                                        alpha=config_optimizer["alpha_rmsprop"])
+##
+##    else:
+##        raise Exception("optimizer type is not recognized")
+##    return optimizer
+
+    # split the parameters between GECO and NOT_GECO
+    geco_params, other_params = [], []
+    for name, param in model.named_parameters():
+        if ".geco" in name:
+            print("geco params -->", name)
+            geco_params.append(param)
+        else:
+            other_params.append(param)
+
     if config_optimizer["type"] == "adam":
-        optimizer = torch.optim.Adam(model.parameters(),
-                                     lr=config_optimizer["lr"],
-                                     betas=config_optimizer["betas_adam"])
-
+        optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["lr_geco"],
+                                       'betas': config_optimizer["betas_geco_adam"]},
+                                      {'params': other_params, 'lr': config_optimizer["lr"],
+                                       'betas': config_optimizer["betas_adam"]}])
     elif config_optimizer["type"] == "SGD":
-        optimizer = torch.optim.SGD(model.parameters(),
-                                    lr=config_optimizer["lr"])
-
+        optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["lr_geco"]},
+                                     {'params': other_params, 'lr': config_optimizer["lr"]}])
     elif config_optimizer["type"] == "RMSprop":
-        optimizer = torch.optim.RMSprop(model.parameters(),
-                                        lr=config_optimizer["lr"],
-                                        alpha=config_optimizer["alpha_rmsprop"])
-
+        optimizer = torch.optim.RMSprop([{'params': geco_params,
+                                          'lr': config_optimizer["lr_geco"],
+                                          'alpha': config_optimizer["alpha_geco_rmsprop"]},
+                                         {'params': other_params,
+                                          'lr': config_optimizer["lr"],
+                                          'alpha': config_optimizer["alpha_rms_prop"]}])
     else:
         raise Exception("optimizer type is not recognized")
     return optimizer
-
-#     # split the parameters between GECO and NOT_GECO
-#     geco_params, similarity_params, other_params = [], [], []
-#     for name, param in model.named_parameters():
-#         if ".geco" in name:
-#             # print("geco params -->", name)
-#             geco_params.append(param)
-#         elif ".similarity" in name:
-#             # print("similarity params -->", name)
-#             similarity_params.append(param)
-#         else:
-#             other_params.append(param)
-#
-#     if config_optimizer["type"] == "adam":
-#         optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"],
-#                                        'betas': config_optimizer["betas_geco"]},
-#                                       {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"],
-#                                        'betas': config_optimizer["betas_similarity"]},
-#                                       {'params': other_params, 'lr': config_optimizer["base_lr"],
-#                                        'betas': config_optimizer["betas"]}],
-#                                       eps=config_optimizer["eps"],
-#                                       weight_decay=config_optimizer["weight_decay"])
-#     elif config_optimizer["type"] == "SGD":
-#         optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
-#                                      {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
-#                                      {'params': other_params, 'lr': config_optimizer["base_lr"]}],
-#                                     weight_decay=config_optimizer["weight_decay"])
-#     elif config_optimizer["type"] == "RMSprop":
-#         optimizer = torch.optim.RMSprop([{'params': geco_params, 'lr': config_optimizer["base_lr_geco"]},
-#                                          {'params': similarity_params, 'lr': config_optimizer["base_lr_similarity"]},
-#                                          {'params': other_params, 'lr': config_optimizer["base_lr"]}],
-#                                         alpha=config_optimizer["alpha"],
-#                                         weight_decay=config_optimizer["weight_decay"])
-#     else:
-#         raise Exception("optimizer type is not recognized")
-#     return optimizer
 
 
 def instantiate_scheduler(optimizer: torch.optim.Optimizer,

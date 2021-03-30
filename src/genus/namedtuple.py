@@ -245,6 +245,10 @@ class MetricMiniBatch(NamedTuple):
     """
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     mse_av: float
+    loss_boxes: float
+    loss_fg: float
+    loss_bg: float
+    loss_mixing: float
     kl_logit: float
     commitment_zinstance: float
     commitment_zbg: float
@@ -254,10 +258,6 @@ class MetricMiniBatch(NamedTuple):
     ncell_av: float
     prob_av: float
     fgfraction_av: float
-    # geco
-    lambda_mse: float
-    lambda_ncell: float
-    lambda_fgfraction: float
     # I am learning the right things?
     similarity_l: float
     similarity_w: float
@@ -269,17 +269,13 @@ class MetricMiniBatch(NamedTuple):
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
-             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
-             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
-                                                                     self.loss,
-                                                                     self.mse_av,
-                                                                     self.cost_mask_overlap_av,
-                                                                     self.cost_bb_regression_av,
-                                                                     self.fgfraction_av,
-                                                                     self.ncell_av,
-                                                                     self.lambda_mse,
-                                                                     self.lambda_ncell,
-                                                                     self.lambda_fgfraction)
+             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}".format(epoch,
+                                                                                      self.loss,
+                                                                                      self.mse_av,
+                                                                                      self.cost_mask_overlap_av,
+                                                                                      self.cost_bb_regression_av,
+                                                                                      self.fgfraction_av,
+                                                                                      self.ncell_av)
         return s
 
 
