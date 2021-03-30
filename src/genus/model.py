@@ -852,7 +852,7 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
                                           'alpha': config_optimizer["alpha_geco_rmsprop"]},
                                          {'params': other_params,
                                           'lr': config_optimizer["lr"],
-                                          'alpha': config_optimizer["alpha_rms_prop"]}])
+                                          'alpha': config_optimizer["alpha_rmsprop"]}])
     else:
         raise Exception("optimizer type is not recognized")
     return optimizer
