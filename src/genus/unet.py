@@ -67,9 +67,14 @@ class UNet(torch.nn.Module):
 
         # Prediction maps
         # TODO: remove this concatenation
-        ch_out_fmap = self.n_ch_output_features - \
-                      self.ch_raw_image if self.concatenate_raw_image_to_fmap else self.n_ch_output_features
-        self.pred_features = Mlp1by1(ch_in=self.ch_list[-1],
+        #ch_out_fmap = self.n_ch_output_features - \
+        #              self.ch_raw_image if self.concatenate_raw_image_to_fmap else self.n_ch_output_features
+        #self.pred_features = Mlp1by1(ch_in=self.ch_list[-1],
+        #                             ch_out=ch_out_fmap,
+        #                             ch_hidden=-1)  # this means there is NO hidden layer
+        # TODO: Remove this. I am cropping the raw image now
+        ch_out_fmap = self.n_ch_output_features
+        self.pred_features = Mlp1by1(ch_in=self.ch_raw_image,
                                      ch_out=ch_out_fmap,
                                      ch_hidden=-1)  # this means there is NO hidden layer
 
@@ -125,10 +130,11 @@ class UNet(torch.nn.Module):
 
         # always add a pred_map to the rightmost layer (which had distance 0 from the end of the net)
         # TODO: Remove this concatenation
-        if self.concatenate_raw_image_to_fmap:
-            features = torch.cat((self.pred_features(x), raw_image), dim=-3)  # Here I am concatenating the raw image
-        else:
-            features = self.pred_features(x)
+        # if self.concatenate_raw_image_to_fmap:
+        #     features = torch.cat((self.pred_features(x), raw_image), dim=-3)  # Here I am concatenating the raw image
+        # else:
+        #    features = self.pred_features(x)
+        features = self.pred_features(raw_image)
 
         return UNEToutput(zwhere=zwhere,
                           logit=logit,
