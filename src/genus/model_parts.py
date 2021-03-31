@@ -425,21 +425,28 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Losses (these 3 are self-tuning)
         loss_boxes = bb_regression_cost + where_vq.commitment_cost
-        loss_bg = (out_background_bcwh - imgs_bcwh.detach()).pow(2).mean() + bg_vq.commitment_cost
-        loss_fg = (small_imgs_out - small_imgs_in.detach()).pow(2).mean() + instance_vq.commitment_cost
+###        loss_bg = (out_background_bcwh - imgs_bcwh.detach()).pow(2).mean() + bg_vq.commitment_cost
+###        loss_fg = (small_imgs_out - small_imgs_in.detach()).pow(2).mean() + instance_vq.commitment_cost
+###
+###        # Loss mixing (this is the triky one)
+###        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2).detach()
+###        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).detach()
+###        mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
+###        loss_mixing = mse_av + mask_overlap_cost + fgfraction_cost
 
-        # Loss mixing (this is the triky one)
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2).detach()
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).detach()
+        # loss_mse (combines loss_fg, loss_bg, loss_mixing)
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-        loss_mixing = mse_av #+ mask_overlap_cost + fgfraction_cost
+        loss = mse_av
+
 
         # Loss annealing (to automatically adjust annealing factor)
         g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
         loss_geco_annealing = self.annealing_factor * g_annealing.detach()
 
         # Put all together with logit_KL
-        loss = loss_bg + loss_fg + loss_mixing #+ loss_boxes + logit_kl + loss_geco_annealing
+        # loss = loss_bg + loss_fg + loss_mixing #+ loss_boxes + logit_kl + loss_geco_annealing
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
