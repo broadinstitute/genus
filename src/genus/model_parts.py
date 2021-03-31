@@ -432,7 +432,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2).detach()
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).detach()
         mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-        loss_mixing = mse_av + mask_overlap_cost + fgfraction_cost
+        loss_mixing = mse_av #+ mask_overlap_cost + fgfraction_cost
 
         # Loss annealing (to automatically adjust annealing factor)
         g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
