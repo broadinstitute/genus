@@ -99,6 +99,7 @@ class Quantizer(torch.nn.Module):
                                              requires_grad=False)
 
         # Variables used to keep track of the moving averages of the cluster means
+        self._log_num_embeddings = numpy.log(self.num_embeddings)
         self._decay = decay
         self._epsilon = epsilon
         self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float), requires_grad=False)
@@ -138,7 +139,7 @@ class Quantizer(torch.nn.Module):
             dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
             dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
             p = dn / torch.sum(dn)  # probability of each codeword. Shape = (num_embeddings)
-            perplexity = - (p * torch.log(p + 1E-8)).sum()  # this is actually the entropy of the codeword distribution
+            perplexity = - (p * torch.log(p + 1E-8)).sum() / self._log_num_embeddings  # Normalized entropy of the codeword distribution
 
         # Compute the quantized vectors
         zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)

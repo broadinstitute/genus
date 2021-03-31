@@ -203,7 +203,7 @@ def draw_img(imgs_in: torch.Tensor,
     bb_proposed = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
                                       width=imgs_in.shape[-2],
                                       height=imgs_in.shape[-1],
-                                      prob=1.0 - inference.sample_prob_k,
+                                      prob=torch.ones_like(inference.sample_prob_k) - inference.sample_prob_k,
                                       color="blue")
 
     bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
@@ -221,8 +221,9 @@ def draw_img(imgs_in: torch.Tensor,
     # Draw inferred and ideal bb on top of reconstructed image
     rec_imgs_no_bb = (inference.mixing_k1wh * inference.foreground_kcwh).sum(dim=-4)  # sum over boxes
     fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
+    bg_mask = torch.ones_like(fg_mask) - fg_mask
 
-    background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
+    background = bg_mask * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
     bb1 = bb_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
     bb2 = bb_ideal if draw_ideal_boxes else torch.zeros_like(rec_imgs_no_bb)
     bb = bb1 + bb2
@@ -469,6 +470,13 @@ def plot_generation(output: Output,
                        title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "c_grid_after_nms" + postfix)
+    fig_d = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                       n_col=5,
+                       n_padding=4,
+                       normalize=False,
+                       title='foreground, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "fg" + postfix)
     fig_d = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=5,
                        n_padding=4,
@@ -476,7 +484,6 @@ def plot_generation(output: Output,
                        title='background, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix + "bg" + postfix)
-
 
     mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
     fig_e = show_batch(mixing_fg_b1wh,
@@ -569,6 +576,14 @@ def plot_reconstruction_and_inference(output: Output,
                        title='prob_ranking, epoch= {0:6d}'.format(epoch),
                        experiment=experiment,
                        neptune_name=prefix+"prob_ranking"+postfix)
+
+    fig_d = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                       n_col=5,
+                       n_padding=4,
+                       normalize=False,
+                       title='foreground, epoch= {0:6d}'.format(epoch),
+                       experiment=experiment,
+                       neptune_name=prefix + "fg" + postfix)
 
     fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
                        n_col=5,
