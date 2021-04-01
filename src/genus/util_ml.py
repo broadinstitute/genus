@@ -598,65 +598,47 @@ class Grid_DPP(torch.nn.Module):
 
 def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
                                   posterior_std: torch.Tensor,
-                                  prior_mu: torch.Tensor,
-                                  prior_std: torch.Tensor,
                                   noisy_sampling: bool,
-                                  sample_from_prior: bool,
-                                  squeeze_mc: bool,
-                                  mc_samples: int = 1) -> DIST:
+                                  sample_from_prior: bool) -> DIST:
     """
-    Analytically computes KL divergence between two gaussian distributions
-    and draw a sample from either the prior or posterior depending of the values of :attr:`sample_from_prior`.
+    Analytically computes KL divergence between Gaussian posterior and N(0,1) prior.
+    Draw a sample from either the prior or posterior depending of the values of :attr:`sample_from_prior`.
 
     Args:
         posterior_mu: torch.Tensor with the posterior mean
         posterior_std: torch.Tensor with the posterior standard deviation
-        prior_mu: torch.Tensor with the prior mean
-        prior_std: torch.Tensor with the prior standard deviation
         noisy_sampling: if True a random sample is generated,
             if False the mode of the distribution (i.e. the mean) is returned.
         sample_from_prior: if True the sample is drawn from the prior distribution, if False the posterior distribution
             is used.
-        squeeze_mc: whether or not to squeeze the leading dimension corresponding to different mc_samples.
-            This has effect only if :attr:`mc_samples` == 1.
-        mc_samples: number of monte_carlo samples
 
     Returns:
         :class:`DIST` with the KL divergence and the sample from either the prior or posterior
         depending of the values of :attr:`sample_from_prior`. The shape of the sample and KL divergence is equal to
-        the common broadcast shape of the :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu`
-        and :attr:`prior_std`. If :attr:`mc_samples` > 1 or :attr:`squeeze_mc` is False a leading dimension is
-        added to the left to represent the different monte carlo samples
+        the common broadcast shape of the :attr:`posterior_mu`, :attr:`posterior_std`.
 
     Note:
-        :attr:`posterior_mu`, :attr:`posterior_std`, :attr:`prior_mu` and :attr:`prior_std`
-        must the broadcastable to a common shape.
+        :attr:`posterior_mu`, :attr:`posterior_std` must the broadcastable to a common shape.
 
     Note:
         The KL divergence is :math:`KL = \\int dz q(z) \\log \\left(p(z)/q(z)\\right)` where
         :math:`q(z)` is the posterior and :math:`p(z)` is the prior.
     """
-    post_mu, post_std, pr_mu, pr_std = broadcast_all(posterior_mu, posterior_std, prior_mu, prior_std)
-    random = torch.randn([mc_samples] + list(post_mu.shape), device=post_mu.device, dtype=post_mu.dtype)
+    post_mu, post_std = broadcast_all(posterior_mu, posterior_std)
+    random = torch.randn_like(post_mu)
 
-    # Compute the KL divergence
-    tmp = (post_std + pr_std) * (post_std - pr_std) + (post_mu - pr_mu).pow(2)
-    kl = (tmp / (2 * pr_std * pr_std) - post_std.log() + pr_std.log()).expand_as(random)
+    # Compute the KL divergence w.r.t. N(mu=0,std=1)
+    kl = 0.5 * (post_std.pow(2) + post_mu.pow(2) - 1.0 - 2.0 * post_std.log())
 
     # Sample
     if sample_from_prior:
         # working with the prior
-        sample = pr_mu + pr_std * random if noisy_sampling else pr_mu.expand_as(random)
+        sample = torch.zeros_like(random) + torch.ones_like(random) * random if noisy_sampling else torch.zeros_like(random)
     else:
         # working with the posterior
         sample = post_mu + post_std * random if noisy_sampling else post_mu.expand_as(random)
 
-    if squeeze_mc:
-        # Note that squeeze has effect only if the squeezed dimension has shape 1
-        sample = sample.squeeze(dim=0)
-        kl = kl.squeeze(dim=0)
-
-    return DIST(sample=sample, kl=kl)
+    return DIST(value=sample, kl=kl)
 
 
 def compute_entropy_bernoulli(logit: torch.Tensor):

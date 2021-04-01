@@ -266,3 +266,80 @@ class DecoderConv(nn.Module):
             y = module(y)
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
+
+class DecoderInstance(nn.Module):
+    """
+    Decode an vector into an image patch. It is a combination of dense layers and :class:`DecoderConv`.
+    """
+
+    def __init__(self, size: int, scale_factor: int, ch_out: int, dim_z: int):
+        """
+        Args:
+            dim_z: int, number of latent dimension
+            scale_factor: int, power of 2 for the increase of the spatial resolution after applying the dense layers
+            size: int, size of the patch to decode
+            ch_out: int, number of channels of the patch to decode
+        """
+        super(DecoderInstance, self).__init__()
+
+        self.size = size
+        self.ch_out = ch_out
+        self.dim_z = dim_z
+        self.scale_factor = scale_factor
+
+        self.ch_before_convolutions = 64
+        self.small_size = self.size // self.scale_factor
+        ch_flatten = self.ch_before_convolutions * self.small_size**2
+        ch_hidden = (ch_flatten + self.dim_z) //2
+
+        self.linear = torch.nn.Sequential(
+            torch.nn.Linear(in_features=self.dim_z, out_features=ch_hidden),         # shape: *, dim_z
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(in_features=ch_hidden, out_features=ch_flatten))        # shape: *, ch_flatten
+        self.conv = DecoderConv(ch_in=self.ch_before_convolutions, ch_out=self.ch_out, scale_factor=self.scale_factor)
+
+    def forward(self, x):
+        x1 = self.linear(x.flatten(end_dim=-2))  # shape: *, ch_flatten
+        x2 = self.conv(x1.view(-1, self.ch_before_convolutions, self.small_size, self.small_size))  # shape: *, ch_out, size, size
+        return x2.view(list(x.shape[:-1]) + list(x2.shape[-3:]))
+
+
+class EncoderInstance(nn.Module):
+    """
+    Encode a image patch into a vector. It is a combination of :class:`EncoderConv` with some dense layer at the end
+    """
+
+    def __init__(self, size: int, scale_factor: int, ch_in: int, dim_z: int):
+        """
+        Args:
+            size: int, size of the patch to encode
+            scale_factor: int, power of 2 reduction factor in the spatial resolutiuon of the patch before applying dense layers
+            ch_in: int, number of channels of the patch to encode
+            dim_z: int, number of latent dimension
+        """
+        super(EncoderInstance, self).__init__()
+
+        self.size = size
+        self.ch_in = ch_in
+        self.dim_z = dim_z
+        self.scale_factor = scale_factor
+
+        ch_after_convolutions = 64
+        small_size = self.size // self.scale_factor
+        ch_flatten = ch_after_convolutions * small_size**2
+        ch_hidden = (ch_flatten + self.dim_z) //2
+
+        self.encoder = EncoderConv(ch_in=self.ch_in, ch_out=ch_after_convolutions, scale_factor=self.scale_factor)
+        self.linear = torch.nn.Sequential(
+            torch.nn.Linear(in_features=ch_flatten, out_features=ch_hidden),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Linear(in_features=ch_hidden, out_features=2*self.dim_z)
+        )         # shape: *, 2*dim_z
+
+    def forward(self, x):
+        x1 = self.encoder(x.flatten(end_dim=-4))  # shape: *, ch_after_convolutions, small_size, small_size
+        x2 = self.linear(x1.flatten(start_dim=-3))  # shape: *, 2*self.dim_z
+        return x2.view(list(x.shape[:-3]) + [x2.shape[-1]])
+
+
+

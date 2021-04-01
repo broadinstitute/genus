@@ -1,25 +1,23 @@
 import torch
 from typing import Union
 import numpy
-
+import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
-from .conv import EncoderConv, DecoderConv, Mlp1by1
+from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, Quantizer
-from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, VQ
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal #Quantizer
+from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT #VQ
 from .non_max_suppression import NonMaxSuppression
 
 
-
-
-def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
-                                         bounding_boxes_k: BB,
-                                         pad_size: int,
-                                         min_box_size: float,
-                                         max_box_size: float) -> (BB, torch.Tensor):
-    """ Given the mixing probabilities and the predicted bounding_boxes it computes the optimal bounding_boxes and
-        the L2 cost between the predicted bounding_boxes and ideal bounding_boxes.
+@torch.no_grad()
+def optimal_bb(mixing_k1wh: torch.Tensor,
+               bounding_boxes_k: BB,
+               pad_size: int,
+               min_box_size: float,
+               max_box_size: float) -> BB:
+    """ Given the mixing probabilities it computes the optimal bounding_boxes
 
         Args:
             mixing_k1wh: torch.Tensor of shape :math:`(*, K, 1, W, H)`
@@ -29,8 +27,7 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
             max_box_size: maximum allowed size for the bounding box
 
         Returns:
-            The optimal bounding boxes in :class:`BB` of shape :math:`(*, K)` and
-            the regression_penalty of shape :math:`(*, K)`
+            The optimal bounding boxes in :class:`BB` of shape :math:`(*, K)`
 
         Note:
             The optimal bounding_box  is body-fitted around :math:`mask=(mixing > 0.5)`
@@ -41,87 +38,116 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
             It works with any number of leading dimensions. Each leading dimension is treated independently.
     """
 
-    with torch.no_grad():
 
-        # Compute the ideal Bounding boxes
-        mask_kwh = (mixing_k1wh.squeeze(-3) > 0.5).int()
-        mask_kh = torch.max(mask_kwh, dim=-2)[0]
-        mask_kw = torch.max(mask_kwh, dim=-1)[0]
-        mask_k = torch.max(mask_kw, dim=-1)[0]  # 0 if empty, 1 if non-empty
+    # Compute the ideal Bounding boxes
+    mask_kwh = (mixing_k1wh.squeeze(-3) > 0.5).int()
+    mask_kh = torch.max(mask_kwh, dim=-2)[0]
+    mask_kw = torch.max(mask_kwh, dim=-1)[0]
+    mask_k = torch.max(mask_kw, dim=-1)[0]  # 0 if empty, 1 if non-empty
 
-        plus_h = torch.arange(start=0, end=mask_kh.shape[-1], step=1,
-                              dtype=torch.float, device=mixing_k1wh.device) + 1
-        plus_w = torch.arange(start=0, end=mask_kw.shape[-1], step=1,
-                              dtype=torch.float, device=mixing_k1wh.device) + 1
-        minus_h = plus_h[-1] - plus_h + 1
-        minus_w = plus_w[-1] - plus_w + 1
+    plus_h = torch.arange(start=0, end=mask_kh.shape[-1], step=1,
+                          dtype=torch.float, device=mixing_k1wh.device) + 1
+    plus_w = torch.arange(start=0, end=mask_kw.shape[-1], step=1,
+                          dtype=torch.float, device=mixing_k1wh.device) + 1
+    minus_h = plus_h[-1] - plus_h + 1
+    minus_w = plus_w[-1] - plus_w + 1
 
-        # Find the coordinates of the full bounding boxes
-        full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
-        full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+    # Find the coordinates of the full bounding boxes
+    full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
+    full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
+    full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+    full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
 
-        # Find the coordinates of the empty bounding boxes
-        # TODO: empty bounding box should be centered
-        empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
-        empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
-        empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
-        empty_y3_k = bounding_boxes_k.by + 0.5 * min_box_size
+    # Find the coordinates of the empty bounding boxes
+    # TODO: empty bounding box should be centered
+    empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
+    empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
+    empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
+    empty_y3_k = bounding_boxes_k.by + 0.5 * min_box_size
 
-        # Ideal_bb depends whether box is full or empty
-        empty_k = (mask_k == 0)
-        ideal_x1_k = torch.where(empty_k, empty_x1_k, full_x1_k)
-        ideal_x3_k = torch.where(empty_k, empty_x3_k, full_x3_k)
-        ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
-        ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
+    # Ideal_bb depends whether box is full or empty
+    empty_k = (mask_k == 0)
+    ideal_x1_k = torch.where(empty_k, empty_x1_k, full_x1_k)
+    ideal_x3_k = torch.where(empty_k, empty_x3_k, full_x3_k)
+    ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
+    ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
 
-        # Compute the box coordinates (note the clamping of bw and bh)
-        ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
-        ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
-        ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
-        ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
+    # Compute the box coordinates (note the clamping of bw and bh)
+    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
+    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
+    ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
+    ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
 
-    # Outside the torch.no_grad() compute the regression cost
-    cost_bb_regression = (ideal_bx_k - bounding_boxes_k.bx).pow(2) + \
-                         (ideal_by_k - bounding_boxes_k.by).pow(2) + \
-                         (ideal_bw_k - bounding_boxes_k.bw).pow(2) + \
-                         (ideal_bh_k - bounding_boxes_k.bh).pow(2)
-
-    return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k), cost_bb_regression
+    return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k)
 
 
-def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box_size: float, max_box_size: float):
-    """ 
+def tgrid_to_bb(t_grid, rawimage_size_over_tgrid_size: int, min_box_size: float, max_box_size: float,
+                convert_to_box: bool=True) -> BB:
+    """
     Convert the output of the zwhere decoder to a list of bounding boxes
-    
+
     Args:
         t_grid: tensor of shape :math:`(B,4,w_grid,h_grid)` with values in (0,1)
-        width_input_image: width of the input image
-        height_input_image: height of the input image
+        rawimage_size_over_tgrid_size: int, power of 2. The difference in spatial resolution between the original image
+            and the head which predicts the bounding boxes
         min_box_size: minimum allowed size for the bounding boxes
         max_box_size: maximum allowed size for the bounding boxes
-        
+        convert_to_box: boo, if False keep the same shape, it true convert to list of boxes
+
     Returns:
         A container of type :class:`BB` with the bounding boxes of shape :math:`(B,N)`
-        where :math:`N = w_grid * h_grid`. 
+        where :math:`N = w_grid * h_grid`.
     """
-    grid_width, grid_height = t_grid.shape[-2:]
-    ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
-                           device=t_grid.device).unsqueeze(-1)  # shape: grid_width, 1
-    iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
-                           device=t_grid.device).unsqueeze(-2)  # shape: 1, grid_height
+    tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, split_size_or_sections=1, dim=-3)
+    with torch.no_grad():
+        batch, ch, grid_width, grid_height = t_grid.shape
+        assert ch==4
+        ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
+                               device=t_grid.device).unsqueeze(-1).expand_as(tx_grid)
+        iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
+                               device=t_grid.device).unsqueeze(-2).expand_as(tx_grid)
 
-    tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, 1, dim=-3)  # shapes: (b,1,grid_width,grid_height)
+    if convert_to_box:
+        tt = TT(tx=convert_to_box_list(tx_grid).squeeze(-1),
+                ty=convert_to_box_list(ty_grid).squeeze(-1),
+                tw=convert_to_box_list(tw_grid).squeeze(-1),
+                th=convert_to_box_list(th_grid).squeeze(-1),
+                ix=convert_to_box_list(ix_grid).squeeze(-1),
+                iy=convert_to_box_list(iy_grid).squeeze(-1))
+    else:
+        tt = TT(tx=tx_grid,
+                ty=ty_grid,
+                tw=tw_grid,
+                th=th_grid,
+                ix=ix_grid,
+                iy=iy_grid)
 
-    bx_grid = width_input_image * (ix_grid + tx_grid) / grid_width    # values in (0,width_input_image)
-    by_grid = height_input_image * (iy_grid + ty_grid) / grid_height  # values in (0,height_input_image)
-    bw_grid = min_box_size + (max_box_size - min_box_size) * tw_grid  # values in (min_box_size, max_box_size)
-    bh_grid = min_box_size + (max_box_size - min_box_size) * th_grid  # values in (min_box_size, max_box_size)
-    return BB(bx=convert_to_box_list(bx_grid).squeeze(-1),
-              by=convert_to_box_list(by_grid).squeeze(-1),
-              bw=convert_to_box_list(bw_grid).squeeze(-1),
-              bh=convert_to_box_list(bh_grid).squeeze(-1))
+    return tt_to_bb(tt=tt,
+                    rawimage_size_over_tgrid_size=rawimage_size_over_tgrid_size,
+                    min_box_size=min_box_size,
+                    max_box_size=max_box_size)
+
+
+def tt_to_bb(tt: TT,
+             rawimage_size_over_tgrid_size: int,
+             min_box_size: float, max_box_size: float) -> BB:
+    """ Transformation from :class:`TT` to :class:`BB` """
+    bx = (tt.ix + tt.tx) * rawimage_size_over_tgrid_size  # values in (0,width_input_image)
+    by = (tt.iy + tt.ty) * rawimage_size_over_tgrid_size  # values in (0,height_input_image)
+    bw = min_box_size + (max_box_size - min_box_size) * tt.tw  # values in (min_box_size, max_box_size)
+    bh = min_box_size + (max_box_size - min_box_size) * tt.th  # values in (min_box_size, max_box_size)
+    return BB(bx=bx, by=by, bw=bw, bh=bh)
+
+
+def bb_to_tt(bb: BB, rawimage_size_over_tgrid_size: int, min_box_size: float, max_box_size: float) -> TT:
+    """ Transformation from :class:`BB` to :class:`TT` """
+    tw = (bb.bw - min_box_size) / (max_box_size - min_box_size)
+    th = (bb.bh - min_box_size) / (max_box_size - min_box_size)
+    ix_plus_tx = bb.bx / rawimage_size_over_tgrid_size
+    iy_plus_ty = bb.by / rawimage_size_over_tgrid_size
+    ix, tx = ix_plus_tx.long(), ix_plus_tx % 1.0
+    iy, ty = iy_plus_ty.long(), iy_plus_ty % 1.0
+    return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
 
 
 def linear_exp_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
@@ -196,13 +222,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                kernel_size=1,
                                                                groups=4)
 
-        self.decoder_zinstance: DecoderConv = DecoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
-                                                          ch_in=config["architecture"]["zinstance_dim"],
-                                                          ch_out=config["input_image"]["ch_in"] + 1)
+        self.decoder_zinstance: DecoderInstance = DecoderInstance(size=config["architecture"]["glimpse_size"],
+                                                                  scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
+                                                                  dim_z=config["architecture"]["zinstance_dim"],
+                                                                  ch_out=config["input_image"]["ch_in"] + 1)
 
-        self.encoder_zinstance: EncoderConv = EncoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
-                                                          ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                          ch_out=2*config["architecture"]["zinstance_dim"])
+        self.encoder_zinstance: EncoderInstance = EncoderInstance(size=config["architecture"]["glimpse_size"],
+                                                                  scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
+                                                                  ch_in=config["architecture"]["unet_ch_feature_map"],
+                                                                  dim_z=config["architecture"]["zinstance_dim"])
 
         # Observation model
         self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
@@ -258,22 +286,26 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
-        zbg_mu, zbg_std = torch.split(unet_output.zbg, split_size_or_sections=2, dim=-3)
+        zbg_mu, zbg_std = torch.split(unet_output.zbg,
+                                      split_size_or_sections=unet_output.zbg.shape[-3]//2,
+                                      dim=-3)
         zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
-                                                  posterior_std=F.sofplus(zbg_std),
+                                                  posterior_std=F.softplus(zbg_std),
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
         out_background_bcwh = self.decoder_zbg(zbg.value)
 
         # 3. Bounding-Box decoding
-        zwhere_mu, zwhere_std = torch.split(unet_output.zwhere, split_size_or_sections=2, dim=-3)
+        zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
+                                            split_size_or_sections=unet_output.zwhere.shape[-3]//2,
+                                            dim=-3)
         zwhere: DIST = sample_and_kl_diagonal_normal(posterior_mu=zwhere_mu,
-                                                     posterior_std=F.sofplus(zwhere_std),
+                                                     posterior_std=F.softplus(zwhere_std),
                                                      noisy_sampling=noisy_sampling,
                                                      sample_from_prior=generate_synthetic_data)
-        bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere.value)),
-                                          width_input_image=width_raw_image,
-                                          height_input_image=height_raw_image,
+        t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
+        bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
+                                          rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1]/t_grid.shape[-1],
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
@@ -321,7 +353,65 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      original_height=score_grid.shape[-1])
             c_grid_after_nms = c_grid_before_nms * k_mask_grid
 
-        # 6. Compute KL divergence between the DPP prior and the posterior:
+
+        # 6. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
+        bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
+                                 by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
+                                 bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
+                                 bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
+        prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1),
+                                    dim=-1, index=nms_output.indices_k)
+
+
+        # 7. Crop the unet_features according to the selected boxes
+        batch_size, k_boxes = bounding_box_bk.bx.shape
+        unet_features_expanded = unet_output.features.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1)
+        cropped_feature_map = Cropper.crop(bounding_box=bounding_box_bk,
+                                           big_stuff=unet_features_expanded,
+                                           width_small=self.glimpse_size,
+                                           height_small=self.glimpse_size)
+
+        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
+        #small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+        #                             big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+        #                             width_small=self.glimpse_size,
+        #                             height_small=self.glimpse_size)
+
+        # 8. Encode, Sample, Decode zinstance
+        zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
+        zinstance_mu, zinstance_std = torch.split(zinstance_tmp, split_size_or_sections=zinstance_tmp.shape[-1]//2, dim=-1)
+        zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
+                                                        posterior_std=F.softplus(zinstance_std),
+                                                        noisy_sampling=noisy_sampling,
+                                                        sample_from_prior=generate_synthetic_data)
+        small_stuff_out = self.decoder_zinstance.forward(zinstance.value)
+
+        # 9. The last channel is a mask (i.e. there is a sigmoid non-linearity applied)
+        # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
+        # except inside the bounding boxes
+        small_imgs_out, small_weights_out = torch.split(small_stuff_out,
+                                                        split_size_or_sections=(small_stuff_out.shape[-3] - 1, 1),
+                                                        dim=-3)
+        out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                         small_stuff=small_imgs_out,
+                                         width_big=width_raw_image,
+                                         height_big=height_raw_image)
+        out_mask_bk1wh = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                          small_stuff=torch.sigmoid(small_weights_out),
+                                          width_big=width_raw_image,
+                                          height_big=height_raw_image)
+
+        # 10. Compute the mixing (using a softmax-like function)
+        # TODO: Double check what Space and Spair do
+        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
+        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
+        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+        fgfraction_av = mixing_fg_b1wh.mean()
+
+        # 11. Compute the KL divergences
+        # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
         #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
         # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
@@ -345,103 +435,97 @@ class InferenceAndGeneration(torch.nn.Module):
             logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
         else:
             logp_dpp_after_nms_mb = torch.zeros_like(entropy_b)
-        logit_kl = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
+        logit_kl_av = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
 
-        # 7. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
-        bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
-                                 by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
-                                 bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
-                                 bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
-        prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        # Compute the KL divergences of the Gaussian Posterior
+        # KL is at full strength if the object is certain and lower strength otherwise.
+        # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
+        indicator_bk = prob_bk.clamp(min=0.01).detach()
+        zbg_kl_av = zbg.kl.mean()
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
+        zinstance_kl_av = (zinstance.kl * indicator_bk[..., None]).mean()
 
-        # 8. Crop the unet_features according to the selected boxes
-        batch_size, k_boxes = bounding_box_bk.bx.shape
-        unet_features_expanded = unet_output.features.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1)
-        cropped_feature_map = Cropper.crop(bounding_box=bounding_box_bk,
-                                           big_stuff=unet_features_expanded,
-                                           width_small=self.glimpse_size,
-                                           height_small=self.glimpse_size)
+        # 12. Observation model
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+        mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
 
-        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
-        #small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-        #                             big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-        #                             width_small=self.glimpse_size,
-        #                             height_small=self.glimpse_size)
-
-        # 9. Encode, Quantize, Decode zinstance
-        zinstance = self.encoder_zinstance.forward(cropped_feature_map)  # shape: batch, k, -1
-        zinstance_mu, zinstance_std = torch.split(zinstance, split_size_or_sections=2, dim=-1)
-        zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
-                                                        posterior_std=F.sofplus(zinstance_std),
-                                                        noisy_sampling=noisy_sampling,
-                                                        sample_from_prior=generate_synthetic_data)
-
-        instance_vq: VQ = self.instance_quantizer(zinstance, axis_to_quantize=-3, generate_synthetic_data=False)
-        small_stuff_out = self.decoder_zinstance.forward(instance_vq.value)
-
-        # 10. The last channel is a mask (i.e. there is a sigmoid non-linearity applied)
-        # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
-        # except inside the bounding boxes
-        small_imgs_out, small_weights_out = torch.split(small_stuff_out,
-                                                        split_size_or_sections=(small_stuff_out.shape[-3] - 1, 1),
-                                                        dim=-3)
-        out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                         small_stuff=small_imgs_out,
-                                         width_big=width_raw_image,
-                                         height_big=height_raw_image)
-        out_mask_bk1wh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                          small_stuff=torch.sigmoid(small_weights_out),
-                                          width_big=width_raw_image,
-                                          height_big=height_raw_image)
-
-        # 11. Compute the mixing (using a softmax-like function)
-        # TODO: Double check what Space and Spair do
-        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
-        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
-        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
-
-        # Cost fg_fraction
-        fgfraction_av = mixing_fg_b1wh.mean()
-        fgfraction_too_small = (fgfraction_av < self.geco_target_fgfraction_min).detach()
-        fgfraction_too_large = (fgfraction_av > self.geco_target_fgfraction_max).detach()
-        fgfraction_cost = (fgfraction_av - self.geco_target_fgfraction_min).pow(2) * fgfraction_too_small + \
-                          (fgfraction_av - self.geco_target_fgfraction_max).pow(2) * fgfraction_too_large
-
+        # 13. Other cost functions
         # Cost for non-overlapping masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = mask_overlap_b1wh.mean()
 
         # Cost for ideal bounding boxes
-        bb_ideal_bk, bb_regression_bk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_bk1wh,
-                                                                             bounding_boxes_k=bounding_box_bk,
-                                                                             pad_size=self.pad_size_bb,
-                                                                             min_box_size=self.min_box_size,
-                                                                             max_box_size=self.max_box_size)
+        with torch.no_grad():
+            # Compute the ideal bounding boxes from the mixing probabilities
+            bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
+                                         bounding_boxes_k=bounding_box_bk,
+                                         pad_size=self.pad_size_bb,
+                                         min_box_size=self.min_box_size,
+                                         max_box_size=self.max_box_size)
 
-        # TODO: Remove this option
-        if self.bb_regression_always_active:
-            bb_regression_cost = bb_regression_bk.mean()
-        else:
-            is_active_bk = (prob_bk > 0.5)
-            bb_regression_cost = (is_active_bk * bb_regression_bk).mean()
+            # Convert bounding_boxes to the t_variable in [0,1]
+            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
+                                   rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1] / t_grid.shape[-1],
+                                   min_box_size=self.min_box_size,
+                                   max_box_size=self.max_box_size)
 
-        # Losses (these 3 are self-tuning)
-        loss_boxes = bb_regression_cost + where_vq.commitment_cost
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_fg_av = (mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4).mean()  # dividing by # of all point, i.e. (bg+fg)
-        mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).mean()  # dividing by # of all point, i.e. (bg+fg)
-        mse_av = mse_fg_av + mse_bg_av
-        loss_mse = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost
-        loss_mixing = mask_overlap_cost + fgfraction_cost
+            # Convert to tgrid_ideal
+            tgrid_ideal = torch.zeros_like(t_grid)
+            tgrid_ideal[:2] = 0.5  # i.e. default displacement is zero
+            tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
+            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
+            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
+            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
+            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
 
-        # Loss annealing (to automatically adjust annealing factor)
-        g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
-        loss_geco_annealing = self.annealing_factor * g_annealing.detach()
+        # TODO: Should I multiply by k_mask_grid so that only the selected boxes incurr in a cost?
+        bb_regression_cost = torch.mean(k_mask_grid * (tgrid_ideal - t_grid).pow(2))
 
-        # Put all together with logit_KL
-        loss = 100 * loss_mse + loss_mixing + loss_boxes + logit_kl + loss_geco_annealing
+        # GECO BUSINESS
+        with torch.no_grad():
+            # Loss annealing (to automatically adjust annealing factor)
+            g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
+
+            # MSE
+            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
+                                                max=self.geco_rawlambda_mse_max)
+            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
+                         torch.sign(mse_av - self.geco_target_mse_min)
+            mse_in_range = (mse_av > self.geco_target_mse_min) & \
+                           (mse_av < self.geco_target_mse_max)
+            g_mse = 2.0 * mse_in_range - 1.0
+
+            # FG_FRACTION
+            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
+                                                       max=self.geco_rawlambda_fgfraction_max)
+            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
+                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
+            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
+                                  (fgfraction_av < self.geco_target_fgfraction_max)
+            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
+
+            # NCELL_AV
+            # TODO: reactivete this if DPP parameters are learnable
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
+            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
+            #                                       max=self.geco_rawlambda_ncell_max)
+            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
+            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
+            #                torch.sign(ncell_av - self.geco_target_ncell_min)
+            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
+            #                  (ncell_av < self.geco_target_ncell_max)
+            # g_ncell = 2.0 * ncell_in_range - 1.0
+
+        # Put all the losses together
+        loss_geco = self.annealing_factor * g_annealing.detach() + \
+                    self.geco_rawlambda_mse * g_mse + \
+                    self.geco_rawlambda_fgfraction * g_fgfraction
+        loss_mse = lambda_mse.detach() * mse_av + lambda_fgfraction.detach() * fgfraction_av + mask_overlap_cost + \
+                   zinstance_kl_av + zbg_kl_av + logit_kl_av
+        loss_boxes = bb_regression_cost + zwhere_kl_av
+        loss_tot = loss_mse + loss_boxes + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -457,28 +541,20 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
-        metric = MetricMiniBatch(loss=loss,
+        metric = MetricMiniBatch(loss=loss_tot,
                                  # related to mixing
-                                 loss_mixing=loss_mixing.detach().item(),
                                  mse_av=mse_av.detach().item(),
                                  cost_mask_overlap_av=mask_overlap_cost.detach().item(),
-                                 cost_fgfraction=fgfraction_cost.detach().item(),
+                                 cost_fgfraction=(lambda_fgfraction.detach() * fgfraction_av).detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
+                                 kl_zinstance=zinstance_kl_av.detach().item(),
+                                 kl_zbg=zbg_kl_av.detach().item(),
                                  # related to boxes
                                  loss_boxes=loss_boxes.detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
-                                 commitment_zwhere=where_vq.commitment_cost.detach().item(),
-                                 perplexity_zwhere=where_vq.perplexity.detach().item(),
-                                 # related to foreground
-                                 loss_fg=mse_fg_av.detach().item(),
-                                 commitment_zinstance=instance_vq.commitment_cost.detach().item(),
-                                 perplexity_zinstance=instance_vq.perplexity.detach().item(),
-                                 # related to background
-                                 loss_bg=mse_bg_av.detach().item(),
-                                 commitment_zbg=bg_vq.commitment_cost.detach().item(),
-                                 perplexity_zbg=bg_vq.perplexity.detach().item(),
+                                 kl_zwhere=zwhere_kl_av.detach().item(),
                                  # related to probability
-                                 kl_logit=logit_kl.detach().item(),
+                                 kl_logit=logit_kl_av.detach().item(),
                                  ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # debug

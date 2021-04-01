@@ -154,7 +154,7 @@ class VQ(NamedTuple):
 
 class DIST(NamedTuple):
     """ Container for distribution sample and KL """
-    sample: torch.Tensor
+    value: torch.Tensor
     kl: torch.Tensor
 
 
@@ -168,6 +168,14 @@ class BB(NamedTuple):
     by: torch.Tensor
     bw: torch.Tensor
     bh: torch.Tensor
+
+class TT(NamedTuple):
+    tx: torch.Tensor
+    ty: torch.Tensor
+    tw: torch.Tensor
+    th: torch.Tensor
+    ix: torch.Tensor
+    iy: torch.Tensor
 
 
 class NmsOutput(NamedTuple):
@@ -246,24 +254,16 @@ class MetricMiniBatch(NamedTuple):
     """
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     # related to mixing
-    loss_mixing: float
     mse_av: float
     cost_mask_overlap_av: float
     cost_fgfraction: float
     fgfraction_av: float
+    kl_zinstance: float
+    kl_zbg: float
     # related to boxes
     loss_boxes: float
     cost_bb_regression_av: float
-    commitment_zwhere: float
-    perplexity_zwhere: float
-    # related to learning foreground
-    loss_fg: float
-    commitment_zinstance: float
-    perplexity_zinstance: float
-    # related to learning background
-    loss_bg: float
-    commitment_zbg: float
-    perplexity_zbg: float
+    kl_zwhere: float
     # probability
     kl_logit: float
     ncell_av: float

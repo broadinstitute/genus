@@ -72,7 +72,7 @@ class UNet(torch.nn.Module):
 
         self.ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
         self.encode_zwhere = Mlp1by1(ch_in=self.ch_in_zwhere,
-                                     ch_out=self.dim_zwhere,
+                                     ch_out=2*self.dim_zwhere,
                                      ch_hidden=(self.ch_in_zwhere + self.dim_zwhere)//2)
 
         self.ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
@@ -82,7 +82,7 @@ class UNet(torch.nn.Module):
 
         self.ch_in_bg = self.ch_list[-self.level_background_output - 1]
         self.encode_background = Mlp1by1(ch_in=self.ch_in_bg,
-                                         ch_out=self.dim_zbg,
+                                         ch_out=2*self.dim_zbg,
                                          ch_hidden=(self.ch_in_bg + self.dim_zbg) // 2)
 
     def forward(self, x: torch.Tensor, verbose: bool):
