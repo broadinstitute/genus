@@ -187,13 +187,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                grad_logit_max=config["loss"]["grad_logit_max"])
 
         # Encoder-Decoders
-        self.bg_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zbg_dim"],
-                                                 num_embeddings=config["architecture"]["zbg_K"])
-        self.instance_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zinstance_dim"],
-                                                       num_embeddings=config["architecture"]["zinstance_K"])
-        self.where_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zwhere_dim"],
-                                                    num_embeddings=config["architecture"]["zwhere_K"])
-
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
                                                     ch_out=config["input_image"]["ch_in"],
                                                     scale_factor=2**config["architecture"]["unet_n_max_pool"])
@@ -209,7 +202,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         self.encoder_zinstance: EncoderConv = EncoderConv(scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
                                                           ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                          ch_out=config["architecture"]["zinstance_dim"])
+                                                          ch_out=2*config["architecture"]["zinstance_dim"])
 
         # Observation model
         self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
@@ -265,16 +258,20 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
-        bg_vq: VQ = self.bg_quantizer(unet_output.zbg,
-                                      axis_to_quantize=-3,
-                                      generate_synthetic_data=generate_synthetic_data)
-        out_background_bcwh = self.decoder_zbg(bg_vq.value)
+        zbg_mu, zbg_std = torch.split(unet_output.zbg, split_size_or_sections=2, dim=-3)
+        zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
+                                                  posterior_std=F.sofplus(zbg_std),
+                                                  noisy_sampling=noisy_sampling,
+                                                  sample_from_prior=generate_synthetic_data)
+        out_background_bcwh = self.decoder_zbg(zbg.value)
 
         # 3. Bounding-Box decoding
-        where_vq: VQ = self.where_quantizer(unet_output.zwhere,
-                                            axis_to_quantize=-3,
-                                            generate_synthetic_data=generate_synthetic_data)
-        bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(where_vq.value)),
+        zwhere_mu, zwhere_std = torch.split(unet_output.zwhere, split_size_or_sections=2, dim=-3)
+        zwhere: DIST = sample_and_kl_diagonal_normal(posterior_mu=zwhere_mu,
+                                                     posterior_std=F.sofplus(zwhere_std),
+                                                     noisy_sampling=noisy_sampling,
+                                                     sample_from_prior=generate_synthetic_data)
+        bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere.value)),
                                           width_input_image=width_raw_image,
                                           height_input_image=height_raw_image,
                                           min_box_size=self.min_box_size,
@@ -372,7 +369,13 @@ class InferenceAndGeneration(torch.nn.Module):
         #                             height_small=self.glimpse_size)
 
         # 9. Encode, Quantize, Decode zinstance
-        zinstance = self.encoder_zinstance.forward(cropped_feature_map)  # shape: batch, k, ch, 2, 2
+        zinstance = self.encoder_zinstance.forward(cropped_feature_map)  # shape: batch, k, -1
+        zinstance_mu, zinstance_std = torch.split(zinstance, split_size_or_sections=2, dim=-1)
+        zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
+                                                        posterior_std=F.sofplus(zinstance_std),
+                                                        noisy_sampling=noisy_sampling,
+                                                        sample_from_prior=generate_synthetic_data)
+
         instance_vq: VQ = self.instance_quantizer(zinstance, axis_to_quantize=-3, generate_synthetic_data=False)
         small_stuff_out = self.decoder_zinstance.forward(instance_vq.value)
 
