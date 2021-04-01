@@ -365,10 +365,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                            width_small=self.glimpse_size,
                                            height_small=self.glimpse_size)
 
-        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-                                     width_small=self.glimpse_size,
-                                     height_small=self.glimpse_size)
+        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
+        #small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+        #                             big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+        #                             width_small=self.glimpse_size,
+        #                             height_small=self.glimpse_size)
 
         # 9. Encode, Quantize, Decode zinstance
         zinstance = self.encoder_zinstance.forward(cropped_feature_map)  # shape: batch, k, ch, 2, 2
@@ -381,15 +382,14 @@ class InferenceAndGeneration(torch.nn.Module):
         small_imgs_out, small_weights_out = torch.split(small_stuff_out,
                                                         split_size_or_sections=(small_stuff_out.shape[-3] - 1, 1),
                                                         dim=-3)
-
-        big_stuff_out = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                         small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out)), dim=-3),
+        out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                         small_stuff=small_imgs_out,
                                          width_big=width_raw_image,
-                                         height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
-
-        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff_out,
-                                                    split_size_or_sections=(big_stuff_out.shape[-3] - 1, 1),
-                                                    dim=-3)
+                                         height_big=height_raw_image)
+        out_mask_bk1wh = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                          small_stuff=torch.sigmoid(small_weights_out),
+                                          width_big=width_raw_image,
+                                          height_big=height_raw_image)
 
         # 11. Compute the mixing (using a softmax-like function)
         # TODO: Double check what Space and Spair do
@@ -425,28 +425,20 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Losses (these 3 are self-tuning)
         loss_boxes = bb_regression_cost + where_vq.commitment_cost
-        loss_bg = (out_background_bcwh - imgs_bcwh.detach()).pow(2).mean() + bg_vq.commitment_cost
-        loss_fg = (small_imgs_out - small_imgs_in.detach()).pow(2).mean() + instance_vq.commitment_cost
-
-        # Loss mixing (this is the triky one)
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2).detach()
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).detach()
-        mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-        loss_mixing = mse_av + mask_overlap_cost + fgfraction_cost
-
-        # loss_mse (combines loss_fg, loss_bg, loss_mixing)
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_av = (torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-        loss = mse_av
-
+        mse_fg_av = (mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4).mean()  # dividing by # of all point, i.e. (bg+fg)
+        mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).mean()  # dividing by # of all point, i.e. (bg+fg)
+        mse_av = mse_fg_av + mse_bg_av
+        loss_mse = mse_av + bg_vq.commitment_cost + instance_vq.commitment_cost
+        loss_mixing = mask_overlap_cost + fgfraction_cost
 
         # Loss annealing (to automatically adjust annealing factor)
         g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
         loss_geco_annealing = self.annealing_factor * g_annealing.detach()
 
         # Put all together with logit_KL
-        # loss = loss_bg + loss_fg + loss_mixing #+ loss_boxes + logit_kl + loss_geco_annealing
+        loss = 100 * loss_mse + loss_mixing + loss_boxes + logit_kl + loss_geco_annealing
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -475,11 +467,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                  commitment_zwhere=where_vq.commitment_cost.detach().item(),
                                  perplexity_zwhere=where_vq.perplexity.detach().item(),
                                  # related to foreground
-                                 loss_fg=loss_fg.detach().item(),
+                                 loss_fg=mse_fg_av.detach().item(),
                                  commitment_zinstance=instance_vq.commitment_cost.detach().item(),
                                  perplexity_zinstance=instance_vq.perplexity.detach().item(),
                                  # related to background
-                                 loss_bg=loss_bg.detach().item(),
+                                 loss_bg=mse_bg_av.detach().item(),
                                  commitment_zbg=bg_vq.commitment_cost.detach().item(),
                                  perplexity_zbg=bg_vq.perplexity.detach().item(),
                                  # related to probability
