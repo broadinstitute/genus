@@ -199,23 +199,20 @@ class InferenceAndGeneration(torch.nn.Module):
                                  weight=config["input_image"]["DPP_weight"],
                                  learnable_params=False)
 
-        self.unet: UNet = UNet(n_max_pool=config["architecture"]["unet_n_max_pool"],
-                               level_zwhere_and_logit_output=config["architecture"]["unet_level_boundingboxes"],
-                               level_background_output=config["architecture"]["unet_n_max_pool"],
-                               n_ch_output_features=config["architecture"]["unet_ch_feature_map"],
-                               ch_after_preprocessing=config["architecture"]["unet_ch_before_first_max_pool"],
-                               downsampling_factor_preprocessing=config["architecture"]["unet_spatial_downsampling_before_first_max_pool"],
+        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
+                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
+                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+                               ch_in=config["input_image"]["ch_in"],
+                               ch_out=config["architecture"]["unet_ch_feature_map"],
+                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
                                dim_zbg=config["architecture"]["zbg_dim"],
                                dim_zwhere=config["architecture"]["zwhere_dim"],
-                               dim_logit=1,
-                               ch_raw_image=config["input_image"]["ch_in"],
-                               concatenate_raw_image_to_fmap=True,
-                               grad_logit_max=config["loss"]["grad_logit_max"])
+                               dim_logit=1)
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
                                                     ch_out=config["input_image"]["ch_in"],
-                                                    scale_factor=2**config["architecture"]["unet_n_max_pool"])
+                                                    scale_factor=config["architecture"]["unet_scale_factor_background"])
 
         self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
                                                                out_channels=4,
@@ -223,12 +220,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                groups=4)
 
         self.decoder_zinstance: DecoderInstance = DecoderInstance(size=config["architecture"]["glimpse_size"],
-                                                                  scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
+                                                                  scale_factor=config["architecture"]["encoder_decoder_scale_factor"],
                                                                   dim_z=config["architecture"]["zinstance_dim"],
                                                                   ch_out=config["input_image"]["ch_in"] + 1)
 
         self.encoder_zinstance: EncoderInstance = EncoderInstance(size=config["architecture"]["glimpse_size"],
-                                                                  scale_factor=config["architecture"]["scale_factor_encoder_decoder"],
+                                                                  scale_factor=config["architecture"]["encoder_decoder_scale_factor"],
                                                                   ch_in=config["architecture"]["unet_ch_feature_map"],
                                                                   dim_z=config["architecture"]["zinstance_dim"])
 

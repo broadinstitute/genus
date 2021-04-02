@@ -1,45 +1,45 @@
 import torch
-from .conv import UnetUpBlock, UnetDownBlock, Mlp1by1, SameSpatialResolution
+from .conv import UnetUpBlock, UnetDownBlock, SameSpatialResolution
 from collections import deque
 from .namedtuple import UNEToutput
-from typing import Optional
+import numpy
 
 
 class UNet(torch.nn.Module):
     def __init__(self,
-                 n_max_pool: int,
-                 level_zwhere_and_logit_output: int,
-                 level_background_output: int,
-                 n_ch_output_features: int,
-                 ch_after_preprocessing: int,
-                 downsampling_factor_preprocessing: int,
+                 scale_factor_initial_layer: int,
+                 scale_factor_background: int,
+                 scale_factor_boundingboxes: int,
+                 ch_in: int,
+                 ch_out: int,
+                 ch_before_first_maxpool: int,
                  dim_zbg: int,
                  dim_zwhere: int,
-                 dim_logit: int,
-                 ch_raw_image: int,
-                 concatenate_raw_image_to_fmap: bool,
-                 grad_logit_max: Optional[float] = None):
+                 dim_logit: int):
+
         super().__init__()
 
         # Parameters UNet
-        self.n_max_pool = n_max_pool
-        self.level_zwhere_and_logit_output = level_zwhere_and_logit_output
-        self.level_background_output = level_background_output
-        self.n_ch_output_features = n_ch_output_features
-        self.ch_after_first_two_conv = ch_after_preprocessing
+        assert numpy.log2(float(scale_factor_initial_layer)) % 1.0 == 0
+        assert numpy.log2(float(scale_factor_background)) % 1.0 == 0
+        assert numpy.log2(float(scale_factor_boundingboxes)) % 1.0 == 0
+
+        self.n_max_pool = int(numpy.log2(float(scale_factor_background)))
+        self.level_zwhere_and_logit_output = int(numpy.log2(float(scale_factor_boundingboxes)))
+        self.scale_factor_initial_layer = scale_factor_initial_layer
+        self.level_background_output = self.n_max_pool
+        self.ch_raw_image = ch_in
+        self.ch_output_features = ch_out
+        self.ch_before_maxpool = ch_before_first_maxpool
         self.dim_zbg = dim_zbg
         self.dim_zwhere = dim_zwhere
         self.dim_logit = dim_logit
-        self.ch_raw_image = ch_raw_image
-        self.concatenate_raw_image_to_fmap = concatenate_raw_image_to_fmap
-        self.grad_logit_max = grad_logit_max
-        self.downsampling_factor_preprocessing = downsampling_factor_preprocessing
 
-        if self.downsampling_factor_preprocessing != 1:
-            raise NotImplementedError("At the moment downsampling during preprocessing should be 1")
+        if self.scale_factor_initial_layer != 1:
+            raise NotImplementedError("At the moment scale_factor_initial_layer should be 1")
 
         # Initializations
-        ch = self.ch_after_first_two_conv
+        ch = self.ch_before_maxpool
         j = 1
         self.j_list = [j]
         self.ch_list = [ch]
@@ -65,25 +65,35 @@ class UNet(torch.nn.Module):
             self.j_list.append(j)
             self.up_path.append(UnetUpBlock(ch_in=self.ch_list[-2], ch_out=self.ch_list[-1]))
 
-        # Prediction maps
-        self.pred_features = Mlp1by1(ch_in=self.ch_list[-1],
-                                     ch_out=self.n_ch_output_features,
-                                     ch_hidden=-1)  # this means there is NO hidden layer
+        # Prediction Heads
+        ch_in_features = self.ch_list[-1]
+        self.pred_features = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=ch_in_features, out_channels=ch_in_features//2, kernel_size=3, padding=1),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=ch_in_features//2, out_channels=self.ch_output_features, kernel_size=1, padding=0)
+        )
 
-        self.ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_zwhere = Mlp1by1(ch_in=self.ch_in_zwhere,
-                                     ch_out=2*self.dim_zwhere,
-                                     ch_hidden=(self.ch_in_zwhere + self.dim_zwhere)//2)
+        ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
+        self.encode_logit = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=ch_in_logit, out_channels=ch_in_logit//2, kernel_size=3, padding=1),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=ch_in_logit//2, out_channels=self.dim_logit, kernel_size=1, padding=0)
+        )
 
-        self.ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_logit = Mlp1by1(ch_in=self.ch_in_logit,
-                                    ch_out=self.dim_logit,
-                                    ch_hidden=(self.ch_in_logit + self.dim_logit) // 2)
+        # These two have a factor of 2 in the out_channels b/c I need to predict both mu,std
+        ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
+        self.encode_zwhere = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=ch_in_zwhere, out_channels=ch_in_zwhere//2, kernel_size=3, padding=1),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=ch_in_zwhere//2, out_channels=2*self.dim_zwhere, kernel_size=1, padding=0)
+        )
 
-        self.ch_in_bg = self.ch_list[-self.level_background_output - 1]
-        self.encode_background = Mlp1by1(ch_in=self.ch_in_bg,
-                                         ch_out=2*self.dim_zbg,
-                                         ch_hidden=(self.ch_in_bg + self.dim_zbg) // 2)
+        ch_in_bg = self.ch_list[-self.level_background_output - 1]
+        self.encode_background = torch.nn.Sequential(
+            torch.nn.Conv2d(in_channels=ch_in_bg, out_channels=ch_in_bg//2, kernel_size=3, padding=1),
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=ch_in_bg//2, out_channels=2*self.dim_zbg, kernel_size=1, padding=0)
+        )
 
     def forward(self, x: torch.Tensor, verbose: bool):
         # raw_image = x
@@ -107,12 +117,12 @@ class UNet(torch.nn.Module):
         zwhere, logit, zbg = None, None, None
         for i, up in enumerate(self.up_path):
             dist_to_end_of_net = self.n_max_pool - i
+
+            # print("DEBUG", dist_to_end_of_net, self.level_zwhere_and_logit_output)
+
             if dist_to_end_of_net == self.level_zwhere_and_logit_output:
                 zwhere = self.encode_zwhere(x)
                 logit = self.encode_logit(x)
-                # TODO: Remove this hook
-                # if self.training and self.grad_logit_max is not None:
-                #    logit.register_hook(lambda grad: grad.clamp(min=-self.grad_logit_max, max=self.grad_logit_max))
 
             if dist_to_end_of_net == self.level_background_output:
                 zbg = self.encode_background(x)  # only few channels needed for predicting bg
