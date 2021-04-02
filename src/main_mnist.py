@@ -22,13 +22,13 @@ numpy.random.seed(0)
 
 config = load_yaml_as_dict("./config.yaml")
 
-#exp = None
-neptune.set_project(config["neptune_project"])
-exp: neptune.experiments.Experiment = \
-    neptune.create_experiment(params=flatten_dict(config),
-                              upload_source_files=["./main_mnist.py", "./config.yaml"],
-                              upload_stdout=True,
-                              upload_stderr=True)
+exp = None
+#neptune.set_project(config["neptune_project"])
+#exp: neptune.experiments.Experiment = \
+#    neptune.create_experiment(params=flatten_dict(config),
+#                              upload_source_files=["./main_mnist.py", "./config.yaml"],
+#                              upload_stdout=True,
+#                              upload_stderr=True)
 
 # Get the training and test data
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")

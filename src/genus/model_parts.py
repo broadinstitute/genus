@@ -6,7 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal #Quantizer
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, Quantizer, sample_and_kl_diagonal_normal #Quantizer
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT #VQ
 from .non_max_suppression import NonMaxSuppression
 
@@ -100,8 +100,7 @@ def tgrid_to_bb(t_grid, rawimage_size_over_tgrid_size: int, min_box_size: float,
     """
     tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, split_size_or_sections=1, dim=-3)
     with torch.no_grad():
-        batch, ch, grid_width, grid_height = t_grid.shape
-        assert ch==4
+        grid_width, grid_height = t_grid.shape[-2:]
         ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
                                device=t_grid.device).unsqueeze(-1).expand_as(tx_grid)
         iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
@@ -210,9 +209,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                dim_logit=1)
 
         # Encoder-Decoders
+        self.bg_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zbg_dim"],
+                                                 num_embeddings=256)
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
                                                     ch_out=config["input_image"]["ch_in"],
                                                     scale_factor=config["architecture"]["unet_scale_factor_background"])
+
 
         self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
                                                                out_channels=4,
@@ -290,6 +292,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   posterior_std=F.softplus(zbg_std),
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
+####        vq_bg: VQ = self.bg_quantizer(unet_output.zbg,
+####                                      axis_to_quantize=-3,
+####                                      generate_synthetic_data=generate_synthetic_data)
+
         out_background_bcwh = self.decoder_zbg(zbg.value)
 
         # 3. Bounding-Box decoding
@@ -400,7 +406,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                           height_big=height_raw_image)
 
         # 10. Compute the mixing (using a softmax-like function)
-        # TODO: Double check what Space and Spair do
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
@@ -468,22 +473,28 @@ class InferenceAndGeneration(torch.nn.Module):
                                    max_box_size=self.max_box_size)
 
             # Convert to tgrid_ideal
+            bb_mask_grid = torch.zeros_like(t_grid)
             tgrid_ideal = torch.zeros_like(t_grid)
-            tgrid_ideal[:2] = 0.5  # i.e. default displacement is zero
-            tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
-            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
-            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
-            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
-            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
-            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
+            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
+            #tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+            #tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
+            tgrid_ideal[-2:] = 0.5 # i.e. default size of bounding boxes is average
 
-        # TODO: Should I multiply by k_mask_grid so that only the selected boxes incurr in a cost?
-        bb_regression_cost = torch.mean(k_mask_grid * (tgrid_ideal - t_grid).pow(2))
+            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
+            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
+            tgrid_ideal[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = torch.stack((tt_ideal_bk.tx,
+                                                                                   tt_ideal_bk.ty,
+                                                                                   tt_ideal_bk.tw,
+                                                                                   tt_ideal_bk.th), dim=-1)
+        # Outside torch.no_grad() compute the bb_regression_cost
+        # TODO: Compute regression for all or only some of the boxes?
+        # bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
+        bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
 
         # GECO BUSINESS
         with torch.no_grad():
             # Loss annealing (to automatically adjust annealing factor)
-            g_annealing = 2 * (mse_av < 3.0 * self.geco_target_mse_max) - 1
+            g_annealing = 2 * (mse_av < 5.0 * self.geco_target_mse_max) - 1
 
             # MSE
             self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
@@ -558,6 +569,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=self.annealing_factor.detach().item(),
+                                 lambda_mse=lambda_mse.detach().item(),
+                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
