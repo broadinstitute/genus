@@ -482,10 +482,11 @@ class InferenceAndGeneration(torch.nn.Module):
 
             b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
             bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
-            tgrid_ideal[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = torch.stack((tt_ideal_bk.tx,
-                                                                                   tt_ideal_bk.ty,
-                                                                                   tt_ideal_bk.tw,
-                                                                                   tt_ideal_bk.th), dim=-1)
+            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
+            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
+            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
+            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
+
         # Outside torch.no_grad() compute the bb_regression_cost
         # TODO: Compute regression for all or only some of the boxes?
         # bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
