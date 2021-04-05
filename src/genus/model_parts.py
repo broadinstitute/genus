@@ -531,7 +531,7 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco = self.annealing_factor * g_annealing.detach() + \
                     self.geco_rawlambda_mse * g_mse + \
                     self.geco_rawlambda_fgfraction * g_fgfraction
-        loss_mse = lambda_mse.detach() * mse_av + lambda_fgfraction.detach() * fgfraction_av + mask_overlap_cost + \
+        loss_mse = lambda_mse.detach() * (mse_av + lambda_fgfraction.detach() * fgfraction_av + mask_overlap_cost) + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av
         loss_boxes = bb_regression_cost + zwhere_kl_av
         loss_tot = loss_mse + loss_boxes + loss_geco
