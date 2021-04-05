@@ -375,7 +375,7 @@ def show_batch(images: torch.Tensor,
         images = images.cpu()
 
     # Always normalize the image in (0,1) either using min_max of tensor or normalize_range
-    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, range=normalize_range,
+    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, value_range=normalize_range,
                            scale_each=False, pad_value=pad_value)
         
     fig = plt.figure(figsize=figsize)
@@ -386,9 +386,8 @@ def show_batch(images: torch.Tensor,
     fig.tight_layout()
 
     if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
-
+        experiment[neptune_name].upload(fig)
+        
     plt.close(fig)
     return fig
 

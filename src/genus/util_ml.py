@@ -432,7 +432,9 @@ class FiniteDPP(Distribution):
             for j in range(rand.shape[-1]):
                 c = rand[..., j] < k_matrix[..., j, j]
                 value[..., j] = c
-                k_matrix[..., j, j] -= torch.tensor(~c, dtype=k_matrix.dtype, device=k_matrix.device)
+               #  k_matrix[..., j, j] -= torch.tensor(~c, dtype=k_matrix.dtype, device=k_matrix.device)
+                k_matrix[..., j, j] -= (~c).clone().detach().to(dtype=k_matrix.dtype, device=k_matrix.device)
+
                 k_matrix[..., j + 1:, j] /= k_matrix[..., j, j].unsqueeze(-1)
                 k_matrix[..., j + 1:, j + 1:] -= \
                     k_matrix[..., j + 1:, j].unsqueeze(-1) * k_matrix[..., j, j + 1:].unsqueeze(-2)

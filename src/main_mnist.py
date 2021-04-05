@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import neptune
+import neptune.new as neptune
 from genus.util_logging import log_object_as_artifact, log_model_summary, log_many_metrics
 from genus.model import *
 from genus.util_vis import show_batch, plot_reconstruction_and_inference, plot_generation, plot_segmentation
@@ -21,14 +21,15 @@ numpy.random.seed(0)
 
 
 config = load_yaml_as_dict("./config.yaml")
+exp = neptune.init(project='dalessioluca/genus-new',
+                   source_files=["*.py", "*.yaml"],
+                   mode="async",
+                   capture_stdout=True,
+                   capture_stderr=True,
+                   capture_hardware_metrics=True)
 
-# exp = None
-neptune.set_project(config["neptune_project"])
-exp: neptune.experiments.Experiment = \
-    neptune.create_experiment(params=flatten_dict(config),
-                              upload_source_files=["./main_mnist.py", "./config.yaml"],
-                              upload_stdout=True,
-                              upload_stderr=True)
+exp['config'] = config
+
 
 # Get the training and test data
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")

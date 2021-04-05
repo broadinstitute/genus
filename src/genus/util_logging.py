@@ -4,7 +4,6 @@ import numpy
 from typing import Union
 import matplotlib.figure
 from typing import Optional, List
-from neptunecontrib.api import log_chart
 from .namedtuple import ConcordanceIntMask
 from .util import save_obj
 
@@ -19,26 +18,28 @@ def log_img_only(name: str,
         print("inside log_img_only -> "+name)
 
     if experiment is not None:
-        experiment.log_image(name, fig)
+        experiment[name].upload(fig)
 
     if verbose:
         print("leaving log_img_only -> "+name)
 
 
-def log_img_and_chart(name: str,
-                      fig: matplotlib.figure.Figure,
-                      experiment:  Optional[neptune.experiments.Experiment],
-                      verbose: bool = False):
-    if verbose:
-        print("inside log_img_and_chart -> "+name)
-
-    if experiment is not None:
-        log_chart(name, fig, experiment)
-        experiment.log_image(name, fig)
-
-    if verbose:
-        print("leaving log_img_and_chart -> "+name)
-
+#def log_img_and_chart(name: str,
+#                      fig: matplotlib.figure.Figure,
+#                      experiment:  Optional[neptune.experiments.Experiment],
+#                      verbose: bool = False):
+#    if verbose:
+#        print("inside log_img_and_chart -> "+name)
+#
+#    if experiment is not None:
+#        experiment[neptune_name].upload(fig)
+#        
+#        log_chart(name, fig, experiment)
+#        experiment.log_image(name, fig)
+#
+#    if verbose:
+#        print("leaving log_img_and_chart -> "+name)
+#
 
 def log_model_summary(model: torch.nn.Module,
                       experiment: Optional[neptune.experiments.Experiment],
@@ -50,7 +51,8 @@ def log_model_summary(model: torch.nn.Module,
         for x in model.__str__().split('\n'):
             # replace leading spaces with '-' character
             n = len(x) - len(x.lstrip(' '))
-            experiment.log_text("model summary", '-' * n + x)
+            token = '-' * n + x
+            experiment['model_summary'].log(token)
 
     if verbose:
         print("leaving log_model_summary")
@@ -66,25 +68,25 @@ def log_object_as_artifact(name: str,
     if experiment is not None:
         path = name+".pt"
         save_obj(obj=obj, path=path)
-        experiment.log_artifact(path)
+        experiment[name].upload(path)
 
     if verbose:
         print("leaving log_object_as_artifact")
 
 
-def log_matplotlib_as_png(name: str,
-                          fig: matplotlib.figure.Figure,
-                          experiment: Optional[neptune.experiments.Experiment],
-                          verbose: bool = False):
-    if verbose:
-        print("log_matplotlib_as_png")
-
-    if experiment is not None:
-        fig.savefig(name+".png")  # save to local file
-        experiment.log_image(name, name+".png")  # log file to neptune
-
-    if verbose:
-        print("leaving log_matplotlib_as_png")
+#def log_matplotlib_as_png(name: str,
+#                          fig: matplotlib.figure.Figure,
+#                          experiment: Optional[neptune.experiments.Experiment],
+#                          verbose: bool = False):
+#    if verbose:
+#        print("log_matplotlib_as_png")
+#
+#    if experiment is not None:
+#        fig.savefig(name+".png")  # save to local file
+#        experiment.log_image(name, name+".png")  # log file to neptune
+#
+#    if verbose:
+#        print("leaving log_matplotlib_as_png")
 
 
 def log_many_metrics(metrics: Union[dict, tuple],
@@ -96,13 +98,13 @@ def log_many_metrics(metrics: Union[dict, tuple],
 
     def log_internal(_exp, _key, _value):
         if isinstance(_value, float) or isinstance(_value, int):
-            _exp.log_metric(_key, _value)
+            _exp[_key].log(_value)
         elif isinstance(_value, numpy.ndarray):
             for i, x in enumerate(_value):
-                _exp.log_metric(_key + "_" + str(i), x)
+                _exp[_key + "_" + str(i)].log(x)
         elif isinstance(_value, torch.Tensor):
             for i, x in enumerate(_value):
-                _exp.log_metric(_key + "_" + str(i), x.item())
+                _exp[_key + "_" + str(i)].log(x.item())
         else:
             print(_key, type(_value), _value)
             raise Exception
@@ -160,7 +162,7 @@ def log_last_ckpt(name: str,
     save_obj(obj=ckpt, path=path)
     print("logging artifact")
     if experiment is not None:
-        experiment.log_artifact(path)
+        experiment(name).upload(path)
 
     if verbose:
         print("leaving log_last_ckpt")

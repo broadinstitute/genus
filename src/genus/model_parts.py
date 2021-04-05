@@ -53,17 +53,18 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
     minus_w = plus_w[-1] - plus_w + 1
 
     # Find the coordinates of the full bounding boxes
-    full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-    full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-    full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
-    full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+    EPS=1E-3
+    full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
+    full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
+    full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0.0, max=mask_kh.shape[-1]).float()
+    full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0.0, max=mask_kh.shape[-1]).float()
 
     # Find the coordinates of the empty bounding boxes
     # TODO: empty bounding box should be centered
-    empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
-    empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
-    empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
-    empty_y3_k = bounding_boxes_k.by + 0.5 * min_box_size
+    empty_x1_k = (bounding_boxes_k.bx - 0.5 * min_box_size).clamp(min=0.0, max=mask_kw.shape[-1])
+    empty_x3_k = (bounding_boxes_k.bx + 0.5 * min_box_size).clamp(min=0.0, max=mask_kw.shape[-1])
+    empty_y1_k = (bounding_boxes_k.by - 0.5 * min_box_size).clamp(min=0.0, max=mask_kh.shape[-1])
+    empty_y3_k = (bounding_boxes_k.by + 0.5 * min_box_size).clamp(min=0.0, max=mask_kh.shape[-1])
 
     # Ideal_bb depends whether box is full or empty
     empty_k = (mask_k == 0)
@@ -73,10 +74,14 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
     ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
 
     # Compute the box coordinates (note the clamping of bw and bh)
-    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
-    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
+    EPS=1E-3
+    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k).clamp(min=EPS, max=mask_kw.shape[-1]-EPS)
+    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k).clamp(min=EPS, max=mask_kw.shape[-1]-EPS)
     ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
     ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
+    
+    #print("optimal_bb -->",torch.min(ideal_bx_k), torch.max(ideal_bx_k))
+    #print("optimal_bb -->",torch.min(ideal_by_k), torch.max(ideal_by_k))
 
     return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k)
 
@@ -144,6 +149,10 @@ def bb_to_tt(bb: BB, rawimage_size_over_tgrid_size: int, min_box_size: float, ma
     th = (bb.bh - min_box_size) / (max_box_size - min_box_size)
     ix_plus_tx = bb.bx / rawimage_size_over_tgrid_size
     iy_plus_ty = bb.by / rawimage_size_over_tgrid_size
+    
+    #print("bb_to_tt -->",torch.min(ix_plus_tx), torch.max(ix_plus_tx))
+    #print("bb_to_tt -->",torch.min(iy_plus_ty), torch.max(iy_plus_ty))
+    
     ix, tx = ix_plus_tx.long(), ix_plus_tx % 1.0
     iy, ty = iy_plus_ty.long(), iy_plus_ty % 1.0
     return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
@@ -480,6 +489,10 @@ class InferenceAndGeneration(torch.nn.Module):
             #tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
             tgrid_ideal[-2:] = 0.5 # i.e. default size of bounding boxes is average
 
+            #print(t_grid.shape)
+            #print(torch.min(tt_ideal_bk.ix), torch.max(tt_ideal_bk.ix))
+            #print(torch.min(tt_ideal_bk.ix), torch.max(tt_ideal_bk.ix))
+                
             b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
             bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
             tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
