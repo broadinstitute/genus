@@ -416,7 +416,6 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
-        fgfraction_av = mixing_fg_b1wh.mean()
 
         # 11. Compute the KL divergences
         # Compute KL divergence between the DPP prior and the posterior:
@@ -515,6 +514,7 @@ class InferenceAndGeneration(torch.nn.Module):
             g_mse = 2.0 * mse_in_range - 1.0
 
             # FG_FRACTION
+            fgfraction_av = (mixing_fg_b1wh > 0.5).float().mean()
             self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
                                                        max=self.geco_rawlambda_fgfraction_max)
             lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
@@ -539,7 +539,8 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco = self.annealing_factor * g_annealing.detach() + \
                     self.geco_rawlambda_mse * g_mse + \
                     self.geco_rawlambda_fgfraction * g_fgfraction
-        loss_mse = lambda_mse.detach() * (mse_av + lambda_fgfraction.detach() * fgfraction_av + mask_overlap_cost) + \
+        loss_mse = lambda_mse.detach() * (mse_av + mask_overlap_cost) + \
+                   lambda_fgfraction.detach() * mixing_fg_b1wh.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av
         loss_boxes = bb_regression_cost + zwhere_kl_av
         loss_tot = loss_mse + loss_boxes + loss_geco
@@ -567,7 +568,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # terms in the loss function
                                  cost_mse=(lambda_mse * mse_av).detach().item(),
                                  cost_mask_overlap_av=(lambda_mse * mask_overlap_cost).detach().item(),
-                                 cost_fgfraction=(lambda_mse * lambda_fgfraction * fgfraction_av).detach().item(),
+                                 cost_fgfraction=(lambda_fgfraction * mixing_fg_b1wh.mean()).detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
                                  kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),

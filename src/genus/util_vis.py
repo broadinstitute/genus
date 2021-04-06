@@ -3,6 +3,7 @@ import PIL.ImageDraw
 import torch
 import numpy
 import neptune.new as neptune
+from neptune.new.types import File
 import skimage.color
 import skimage.morphology
 from typing import Tuple, Optional, Union
@@ -179,7 +180,11 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
+        # experiment[neptune_name].log(fig)
+        tmp_file_name = neptune_name.replace("/", "_")
+        fig.savefig(tmp_file_name + ".png")
+        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+
     plt.close(fig)
     return fig
 
@@ -310,7 +315,10 @@ def plot_grid(img,
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
+        # experiment[neptune_name].log(fig)
+        tmp_file_name = neptune_name.replace("/", "_")
+        fig.savefig(tmp_file_name + ".png")
+        experiment[neptune_name].log(File(tmp_file_name + ".png"))
     plt.close(fig)
     return fig
 
@@ -340,50 +348,10 @@ def plot_img_and_seg(img: torch.Tensor,
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
-    plt.close(fig)
-    return fig
-
-
-def show_batch(images: torch.Tensor,
-               n_col: int = 4,
-               n_padding: int = 10,
-               n_mc_samples: int = 1,
-               title: Optional[str] = None,
-               pad_value: int = 1,
-               normalize: bool = False,
-               normalize_range: Optional[tuple] = None,
-               figsize: Optional[Tuple[float, float]] = None,
-               experiment: Optional[neptune.run.Run] = None,
-               neptune_name: Optional[str] = None):
-    """
-    Visualize a torch tensor of shape: (*,  ch, width, height)
-    It works for any number of leading dimensions
-    """
-    assert len(images.shape) >= 4  # *, ch, width, height
-
-    if len(images.shape) > 4:
-        images = images[:n_mc_samples].flatten(end_dim=-4)
-    else:
-        images = images.flatten(end_dim=-4)  # -1, ch, width, height
-
-    if images.device != "cpu":
-        images = images.cpu()
-
-    # Always normalize the image in (0,1) either using min_max of tensor or normalize_range
-    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, value_range=normalize_range,
-                           scale_each=False, pad_value=pad_value)
-        
-    fig = plt.figure(figsize=figsize)
-    plt.imshow(grid.detach().permute(1, 2, 0).squeeze(-1).numpy())
-    # plt.axis("off")
-    if isinstance(title, str):
-        plt.title(title)
-    fig.tight_layout()
-
-    if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
-        
+        # experiment[neptune_name].log(fig)
+        tmp_file_name = neptune_name.replace("/", "_")
+        fig.savefig(tmp_file_name + ".png")
+        experiment[neptune_name].log(File(tmp_file_name + ".png"))
     plt.close(fig)
     return fig
 
@@ -428,7 +396,76 @@ def plot_tiling(tiling,
     fig.tight_layout()
 
     if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
+        # experiment[neptune_name].log(fig)
+        fig.savefig(neptune_name + ".png")
+        experiment[neptune_name].log(File(neptune_name + ".png"))
+    plt.close(fig)
+    return fig
+
+
+def plot_concordance(concordance,
+                     figsize: tuple = (12, 12),
+                     experiment: Optional[neptune.run.Run] = None,
+                     neptune_name: Optional[str] = None):
+    fig, axes = plt.subplots(figsize=figsize)
+    axes.imshow(concordance.intersection_mask.cpu(), cmap='gray')
+    axes.set_title("intersection mask, iou=" + str(concordance.iou))
+
+    fig.tight_layout()
+    if (neptune_name is not None) and (experiment is not None):
+        # experiment[neptune_name].log(fig)
+        tmp_file_name = neptune_name.replace("/", "_")
+        fig.savefig(tmp_file_name + ".png")
+        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+    plt.close(fig)
+    return fig
+
+
+# ---------------------- show_batch and derivative
+
+
+def show_batch(images: torch.Tensor,
+               n_col: int = 4,
+               n_padding: int = 10,
+               n_mc_samples: int = 1,
+               title: Optional[str] = None,
+               pad_value: int = 1,
+               normalize: bool = False,
+               normalize_range: Optional[tuple] = None,
+               figsize: Optional[Tuple[float, float]] = None,
+               experiment: Optional[neptune.run.Run] = None,
+               neptune_name: Optional[str] = None):
+    """
+    Visualize a torch tensor of shape: (*,  ch, width, height)
+    It works for any number of leading dimensions
+    """
+    assert len(images.shape) >= 4  # *, ch, width, height
+
+    if len(images.shape) > 4:
+        images = images[:n_mc_samples].flatten(end_dim=-4)
+    else:
+        images = images.flatten(end_dim=-4)  # -1, ch, width, height
+
+    if images.device != "cpu":
+        images = images.cpu()
+
+    # Always normalize the image in (0,1) either using min_max of tensor or normalize_range
+    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, value_range=normalize_range,
+                           scale_each=False, pad_value=pad_value)
+
+    fig = plt.figure(figsize=figsize)
+    plt.imshow(grid.detach().permute(1, 2, 0).squeeze(-1).numpy())
+    # plt.axis("off")
+    if isinstance(title, str):
+        plt.title(title)
+    fig.tight_layout()
+
+    if (neptune_name is not None) and (experiment is not None):
+        # experiment[neptune_name].log(fig)
+        tmp_file_name = neptune_name.replace("/", "_")
+        fig.savefig(tmp_file_name + ".png")
+        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+
     plt.close(fig)
     return fig
 
@@ -663,16 +700,3 @@ def plot_segmentation(segmentation: Segmentation,
     return fig_a, fig_b
 
 
-def plot_concordance(concordance,
-                     figsize: tuple = (12, 12),
-                     experiment: Optional[neptune.run.Run] = None,
-                     neptune_name: Optional[str] = None):
-    fig, axes = plt.subplots(figsize=figsize)
-    axes.imshow(concordance.intersection_mask.cpu(), cmap='gray')
-    axes.set_title("intersection mask, iou=" + str(concordance.iou))
-
-    fig.tight_layout()
-    if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].log(fig)
-    plt.close(fig)
-    return fig

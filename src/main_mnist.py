@@ -190,7 +190,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                              draw_bg=True)
                     plot_reconstruction_and_inference(error_output_noisy,
                                                       epoch=epoch,
-                                                      prefix="error_noisy_",
+                                                      prefix="error_noisy",
                                                       experiment=exp)
 
                     error_output_clean: Output = vae.forward(error_test_img,
@@ -202,7 +202,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                              draw_bg=True)
                     plot_reconstruction_and_inference(error_output_clean,
                                                       epoch=epoch,
-                                                      prefix="error_clean_",
+                                                      prefix="error_clean",
                                                       experiment=exp)
 
                     ref_output_noisy: Output = vae.forward(reference_imgs,
@@ -214,7 +214,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                            draw_bg=True)
                     plot_reconstruction_and_inference(ref_output_noisy,
                                                       epoch=epoch,
-                                                      prefix="ref_noisy_",
+                                                      prefix="ref_noisy",
                                                       experiment=exp)
 
                     ref_output_clean: Output = vae.forward(reference_imgs,
@@ -226,20 +226,20 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                            draw_bg=True)
                     plot_reconstruction_and_inference(ref_output_clean,
                                                       epoch=epoch,
-                                                      prefix="ref_clean_",
+                                                      prefix="ref_clean",
                                                       experiment=exp)
 
                     print("segmentation")
                     segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,
                                                              noisy_sampling=True,
                                                              iom_threshold=config["architecture"]["nms_threshold_test"])
-                    plot_segmentation(segmentation, epoch=epoch, prefix="seg_", experiment=exp)
+                    plot_segmentation(segmentation, epoch=epoch, prefix="seg", experiment=exp)
 
                     print("generation test")
                     generated: Output = vae.generate(imgs_in=reference_imgs,
                                                      draw_boxes=True,
                                                      draw_bg=True)
-                    plot_generation(generated, epoch=epoch, prefix="gen_", experiment=exp)
+                    plot_generation(generated, epoch=epoch, prefix="gen", experiment=exp)
 
                     test_loss = test_metrics.loss
                     min_test_loss = min(min_test_loss, test_loss)

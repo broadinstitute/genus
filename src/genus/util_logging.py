@@ -3,7 +3,6 @@ import neptune.new as neptune
 import torch.nn
 import numpy
 from typing import Union
-import matplotlib.figure
 from typing import Optional, List
 from .namedtuple import ConcordanceIntMask
 from .util import save_obj
