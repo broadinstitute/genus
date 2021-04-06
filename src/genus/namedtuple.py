@@ -169,6 +169,7 @@ class BB(NamedTuple):
     bw: torch.Tensor
     bh: torch.Tensor
 
+
 class TT(NamedTuple):
     tx: torch.Tensor
     ty: torch.Tensor
@@ -253,22 +254,21 @@ class MetricMiniBatch(NamedTuple):
         All entries should be scalars obtained by averaging over minibatch
     """
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
-    # related to mixing
+    # monitoring
     mse_av: float
-    cost_mask_overlap_av: float
-    cost_fgfraction: float
     fgfraction_av: float
-    kl_zinstance: float
-    kl_zbg: float
-    # related to boxes
-    loss_boxes: float
-    cost_bb_regression_av: float
-    kl_zwhere: float
-    # probability
-    kl_logit: float
     ncell_av: float
     prob_av: float
-    # I am learning the right things?
+    # term in the loss function
+    cost_mse: float
+    cost_mask_overlap_av: float
+    cost_fgfraction: float
+    cost_bb_regression_av: float
+    kl_zinstance: float
+    kl_zbg: float
+    kl_zwhere: float
+    kl_logit: float
+    # debug
     similarity_l: float
     similarity_w: float
     annealing_factor: float

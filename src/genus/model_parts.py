@@ -218,12 +218,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                dim_logit=1)
 
         # Encoder-Decoders
-        self.bg_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zbg_dim"],
-                                                 num_embeddings=256)
+        # self.bg_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zbg_dim"],
+        #                                          num_embeddings=256)
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
                                                     ch_out=config["input_image"]["ch_in"],
                                                     scale_factor=config["architecture"]["unet_scale_factor_background"])
-
 
         self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
                                                                out_channels=4,
@@ -317,7 +316,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
-                                          rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1]/t_grid.shape[-1],
+                                          rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1]//t_grid.shape[-1],
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
@@ -365,7 +364,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      original_height=score_grid.shape[-1])
             c_grid_after_nms = c_grid_before_nms * k_mask_grid
 
-
         # 6. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
         bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
                                  by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
@@ -374,7 +372,6 @@ class InferenceAndGeneration(torch.nn.Module):
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1),
                                     dim=-1, index=nms_output.indices_k)
-
 
         # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape
@@ -429,7 +426,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # minimization w.r.t. "a" leads to high entropy posteriors.
         #
         # The derivative of the second term w.r.t. "DPP" can be estimated by simple MONTE CARLO samples and makes
-        # DPP prior parameters adjust to the seen configurations. This is computed only if grid_dpp.learnable_params = True
+        # DPP prior parameters adjust to the seen configurations.
+        # This is computed only if grid_dpp.learnable_params = True
         #
         # The derivative of the second term w.r.t. "a" can be estimated by REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
@@ -451,6 +449,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
         # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
+        # TODO: Should indicator_bk be smooth (i.e. probability) or binarized (i.e. c)
         indicator_bk = prob_bk.clamp(min=0.01).detach()
         zbg_kl_av = zbg.kl.mean()
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
@@ -477,7 +476,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # Convert bounding_boxes to the t_variable in [0,1]
             tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
-                                   rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1] / t_grid.shape[-1],
+                                   rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1] // t_grid.shape[-1],
                                    min_box_size=self.min_box_size,
                                    max_box_size=self.max_box_size)
 
@@ -485,14 +484,10 @@ class InferenceAndGeneration(torch.nn.Module):
             bb_mask_grid = torch.zeros_like(t_grid)
             tgrid_ideal = torch.zeros_like(t_grid)
             tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
-            #tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
-            #tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
-            tgrid_ideal[-2:] = 0.5 # i.e. default size of bounding boxes is average
+            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
+            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
 
-            #print(t_grid.shape)
-            #print(torch.min(tt_ideal_bk.ix), torch.max(tt_ideal_bk.ix))
-            #print(torch.min(tt_ideal_bk.ix), torch.max(tt_ideal_bk.ix))
-                
             b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
             bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
             tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
@@ -505,7 +500,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
         bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
 
-        # GECO BUSINESS
+        # GECO (i.e. make the hyper-parameters dynamical)
         with torch.no_grad():
             # Loss annealing (to automatically adjust annealing factor)
             g_annealing = 2 * (mse_av < 5.0 * self.geco_target_mse_max) - 1
@@ -564,21 +559,20 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
         metric = MetricMiniBatch(loss=loss_tot,
-                                 # related to mixing
+                                 # monitoring
                                  mse_av=mse_av.detach().item(),
-                                 cost_mask_overlap_av=mask_overlap_cost.detach().item(),
-                                 cost_fgfraction=(lambda_fgfraction.detach() * fgfraction_av).detach().item(),
                                  fgfraction_av=fgfraction_av.detach().item(),
-                                 kl_zinstance=zinstance_kl_av.detach().item(),
-                                 kl_zbg=zbg_kl_av.detach().item(),
-                                 # related to boxes
-                                 loss_boxes=loss_boxes.detach().item(),
-                                 cost_bb_regression_av=bb_regression_cost.detach().item(),
-                                 kl_zwhere=zwhere_kl_av.detach().item(),
-                                 # related to probability
-                                 kl_logit=logit_kl_av.detach().item(),
                                  ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
+                                 # terms in the loss function
+                                 cost_mse=(lambda_mse * mse_av).detach().item(),
+                                 cost_mask_overlap_av=(lambda_mse * mask_overlap_cost).detach().item(),
+                                 cost_fgfraction=(lambda_mse * lambda_fgfraction * fgfraction_av).detach().item(),
+                                 cost_bb_regression_av=bb_regression_cost.detach().item(),
+                                 kl_zinstance=zinstance_kl_av.detach().item(),
+                                 kl_zbg=zbg_kl_av.detach().item(),
+                                 kl_zwhere=zwhere_kl_av.detach().item(),
+                                 kl_logit=logit_kl_av.detach().item(),
                                  # debug
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
