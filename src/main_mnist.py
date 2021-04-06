@@ -6,7 +6,7 @@ from genus.util_logging import log_object_as_artifact, log_model_summary, log_ma
 from genus.model import *
 from genus.util_vis import show_batch, plot_reconstruction_and_inference, plot_generation, plot_segmentation
 from genus.util_data import DatasetInMemory
-from genus.util import load_yaml_as_dict, flatten_dict, load_obj, file2ckpt, linear_interpolation, append_to_dict
+from genus.util import load_yaml_as_dict, load_obj, file2ckpt, append_to_dict
 
 # Check versions
 import torch
@@ -21,13 +21,12 @@ numpy.random.seed(0)
 
 
 config = load_yaml_as_dict("./config.yaml")
-exp = neptune.init(project='dalessioluca/genus-new',
-                   source_files=["main*.py", "*/*.py", "config.yaml"],
-                   mode="async",
-                   capture_stdout=True,
-                   capture_stderr=True,
-                   capture_hardware_metrics=True)
-
+exp: neptune.run.Run = neptune.init(project='dalessioluca/genus-new',
+                                    source_files=["main*.py", "*/*.py", "config.yaml"],
+                                    mode="async",
+                                    capture_stdout=True,
+                                    capture_stderr=True,
+                                    capture_hardware_metrics=True)
 exp['config'] = config
 
 
@@ -151,7 +150,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                               prefix_exclude="wrong_examples",
                                               prefix_to_add="train_")
                 log_many_metrics(metrics=train_metrics,
-                                 prefix_for_neptune="train_",
+                                 prefix_for_neptune="train",
                                  experiment=exp,
                                  keys_exclude=["wrong_examples"],
                                  verbose=False)
@@ -166,14 +165,12 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                      iom_threshold=config["architecture"]["nms_threshold_test"],
                                                      verbose=(epoch == 0))
                     print("Test  "+test_metrics.pretty_print(epoch))
-
                     history_dict = append_to_dict(source=test_metrics,
                                                   destination=history_dict,
                                                   prefix_exclude="wrong_examples",
                                                   prefix_to_add="test_")
-
                     log_many_metrics(metrics=test_metrics,
-                                     prefix_for_neptune="test_",
+                                     prefix_for_neptune="test",
                                      experiment=exp,
                                      keys_exclude=["wrong_examples"],
                                      verbose=False)

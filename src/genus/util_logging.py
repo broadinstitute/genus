@@ -1,4 +1,5 @@
-import neptune
+import neptune.new as neptune
+
 import torch.nn
 import numpy
 from typing import Union
@@ -10,39 +11,8 @@ from .util import save_obj
 """ This module logs a variety to metrics, images, artifacts (i.e. generic files) using the Neptune library."""
 
 
-def log_img_only(name: str,
-                 fig: matplotlib.figure.Figure,
-                 experiment:  Optional[neptune.experiments.Experiment],
-                 verbose: bool = False):
-    if verbose:
-        print("inside log_img_only -> "+name)
-
-    if experiment is not None:
-        experiment[name].log(fig)
-
-    if verbose:
-        print("leaving log_img_only -> "+name)
-
-
-#def log_img_and_chart(name: str,
-#                      fig: matplotlib.figure.Figure,
-#                      experiment:  Optional[neptune.experiments.Experiment],
-#                      verbose: bool = False):
-#    if verbose:
-#        print("inside log_img_and_chart -> "+name)
-#
-#    if experiment is not None:
-#        experiment[neptune_name].upload(fig)
-#        
-#        log_chart(name, fig, experiment)
-#        experiment.log_image(name, fig)
-#
-#    if verbose:
-#        print("leaving log_img_and_chart -> "+name)
-#
-
 def log_model_summary(model: torch.nn.Module,
-                      experiment: Optional[neptune.experiments.Experiment],
+                      experiment: Optional[neptune.run.Run],
                       verbose: bool = False):
     if verbose:
         print("inside log_model_summary")
@@ -58,53 +28,22 @@ def log_model_summary(model: torch.nn.Module,
         print("leaving log_model_summary")
 
 
-def log_object_as_artifact(name: str,
-                           obj: object,
-                           experiment: Optional[neptune.experiments.Experiment],
-                           verbose: bool = False):
-    if verbose:
-        print("inside log_object_as_artifact")
-
-    if experiment is not None:
-        path = name+".pt"
-        save_obj(obj=obj, path=path)
-        experiment[name].upload(path)
-
-    if verbose:
-        print("leaving log_object_as_artifact")
-
-
-#def log_matplotlib_as_png(name: str,
-#                          fig: matplotlib.figure.Figure,
-#                          experiment: Optional[neptune.experiments.Experiment],
-#                          verbose: bool = False):
-#    if verbose:
-#        print("log_matplotlib_as_png")
-#
-#    if experiment is not None:
-#        fig.savefig(name+".png")  # save to local file
-#        experiment.log_image(name, name+".png")  # log file to neptune
-#
-#    if verbose:
-#        print("leaving log_matplotlib_as_png")
-
-
 def log_many_metrics(metrics: Union[dict, tuple],
-                     experiment: Optional[neptune.experiments.Experiment],
+                     experiment: Optional[neptune.run.Run],
                      prefix_for_neptune: str = "",
                      keys_exclude: Optional[List[str]] = None,
                      verbose: bool = False):
     """ Log a dictionary or a tuple of metrics into neptune """
 
-    def log_internal(_exp, _key, _value):
+    def log_internal(_exp, _prefix, _key, _value):
         if isinstance(_value, float) or isinstance(_value, int):
-            _exp[_key].log(_value)
+            _exp[_prefix + "/" + _key].log(_value)
         elif isinstance(_value, numpy.ndarray):
             for i, x in enumerate(_value):
-                _exp[_key + "_" + str(i)].log(x)
+                _exp[_prefix + "/" + _key + "_" + str(i)].log(x)
         elif isinstance(_value, torch.Tensor):
             for i, x in enumerate(_value):
-                _exp[_key + "_" + str(i)].log(x.item())
+                _exp[_prefix + "/" + _key + "_" + str(i)].log(x.item())
         else:
             print(_key, type(_value), _value)
             raise Exception
@@ -118,12 +57,12 @@ def log_many_metrics(metrics: Union[dict, tuple],
         if isinstance(metrics, dict):
             for key, value in metrics.items():
                 if key not in keys_exclude:
-                    log_internal(experiment, prefix_for_neptune + key, value)
+                    log_internal(experiment, prefix_for_neptune, key, value)
         elif isinstance(metrics, tuple):
             for key in metrics._fields:
                 value = getattr(metrics, key)
                 if key not in keys_exclude:
-                    log_internal(experiment, prefix_for_neptune + key, value)
+                    log_internal(experiment, prefix_for_neptune, key, value)
         else:
             raise Exception("metric type not recognized ->", type(metrics))
 
@@ -132,7 +71,7 @@ def log_many_metrics(metrics: Union[dict, tuple],
 
 
 def log_concordance(concordance: ConcordanceIntMask,
-                    experiment: Optional[neptune.experiments.Experiment],
+                    experiment: Optional[neptune.run.Run],
                     prefix_for_neptune: str = "",
                     verbose: bool = False):
     if verbose:
@@ -150,19 +89,45 @@ def log_concordance(concordance: ConcordanceIntMask,
         print("leaving log_concordance")
 
 
-def log_last_ckpt(name: str,
-                  ckpt: dict,
-                  experiment: Optional[neptune.experiments.Experiment],
-                  verbose: bool = False):
-
+def log_object_as_artifact(name: str,
+                           obj: object,
+                           experiment: Optional[neptune.run.Run],
+                           verbose: bool = False):
     if verbose:
-        print("inside log_last_ckpt")
+        print("inside log_object_as_artifact")
 
-    path = name+".pt"
-    save_obj(obj=ckpt, path=path)
-    print("logging artifact")
     if experiment is not None:
-        experiment(name).upload(path)
+        path = name+".pt"
+        save_obj(obj=obj, path=path)
+        experiment[name].upload(path)
 
     if verbose:
-        print("leaving log_last_ckpt")
+        print("leaving log_object_as_artifact")
+
+
+# def log_img_only(name: str,
+#                  fig: matplotlib.figure.Figure,
+#                  experiment:  Optional[neptune.experiments.Experiment],
+#                  verbose: bool = False):
+#     if verbose:
+#         print("inside log_img_only -> "+name)
+#
+#     if experiment is not None:
+#         experiment[name].log(fig)
+#
+#     if verbose:
+#         print("leaving log_img_only -> "+name)
+#
+# def log_matplotlib_as_png(name: str,
+#                           fig: matplotlib.figure.Figure,
+#                           experiment: Optional[neptune.experiments.Experiment],
+#                           verbose: bool = False):
+#     if verbose:
+#         print("log_matplotlib_as_png")
+#
+#     if experiment is not None:
+#         fig.savefig(name+".png")  # save to local file
+#         experiment.log_image(name, name+".png")  # log file to neptune
+#
+#     if verbose:
+#         print("leaving log_matplotlib_as_png")
