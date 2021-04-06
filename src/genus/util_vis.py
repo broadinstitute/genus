@@ -386,7 +386,7 @@ def show_batch(images: torch.Tensor,
     fig.tight_layout()
 
     if (neptune_name is not None) and (experiment is not None):
-        experiment[neptune_name].upload(fig)
+        experiment[neptune_name].log(fig)
         
     plt.close(fig)
     return fig

@@ -18,7 +18,7 @@ def log_img_only(name: str,
         print("inside log_img_only -> "+name)
 
     if experiment is not None:
-        experiment[name].upload(fig)
+        experiment[name].log(fig)
 
     if verbose:
         print("leaving log_img_only -> "+name)
