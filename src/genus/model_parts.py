@@ -444,7 +444,8 @@ class InferenceAndGeneration(torch.nn.Module):
             logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
         else:
             logp_dpp_after_nms_mb = torch.zeros_like(entropy_b)
-        logit_kl_av = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
+        #logit_kl_av = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
+        logit_kl_av = - entropy_b.mean()
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
