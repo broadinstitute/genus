@@ -420,32 +420,19 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 11. Compute the KL divergences
         # Compute KL divergence between the DPP prior and the posterior:
-        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
-        #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
-        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
-        # minimization w.r.t. "a" leads to high entropy posteriors.
+        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = sum_c q(c|a) * f(c)
         #
-        # The derivative of the second term w.r.t. "DPP" can be estimated by simple MONTE CARLO samples and makes
-        # DPP prior parameters adjust to the seen configurations.
-        # This is computed only if grid_dpp.learnable_params = True
-        #
-        # The derivative of the second term w.r.t. "a" can be estimated by REINFORCE ESTIMATOR and makes
-        # the posterior have more weight on configuration which are likely under the prior
-        entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        # Fro the purpose of computing the derivative of KL w.r.t. a and DPP we use the REINFORCE estimator:
+        # KL_eff = sum_c q(c|a).detach() { log_q(c|a) * [f(c)-B].detach() + [f(c)-B] }
+        # where B = average of f(c)
+        # Note that the derivatives of KL and KL_eff w.r.t a and DPP are identical
+        # TODO: Think how to improve this with better baselines and make prior DPP learnable
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        with torch.no_grad():
-            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
-            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            d_mb = (logp_dpp_before_nms_mb - baseline_b)
-        reinforce_mb = logp_ber_before_nms_mb * d_mb
-
-        if self.grid_dpp.learnable_params:
-            logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
-        else:
-            logp_dpp_after_nms_mb = torch.zeros_like(entropy_b)
-        #logit_kl_av = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
-        logit_kl_av = - entropy_b.mean()
+        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
+        f = logp_ber_before_nms_mb - logp_dpp_before_nms_mb
+        baseline = f.mean(dim=-2).detach()
+        logit_kl_av = torch.mean(logp_ber_before_nms_mb * (f-baseline).detach() + (f-baseline))
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
