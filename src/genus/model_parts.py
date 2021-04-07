@@ -370,6 +370,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        # c_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1),
                                     dim=-1, index=nms_output.indices_k)
 
@@ -382,10 +383,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                            height_small=self.glimpse_size)
 
         # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
-        #small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-        #                             big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-        #                             width_small=self.glimpse_size,
-        #                             height_small=self.glimpse_size)
+        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+                                     width_small=self.glimpse_size,
+                                     height_small=self.glimpse_size)
 
         # 8. Encode, Sample, Decode zinstance
         zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
@@ -450,6 +451,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
         # TODO: Should indicator_bk be smooth (i.e. probability) or binarized (i.e. c)
         indicator_bk = prob_bk.clamp(min=0.01).detach()
+        # indicator_bk = c_bk.detach()
         zbg_kl_av = zbg.kl.mean()
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
         zinstance_kl_av = (zinstance.kl * indicator_bk[..., None]).mean()
@@ -540,10 +542,12 @@ class InferenceAndGeneration(torch.nn.Module):
                     self.geco_rawlambda_mse * g_mse + \
                     self.geco_rawlambda_fgfraction * g_fgfraction
         loss_mse = lambda_mse.detach() * (mse_av + mask_overlap_cost) + \
-                   lambda_fgfraction.detach() * mixing_fg_b1wh.mean() + \
+                   lambda_fgfraction.detach() * p_times_mask_bk1wh.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av
+                   # lambda_fgfraction.detach() * mixing_fg_b1wh.mean() + \
         loss_boxes = bb_regression_cost + zwhere_kl_av
-        loss_tot = loss_mse + loss_boxes + loss_geco
+        #loss_tot = loss_mse + loss_boxes + loss_geco
+        loss_tot = logit_kl_av
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -555,7 +559,9 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_c_grid_after_nms=c_grid_after_nms,
                               sample_prob_k=prob_bk,
                               sample_bb_k=bounding_box_bk,
-                              sample_bb_ideal_k=bb_ideal_bk)
+                              sample_bb_ideal_k=bb_ideal_bk,
+                              small_imgs_in=small_imgs_in,
+                              small_imgs_out=small_imgs_out)
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
