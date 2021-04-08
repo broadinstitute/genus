@@ -111,6 +111,10 @@ echo "Step1: copying $ML_CONFIG  into google bucket"
 RANDOM_HASH=$(cat /dev/urandom | env LC_CTYPE=C tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
 ML_CONFIG_CLOUD="$BUCKET/${RANDOM_HASH}_$ML_CONFIG"
 gsutil cp $ML_CONFIG $ML_CONFIG_CLOUD 
+if [ "$?" != "0" ]; then
+   exit_with_error
+fi
+
 
 # 2. create the json file which will be passed to cromshell
 echo
@@ -118,6 +122,9 @@ echo "Step2: crerating input.json file for cromshell"
 key_for_ML_parameters=$(womtool inputs $WDL | jq 'keys[]' | grep "ML_config")
 echo '{' "$key_for_ML_parameters" : '"'"$ML_CONFIG_CLOUD"'" }' > tmp.json
 jq -s '.[0] * .[1]' tmp.json $WDL_JSON | tee input.json
+if [ "$?" != "0" ]; then
+   exit_with_error
+fi
 rm -rf tmp.json
 
 # 3. run cromshell
@@ -125,6 +132,9 @@ echo
 echo "Step3: run cromshell"
 echo "RUNNING: cromshell submit $WDL input.json"
 cromshell submit $WDL input.json | tee tmp_run_status
+if [ "$?" != "0" ]; then
+   exit_with_error
+fi
 rm -rf input.json 
 
 # 4. check I find the word Submitted in the cromshell_output
