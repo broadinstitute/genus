@@ -363,11 +363,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                            width_small=self.glimpse_size,
                                            height_small=self.glimpse_size)
 
-        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
-        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-                                     width_small=self.glimpse_size,
-                                     height_small=self.glimpse_size)
 
         # 8. Encode, Sample, Decode zinstance
         zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
@@ -392,6 +387,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                           small_stuff=torch.sigmoid(small_weights_out),
                                           width_big=width_raw_image,
                                           height_big=height_raw_image)
+
+        # Make a shortcut so that foreground can always try to learn a little bit
+        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
+        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+                                     width_small=self.glimpse_size,
+                                     height_small=self.glimpse_size)
+        loss_shortcut = (self.PMIN / self.sigma_fg**2) * (small_imgs_in - small_imgs_out).pow(2).mean()
 
         # 10. Compute the mixing (using a softmax-like function)
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
@@ -470,6 +473,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # GECO (i.e. make the hyper-parameters dynamical)
         with torch.no_grad():
+
             # Loss annealing (to automatically adjust annealing factor)
             g_annealing = 2 * (mse_av < 5.0 * self.geco_target_mse_max) - 1
 
@@ -500,22 +504,22 @@ class InferenceAndGeneration(torch.nn.Module):
                    lambda_fgfraction.detach() * p_times_mask_bk1wh.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av
         loss_boxes = bb_regression_cost + zwhere_kl_av
-        loss_tot = loss_mse + loss_boxes + loss_geco
+        loss_tot = loss_mse + loss_boxes + loss_geco  # + loss_shortcut
 
-        inference = Inference(logit_grid=unet_output.logit,
-                              prob_from_ranking_grid=prob_from_ranking_grid,
-                              background_cwh=out_background_bcwh,
-                              foreground_kcwh=out_img_bkcwh,
-                              mask_overlap_1wh=mask_overlap_b1wh,
-                              mixing_k1wh=mixing_bk1wh,
-                              sample_c_grid_before_nms=c_grid_before_nms,
-                              sample_c_grid_after_nms=c_grid_after_nms,
-                              sample_prob_k=prob_bk,
+        inference = Inference(logit_grid=unet_output.logit.detach(),
+                              prob_from_ranking_grid=prob_from_ranking_grid.detach(),
+                              background_cwh=out_background_bcwh.detach(),
+                              foreground_kcwh=out_img_bkcwh.detach(),
+                              mask_overlap_1wh=mask_overlap_b1wh.detach(),
+                              mixing_k1wh=mixing_bk1wh.detach(),
+                              sample_c_grid_before_nms=c_grid_before_nms.detach(),
+                              sample_c_grid_after_nms=c_grid_after_nms.detach(),
+                              sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              small_imgs_in=small_imgs_in,
-                              small_imgs_out=small_imgs_out,
-                              feature_map=unet_output.features)
+                              small_imgs_in=small_imgs_in.detach(),
+                              small_imgs_out=small_imgs_out.detach(),
+                              feature_map=unet_output.features.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
