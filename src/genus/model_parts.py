@@ -6,8 +6,8 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, Quantizer, sample_and_kl_diagonal_normal #Quantizer
-from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT #VQ
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
+from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT
 from .non_max_suppression import NonMaxSuppression
 
 
@@ -189,7 +189,7 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        self.gaussian_mixture = config["simulation"]["gaussian_mixture"]
+        self.PMIN = 1E-3
         self.bb_regression_always_active = config["simulation"]["bb_regression_always_active"]
 
         # variables
@@ -218,8 +218,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                dim_logit=1)
 
         # Encoder-Decoders
-        # self.bg_quantizer: Quantizer = Quantizer(embedding_dim=config["architecture"]["zbg_dim"],
-        #                                          num_embeddings=256)
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
                                                     ch_out=config["input_image"]["ch_in"],
                                                     scale_factor=config["architecture"]["unet_scale_factor_background"])
@@ -229,13 +227,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                kernel_size=1,
                                                                groups=4)
 
-        self.decoder_zinstance: DecoderInstance = DecoderInstance(size=config["architecture"]["glimpse_size"],
-                                                                  scale_factor=config["architecture"]["encoder_decoder_scale_factor"],
+        self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
                                                                   dim_z=config["architecture"]["zinstance_dim"],
                                                                   ch_out=config["input_image"]["ch_in"] + 1)
 
-        self.encoder_zinstance: EncoderInstance = EncoderInstance(size=config["architecture"]["glimpse_size"],
-                                                                  scale_factor=config["architecture"]["encoder_decoder_scale_factor"],
+        self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
                                                                   ch_in=config["architecture"]["unet_ch_feature_map"],
                                                                   dim_z=config["architecture"]["zinstance_dim"])
 
@@ -268,16 +264,6 @@ class InferenceAndGeneration(torch.nn.Module):
         self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
                                                                               dtype=torch.float), requires_grad=True)
 
-#         # Geco ncell
-#         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
-#         self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
-#         lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
-#         lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
-#         self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
-#         self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
-#         self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
-#                                                                         dtype=torch.float), requires_grad=True)
-
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
                 iom_threshold: float,
@@ -300,10 +286,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   posterior_std=F.softplus(zbg_std),
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
-####        vq_bg: VQ = self.bg_quantizer(unet_output.zbg,
-####                                      axis_to_quantize=-3,
-####                                      generate_synthetic_data=generate_synthetic_data)
-
         out_background_bcwh = self.decoder_zbg(zbg.value)
 
         # 3. Bounding-Box decoding
@@ -370,7 +352,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        # c_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1),
                                     dim=-1, index=nms_output.indices_k)
 
@@ -420,26 +401,24 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 11. Compute the KL divergences
         # Compute KL divergence between the DPP prior and the posterior:
-        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = sum_c q(c|a) * f(c)
-        #
-        # Fro the purpose of computing the derivative of KL w.r.t. a and DPP we use the REINFORCE estimator:
-        # KL_eff = sum_c q(c|a).detach() { log_q(c|a) * [f(c)-B].detach() + [f(c)-B] }
-        # where B = average of f(c)
-        # Note that the derivatives of KL and KL_eff w.r.t a and DPP are identical
-        # TODO: Think how to improve this with better baselines and make prior DPP learnable
+        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
+        # The first term is the negative entropy of the Bernoulli distribution.
+        # It can be computed analytically and its minimization w.r.t. "a" leads to high entropy posteriors.
+        # The second term can be estimated by REINFORCE ESTIMATOR and makes
+        # the posterior have more weight on configuration which are likely under the prior
+        entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
         logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
                                                         logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
-        f = logp_ber_before_nms_mb - logp_dpp_before_nms_mb
-        baseline = f.mean(dim=-2).detach()
-        logit_kl_av = torch.mean(logp_ber_before_nms_mb * (f-baseline).detach() + (f-baseline))
+        with torch.no_grad():
+            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
+            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
+            d_mb = (logp_dpp_before_nms_mb - baseline_b)
+        logit_kl_av = - (entropy_b + logp_ber_before_nms_mb * d_mb.detach()).mean()
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
-        # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
-        # TODO: Should indicator_bk be smooth (i.e. probability) or binarized (i.e. c)
-        indicator_bk = prob_bk.clamp(min=0.01).detach()
-        # indicator_bk = c_bk.detach()
+        # I clamp indicator_bk to PMIN to avoid numerical instabilities.
+        indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
         zbg_kl_av = zbg.kl.mean()
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
         zinstance_kl_av = (zinstance.kl * indicator_bk[..., None]).mean()
@@ -513,18 +492,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                   (fgfraction_av < self.geco_target_fgfraction_max)
             g_fgfraction = 2.0 * fgfraction_in_range - 1.0
 
-            # NCELL_AV
-            # TODO: reactivete this if DPP parameters are learnable
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
-            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
-            #                                       max=self.geco_rawlambda_ncell_max)
-            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
-            #                torch.sign(ncell_av - self.geco_target_ncell_min)
-            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-            #                  (ncell_av < self.geco_target_ncell_max)
-            # g_ncell = 2.0 * ncell_in_range - 1.0
-
         # Put all the losses together
         loss_geco = self.annealing_factor * g_annealing.detach() + \
                     self.geco_rawlambda_mse * g_mse + \
@@ -532,10 +499,8 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_mse = lambda_mse.detach() * (mse_av + mask_overlap_cost) + \
                    lambda_fgfraction.detach() * p_times_mask_bk1wh.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av
-                   # lambda_fgfraction.detach() * mixing_fg_b1wh.mean() + \
         loss_boxes = bb_regression_cost + zwhere_kl_av
-        #loss_tot = loss_mse + loss_boxes + loss_geco
-        loss_tot = logit_kl_av
+        loss_tot = loss_mse + loss_boxes + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit,
                               prob_from_ranking_grid=prob_from_ranking_grid,
@@ -549,7 +514,8 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
                               small_imgs_in=small_imgs_in,
-                              small_imgs_out=small_imgs_out)
+                              small_imgs_out=small_imgs_out,
+                              feature_map=unet_output.features)
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 

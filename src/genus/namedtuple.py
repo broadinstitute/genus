@@ -144,23 +144,10 @@ class Partition(NamedTuple):
 #  ----------------------------------------------------------------  #
 
 
-class VQ(NamedTuple):
-    """ Container for the Vector Quantization """
-    value: torch.Tensor
-    index: torch.Tensor
-    commitment_cost: torch.Tensor
-    perplexity: torch.Tensor
-
-
 class DIST(NamedTuple):
     """ Container for distribution sample and KL """
     value: torch.Tensor
     kl: torch.Tensor
-
-
-class ZZ(NamedTuple):
-    mu: torch.Tensor
-    std: torch.Tensor
 
 
 class BB(NamedTuple):
@@ -222,24 +209,7 @@ class Inference(NamedTuple):
     # Debug
     small_imgs_in: torch.Tensor
     small_imgs_out: torch.Tensor
-
-
-####class MetricMiniBatch(NamedTuple):
-####    loss: torch.Tensor
-####    mse_av: float
-####    cost_commitment: float
-####    count_prediction: numpy.ndarray
-####    wrong_examples: numpy.ndarray
-####    accuracy: float
-####
-####
-####    def pretty_print(self, epoch: int = 0) -> str:
-####        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, commitment={3:.3f}".format(epoch,
-####                                                                                  self.loss,
-####                                                                                  self.mse_av,
-####                                                                                  self.cost_commitment)
-####        return s
-
+    feature_map: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):
@@ -296,12 +266,13 @@ class MetricMiniBatch(NamedTuple):
 
 class Output(NamedTuple):
     """
-    Container for the results of the call to `process_batch_imgs`.
+    Container with the output of the :method:`process_batch_imgs`.
 
-    Attributes:
+    Args:
         metrics: element of :class:`MetricMiniBatch` with all quantities worth measuring during training of the model
-        inference: element of :class:`Inference`
+        inference: element of :class:`Inference` with many latent variable (not necessarely scalar quantities)
         imgs: reconstructed images. If the reconstruction was not computed this is set to None
+        bb_imgs: input images with overimposed the bounding box (both the inferreed ones and the optimal one)
     """
     metrics: MetricMiniBatch
     inference: Inference

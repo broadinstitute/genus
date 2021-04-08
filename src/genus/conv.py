@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import numpy
 
-CH_BG_MAP = 32
-
 
 class DoubleSpatialResolution(nn.Module):
     """
@@ -20,25 +18,25 @@ class DoubleSpatialResolution(nn.Module):
         return y
 
 
-class HalvesSpatialResolution(nn.Module):
-    """
-    Tiny wrapper around Conv2D which halves the spatial resolution of a tensor.
-    """
-    def __init__(self, ch_in: int, ch_out: int, reflection_padding: bool = True):
-        super().__init__()
-        if reflection_padding:
-            self.conv_half = nn.Sequential(
-                nn.ReflectionPad2d(padding=1),
-                nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=0, bias=True)
-            )
-        else:
-            self.conv_half = nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=1, bias=True)
-
-    def forward(self, x, verbose=False):
-        y = self.conv_half(x)
-        if verbose:
-            print("input -> output", x.shape, y.shape)
-        return y
+# class HalvesSpatialResolution(nn.Module):
+#     """
+#     Tiny wrapper around Conv2D which halves the spatial resolution of a tensor.
+#     """
+#     def __init__(self, ch_in: int, ch_out: int, reflection_padding: bool = True):
+#         super().__init__()
+#         if reflection_padding:
+#             self.conv_half = nn.Sequential(
+#                 nn.ReflectionPad2d(padding=1),
+#                 nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=0, bias=True)
+#             )
+#         else:
+#             self.conv_half = nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=1, bias=True)
+#
+#     def forward(self, x, verbose=False):
+#         y = self.conv_half(x)
+#         if verbose:
+#             print("input -> output", x.shape, y.shape)
+#         return y
 
 
 class SameSpatialResolution(nn.Module):
@@ -170,62 +168,9 @@ class Mlp1by1(nn.Module):
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
 
-class EncoderConv(nn.Module):
-    """
-    Encode a large patch into a smaller patch.
-
-    Note:
-        It is opposite to :class:`DecoderConv`
-
-    Note:
-        It relies on :class:`HalvesSpatialResolution` which halves the spatial resolution of the tensor
-        at each application.
-    """
-    CH_MIN_ENCODER = 32
-
-    def __init__(self, ch_in: int, ch_out: int, scale_factor: int):
-        """
-        Args:
-            ch_in: int, number of channels in the input
-            ch_out: int, number of channels in the output
-            scale_factor: integer factor of 2, describes the reduction in the spatial extension from input to output
-        """
-
-        super().__init__()
-        n_levels = numpy.log2(float(scale_factor))
-        assert (n_levels % 1.0 == 0)  and n_levels >= 1 # make sure that scale_factor is a power of two and larger than 2
-        self.ch_in = ch_in
-        self.ch_out = ch_out
-
-        self.encoder = torch.nn.ModuleList()
-        ch_in = self.ch_in
-        ch_out = max(int(self.ch_out * 2**(n_levels-1)), self.CH_MIN_ENCODER)
-        ch_out_half = max(ch_out // 2, self.CH_MIN_ENCODER)
-        for n in range(0, int(n_levels)-1):
-            self.encoder.append(HalvesSpatialResolution(ch_in=ch_in, ch_out=ch_out, reflection_padding=False))
-            self.encoder.append(nn.ReLU(inplace=True))
-            self.encoder.append(Mlp1by1(ch_in=ch_out, ch_out=ch_out_half, ch_hidden=-1))
-            self.encoder.append(nn.ReLU(inplace=True))
-            ch_in = max(ch_out // 2, self.CH_MIN_ENCODER)
-            ch_out = max(ch_in, self.CH_MIN_ENCODER)
-            ch_out_half = max(ch_in//2, self.CH_MIN_ENCODER)
-        self.encoder.append(HalvesSpatialResolution(ch_in=ch_in, ch_out=ch_in, reflection_padding=False))
-        self.encoder.append(nn.ReLU(inplace=True))
-        self.encoder.append(Mlp1by1(ch_in=ch_in, ch_out=self.ch_out, ch_hidden=-1))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        y = x.flatten(end_dim=-4)
-        for i, module in enumerate(self.encoder):
-            y = module(y)
-        return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
-
-
 class DecoderConv(nn.Module):
     """
     Decode a small patch into a larger patch.
-
-    Note:
-        It is opposite to :class:`EncoderConv`
 
     Note:
         It relies on :class:`DoubleSpatialResolution` which doubles the spatial resolution of the tensor
@@ -268,78 +213,45 @@ class DecoderConv(nn.Module):
 
 
 class DecoderInstance(nn.Module):
-    """
-    Decode an vector into an image patch. It is a combination of dense layers and :class:`DecoderConv`.
-    """
-
-    def __init__(self, size: int, scale_factor: int, ch_out: int, dim_z: int):
-        """
-        Args:
-            dim_z: int, number of latent dimension
-            scale_factor: int, power of 2 for the increase of the spatial resolution after applying the dense layers
-            size: int, size of the patch to decode
-            ch_out: int, number of channels of the patch to decode
-        """
-        super(DecoderInstance, self).__init__()
-
-        self.size = size
-        self.ch_out = ch_out
+    def __init__(self, glimpse_size: int, dim_z: int, ch_out: int):
+        super().__init__()
+        self.glimpse_size = glimpse_size
+        assert self.glimpse_size == 28
         self.dim_z = dim_z
-        self.scale_factor = scale_factor
-
-        self.ch_before_convolutions = 64
-        self.small_size = self.size // self.scale_factor
-        ch_flatten = self.ch_before_convolutions * self.small_size**2
-        ch_hidden = (ch_flatten + self.dim_z) //2
-
-        self.linear = torch.nn.Sequential(
-            torch.nn.Linear(in_features=self.dim_z, out_features=ch_hidden),         # shape: *, dim_z
+        self.ch_out = ch_out
+        self.upsample = nn.Linear(self.dim_z, 64 * 7 * 7)
+        self.decoder = nn.Sequential(
+            torch.nn.ConvTranspose2d(64, 32, 4, 2, 1),  # B,  64,  14,  14
             torch.nn.ReLU(inplace=True),
-            torch.nn.Linear(in_features=ch_hidden, out_features=ch_flatten))        # shape: *, ch_flatten
-        self.conv = DecoderConv(ch_in=self.ch_before_convolutions, ch_out=self.ch_out, scale_factor=self.scale_factor)
+            torch.nn.ConvTranspose2d(32, 32, 4, 2, 1, 1),  # B,  32, 28, 28
+            torch.nn.ReLU(inplace=True),
+            torch.nn.ConvTranspose2d(32, self.ch_out, 4, 1, 2)  # B, ch, 28, 28
+        )
 
-    def forward(self, x):
-        x1 = self.linear(x.flatten(end_dim=-2))  # shape: *, ch_flatten
-        x2 = self.conv(x1.view(-1, self.ch_before_convolutions, self.small_size, self.small_size))  # shape: *, ch_out, size, size
-        return x2.view(list(x.shape[:-1]) + list(x2.shape[-3:]))
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        independent_dim = list(z.shape[:-1])
+        x1 = self.upsample(z.view(-1, self.dim_z)).view(-1, 64, 7, 7)
+        x2 = self.decoder(x1).view(independent_dim + [self.ch_out, self.glimpse_size, self.glimpse_size])
+        return x2
 
 
 class EncoderInstance(nn.Module):
-    """
-    Encode a image patch into a vector. It is a combination of :class:`EncoderConv` with some dense layer at the end
-    """
-
-    def __init__(self, size: int, scale_factor: int, ch_in: int, dim_z: int):
-        """
-        Args:
-            size: int, size of the patch to encode
-            scale_factor: int, power of 2 reduction factor in the spatial resolutiuon of the patch before applying dense layers
-            ch_in: int, number of channels of the patch to encode
-            dim_z: int, number of latent dimension
-        """
-        super(EncoderInstance, self).__init__()
-
-        self.size = size
+    def __init__(self, glimpse_size: int, ch_in: int, dim_z: int):
+        super().__init__()
         self.ch_in = ch_in
+        assert glimpse_size == 28
         self.dim_z = dim_z
-        self.scale_factor = scale_factor
 
-        ch_after_convolutions = 64
-        small_size = self.size // self.scale_factor
-        ch_flatten = ch_after_convolutions * small_size**2
-        ch_hidden = (ch_flatten + self.dim_z) //2
-
-        self.encoder = EncoderConv(ch_in=self.ch_in, ch_out=ch_after_convolutions, scale_factor=self.scale_factor)
-        self.linear = torch.nn.Sequential(
-            torch.nn.Linear(in_features=ch_flatten, out_features=ch_hidden),
+        self.conv = nn.Sequential(
+            torch.nn.Conv2d(in_channels=self.ch_in, out_channels=32, kernel_size=4, stride=1, padding=2),  # 28,28
             torch.nn.ReLU(inplace=True),
-            torch.nn.Linear(in_features=ch_hidden, out_features=2*self.dim_z)
-        )         # shape: *, 2*dim_z
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1),  # 14,14
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1),  # 7,7
+        )
+        self.linear = nn.Linear(64 * 7 * 7, 2 * self.dim_z)
 
-    def forward(self, x):
-        x1 = self.encoder(x.flatten(end_dim=-4))  # shape: *, ch_after_convolutions, small_size, small_size
-        x2 = self.linear(x1.flatten(start_dim=-3))  # shape: *, 2*self.dim_z
-        return x2.view(list(x.shape[:-3]) + [x2.shape[-1]])
-
-
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.conv(x.flatten(end_dim=-4)).view(-1, 64 * 7 * 7)  # flatten the dependent dimension
+        x2 = self.linear(x1).view(list(x.shape[:-3]) + [2*self.dim_z])
+        return x2

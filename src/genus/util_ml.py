@@ -7,7 +7,7 @@ from collections import OrderedDict
 from torch.distributions.distribution import Distribution
 from torch.distributions import constraints
 from .util import are_broadcastable
-from .namedtuple import DIST, VQ
+from .namedtuple import DIST
 
 
 class MetricsAccumulator(object):
@@ -75,98 +75,6 @@ class MetricsAccumulator(object):
     def set_value(self, key, value):
         """ Set a key value pair in the internal OrderDictionary to do the accumulation """
         self._dict_accumulate[key] = value
-
-
-class Quantizer(torch.nn.Module):
-    """
-    Module that quantizes the incoming vectors using a finite dictionary.
-    Useful for implementing a VQ-VAE model.
-    """
-    def __init__(self, num_embeddings: int, embedding_dim: int, decay: float = 0.99, epsilon: float = 1E-6):
-        """
-        Args:
-            num_embeddings: the number of element in the dictionary
-            embedding_dim: the size of the embedding
-            decay: decay for calculation of the moving averages of the element in the dictionary
-            epsilon: small float constant to avoid numerical instabilities
-        """
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
-
-        self.embeddings = torch.nn.Parameter(data=torch.randn((self.embedding_dim, self.num_embeddings),
-                                                              dtype=torch.float),
-                                             requires_grad=False)
-
-        # Variables used to keep track of the moving averages of the cluster means
-        self._log_num_embeddings = numpy.log(self.num_embeddings)
-        self._decay = decay
-        self._epsilon = epsilon
-        self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float), requires_grad=False)
-        self._m = torch.nn.Parameter(data=torch.zeros((self.embedding_dim, self.num_embeddings),
-                                                      dtype=torch.float), requires_grad=False)
-
-    @staticmethod
-    def _swap(x, axis_to_quantize):
-        """ Put the axis to quantize last. To undo the swap simply apply this operation twice """
-        if (axis_to_quantize == -1) or (axis_to_quantize == len(x.shape)):
-            return x
-        else:
-            return torch.transpose(x, dim0=axis_to_quantize, dim1=-1)
-
-    def forward(self, x, axis_to_quantize: int, generate_synthetic_data: bool):
-
-        # TODO: to generate synthetic data I need to...
-        #   For now just ignore and pretend generate_synthetic_data is always False
-        # if generate_synthetic_data:
-        #     raise NotImplementedError
-
-        # Put the dimension to quantize last and flatten the array
-        x_swapped = self._swap(x, axis_to_quantize=axis_to_quantize)
-        z = x_swapped.flatten(end_dim=-2)  # shape: (*, embedding_dim)
-
-        with torch.no_grad():
-            # dist(z,y)=||z-y||^2 = z^2 + y^2 - 2*z*y
-            z2 = z.pow(2).sum(dim=-1, keepdim=True)  # shape = (*, 1)
-            y2 = self.embeddings.pow(2).sum(dim=-2, keepdim=True)  # shape = (1, num_embeddings)
-            yz = torch.matmul(z, self.embeddings)  # shape = (*, num_embeddings)
-
-            # Find the indices corresponding to the closest code in the dictionary
-            embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
-
-            # Compute the utilization of the dictionary
-            one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
-            dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
-            dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
-            p = dn / torch.sum(dn)  # probability of each codeword. Shape = (num_embeddings)
-            perplexity = - (p * torch.log(p + 1E-8)).sum() / self._log_num_embeddings  # Normalized entropy of the codeword distribution
-
-        # Compute the quantized vectors
-        zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)
-
-        # Make the quantized vector of the same shape as input
-        xq_swapped = zq.view_as(x_swapped)
-        iq_swapped = embed_indices.view_as(x_swapped[..., 0]).unsqueeze(-1)
-
-        # Undo the swap if necessary
-        xq = self._swap(xq_swapped, axis_to_quantize=axis_to_quantize)
-        iq = self._swap(iq_swapped, axis_to_quantize=axis_to_quantize)
-
-        commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
-
-        # If the model is in training mode then the embeddings are update using the moving averages
-        if self.training:
-            with torch.no_grad():
-                self._n.data = self._decay * self._n + (1-self._decay) * dn
-                self._m.data = self._decay * self._m + (1-self._decay) * dm
-
-                # Compute the mean embedding but make sure not to divide by zero
-                n_tot = torch.sum(self._n)
-                n_tmp = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
-                self.embeddings.data = self._m / n_tmp
-
-
-        return VQ(value=x + (xq - x).detach(), index=iq, commitment_cost=commitment_cost, perplexity=perplexity)
 
 
 class SimilarityKernel(torch.nn.Module):
@@ -432,7 +340,7 @@ class FiniteDPP(Distribution):
             for j in range(rand.shape[-1]):
                 c = rand[..., j] < k_matrix[..., j, j]
                 value[..., j] = c
-               #  k_matrix[..., j, j] -= torch.tensor(~c, dtype=k_matrix.dtype, device=k_matrix.device)
+                #  k_matrix[..., j, j] -= torch.tensor(~c, dtype=k_matrix.dtype, device=k_matrix.device)
                 k_matrix[..., j, j] -= (~c).clone().detach().to(dtype=k_matrix.dtype, device=k_matrix.device)
 
                 k_matrix[..., j + 1:, j] /= k_matrix[..., j, j].unsqueeze(-1)
@@ -671,3 +579,97 @@ def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
     log_one_m_p = F.logsigmoid(-logit)
     log_prob_bernoulli = (c.detach() * log_p + ~c.detach() * log_one_m_p)
     return log_prob_bernoulli
+
+
+# class Quantizer(torch.nn.Module):
+#     """
+#     Module that quantizes the incoming vectors using a finite dictionary.
+#     Useful for implementing a VQ-VAE model.
+#     """
+#     def __init__(self, num_embeddings: int, embedding_dim: int, decay: float = 0.99, epsilon: float = 1E-6):
+#         """
+#         Args:
+#             num_embeddings: the number of element in the dictionary
+#             embedding_dim: the size of the embedding
+#             decay: decay for calculation of the moving averages of the element in the dictionary
+#             epsilon: small float constant to avoid numerical instabilities
+#         """
+#         super().__init__()
+#         self.embedding_dim = embedding_dim
+#         self.num_embeddings = num_embeddings
+#
+#         self.embeddings = torch.nn.Parameter(data=torch.randn((self.embedding_dim, self.num_embeddings),
+#                                                               dtype=torch.float),
+#                                              requires_grad=False)
+#
+#         # Variables used to keep track of the moving averages of the cluster means
+#         self._log_num_embeddings = numpy.log(self.num_embeddings)
+#         self._decay = decay
+#         self._epsilon = epsilon
+#         self._n = torch.nn.Parameter(data=torch.zeros(self.num_embeddings, dtype=torch.float), requires_grad=False)
+#         self._m = torch.nn.Parameter(data=torch.zeros((self.embedding_dim, self.num_embeddings),
+#                                                       dtype=torch.float), requires_grad=False)
+#
+#     @staticmethod
+#     def _swap(x, axis_to_quantize):
+#         """ Put the axis to quantize last. To undo the swap simply apply this operation twice """
+#         if (axis_to_quantize == -1) or (axis_to_quantize == len(x.shape)):
+#             return x
+#         else:
+#             return torch.transpose(x, dim0=axis_to_quantize, dim1=-1)
+#
+#     def forward(self, x, axis_to_quantize: int, generate_synthetic_data: bool):
+#
+#         # TODO: to generate synthetic data I need to...
+#         #   For now just ignore and pretend generate_synthetic_data is always False
+#         # if generate_synthetic_data:
+#         #     raise NotImplementedError
+#
+#         # Put the dimension to quantize last and flatten the array
+#         x_swapped = self._swap(x, axis_to_quantize=axis_to_quantize)
+#         z = x_swapped.flatten(end_dim=-2)  # shape: (*, embedding_dim)
+#
+#         with torch.no_grad():
+#             # dist(z,y)=||z-y||^2 = z^2 + y^2 - 2*z*y
+#             z2 = z.pow(2).sum(dim=-1, keepdim=True)  # shape = (*, 1)
+#             y2 = self.embeddings.pow(2).sum(dim=-2, keepdim=True)  # shape = (1, num_embeddings)
+#             yz = torch.matmul(z, self.embeddings)  # shape = (*, num_embeddings)
+#
+#             # Find the indices corresponding to the closest code in the dictionary
+#             embed_indices = (z2 + y2 - 2 * yz).min(dim=-1)[1]  # shape = (*)
+#
+#             # Compute the utilization of the dictionary
+#             one_hot = F.one_hot(embed_indices, num_classes=self.num_embeddings).float()  # size: (*, num_embeddings)
+#             dn = one_hot.sum(dim=-2)  # Number of vector assigned to each codeword. Shape = (num_embeddings)
+#             dm = torch.matmul(z.transpose(-1, -2), one_hot)  # shape = (embedding_dim, num_embeddings)
+#             p = dn / torch.sum(dn)  # probability of each codeword. Shape = (num_embeddings)
+#             perplexity = - (p * torch.log(p + 1E-8)).sum() / self._log_num_embeddings  # Normalized entropy of the codeword distribution
+#
+#         # Compute the quantized vectors
+#         zq = F.embedding(embed_indices, self.embeddings.transpose(0, 1))  # shape = (*, embedding_dim)
+#
+#         # Make the quantized vector of the same shape as input
+#         xq_swapped = zq.view_as(x_swapped)
+#         iq_swapped = embed_indices.view_as(x_swapped[..., 0]).unsqueeze(-1)
+#
+#         # Undo the swap if necessary
+#         xq = self._swap(xq_swapped, axis_to_quantize=axis_to_quantize)
+#         iq = self._swap(iq_swapped, axis_to_quantize=axis_to_quantize)
+#
+#         commitment_cost = (xq.detach() - x).pow(2).mean()  # force encoder close to chosen code
+#
+#         # If the model is in training mode then the embeddings are update using the moving averages
+#         if self.training:
+#             with torch.no_grad():
+#                 self._n.data = self._decay * self._n + (1-self._decay) * dn
+#                 self._m.data = self._decay * self._m + (1-self._decay) * dm
+#
+#                 # Compute the mean embedding but make sure not to divide by zero
+#                 n_tot = torch.sum(self._n)
+#                 n_tmp = (self._n + self._epsilon) * n_tot / (n_tot + self.num_embeddings * self._epsilon)
+#                 self.embeddings.data = self._m / n_tmp
+#
+#
+#         return VQ(value=x + (xq - x).detach(), index=iq, commitment_cost=commitment_cost, perplexity=perplexity)
+
+

@@ -479,72 +479,70 @@ def plot_generation(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='imgs, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/imgs")
-    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/c_grid_before_nms")
-    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/c_grid_after_nms")
-    fig_d = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='foreground, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/fg")
-    fig_d = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='background, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bg")
+    _ = show_batch(output.imgs.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='imgs, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/imgs")
+    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_before_nms")
+    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_after_nms")
+    _ = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='foreground, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg")
+    _ = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='background, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg")
 
     mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
-    fig_e = show_batch(mixing_fg_b1wh,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='fg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/fg_mask")
+    _ = show_batch(mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='fg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg_mask")
 
     mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
-    fig_f = show_batch(mixing_bg_b1wh,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='bg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bg_mask")
+    _ = show_batch(mixing_bg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg_mask")
 
-    fig_g = show_batch(output.bb_imgs,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bb_selection")
+    _ = show_batch(output.bb_imgs,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bb_selection")
 
     if verbose:
         print("leaving plot_generation")
-
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g
 
 
 def plot_reconstruction_and_inference(output: Output,
@@ -555,112 +553,129 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='imgs, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/imgs")
+    _ = show_batch(output.imgs.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='imgs, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/imgs")
 
-    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/c_grid_before_nms")
+    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   n_mc_samples=2,
+                   normalize=False,
+                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_before_nms")
 
-    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/c_grid_after_nms")
+    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   n_mc_samples=2,
+                   normalize=False,
+                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_after_nms")
 
-    fig_d = show_batch(output.inference.logit_grid,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=True,
-                       normalize_range=(-3, 3),
-                       title='logit_unet, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/logit_unet")
+    _ = show_batch(output.inference.logit_grid,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   normalize_range=(-3, 3),
+                   title='logit_unet, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/logit_unet")
 
-    fig_e = show_batch(torch.sigmoid(output.inference.logit_grid),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='prob_unet, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/prob_unet")
+    _ = show_batch(torch.sigmoid(output.inference.logit_grid),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='prob_unet, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/prob_unet")
 
-    fig_f = show_batch(output.inference.prob_from_ranking_grid,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='prob_ranking, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/prob_ranking")
+    _ = show_batch(output.inference.prob_from_ranking_grid,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='prob_ranking, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/prob_ranking")
 
-    fig_d = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='foreground, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/fg")
+    _ = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='foreground, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg")
 
-    fig_g = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='background, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bg")
+    _ = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='background, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg")
 
-    fig_h = show_batch(output.inference.mask_overlap_1wh,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=True,
-                       normalize_range=(0.0, 2.0),
-                       title='overlap, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/overlap")
+    _ = show_batch(output.inference.mask_overlap_1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   normalize_range=(0.0, 2.0),
+                   title='overlap, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/overlap")
 
     mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
-    fig_i = show_batch(mixing_fg_b1wh,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='fg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/fg_mask")
+    _ = show_batch(mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='fg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg_mask")
 
-    fig_l = show_batch(torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh,
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='bg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bg_mask")
+    _ = show_batch(torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg_mask")
 
-    fig_m = show_batch(output.bb_imgs,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"/bb_selection")
+    _ = show_batch(output.bb_imgs,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bb_selection")
+
+    # print(output.inference.feature_map.shape) --> bathc_size, ch, w, h
+    _ = show_batch(output.inference.feature_map[0].unsqueeze(-3),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   title='feature map, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/f_map")
+
+    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
+    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h
+    tmp = torch.cat((output.inference.small_imgs_in[0], output.inference.small_imgs_out[0]), dim=0)
+    _ = show_batch(tmp,
+                   n_col=tmp.shape[0]//2,
+                   n_padding=4,
+                   normalize=False,
+                   title='small patches, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/small_patch")
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")
-
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h, fig_i, fig_l, fig_m
 
 
 def plot_segmentation(segmentation: Segmentation,
