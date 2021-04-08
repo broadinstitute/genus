@@ -420,7 +420,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
-        # I clamp indicator_bk to PMIN to avoid numerical instabilities.
+        # I clamp indicator_bk to PMIN to avoid numerical instabilities since
+        # all of the instances are used in the shortcut.
         indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
         zbg_kl_av = zbg.kl.mean()
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
