@@ -18,7 +18,6 @@ task train {
 
 
     command <<<
-        echo "CAZZO"       
  
         exec_dir=$(pwd)
         echo "--> $exec_dir"
@@ -66,7 +65,7 @@ task train {
 #    }
     
     runtime {
-         docker: "us.gcr.io/broad-dsde-methods/genus:latest"
+         docker: "us.gcr.io/broad-dsde-methods/genus:0.0.2"
          bootDiskSizeGb: 100
          memory: "26G"
          cpu: 4
