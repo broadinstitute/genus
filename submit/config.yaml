@@ -6,7 +6,7 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 128
-  MAX_EPOCHS: 51
+  MAX_EPOCHS: 301
   TEST_FREQUENCY: 5
   CHECKPOINT_FREQUENCY: 50
   gaussian_mixture: False
@@ -91,8 +91,8 @@ loss:
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
   # Do not change them unless you understand what you are doing
-  lambda_mse_min_max: [0.1, 500.0]
-  lambda_fgfraction_min_max: [0.0, 0.0]
+  lambda_mse_min_max: [0.1, 100.0]
+  lambda_fgfraction_min_max: [0.0, 100.0]
   # lambda_ncell_min_max: [0.1, 1.0]
 
   # Hyper-parameters which control additional loss terms.
@@ -110,8 +110,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.0001
-  lr_geco: 0.001
+  lr: 0.001
+  lr_geco: 0.0001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -131,7 +131,7 @@ scheduler:
   type: "multistep_LR"
 
   # Multiplicative factor (less than 1.0) which reduce the learning rate
-  gamma: 0.5
+  gamma: 0.1
 
   # The "step_LR" scheduler decays the learning rate by gamma every step_size epochs
   step_size: 500
