@@ -138,9 +138,9 @@ class NonMaxSuppression(object):
         assert chosen_nms_mask_n.shape == score_n.shape
         masked_score_n = chosen_nms_mask_n * score_n
         k = min(k_objects_max, score_n.shape[-1])
-        indices_k = torch.topk(masked_score_n, k=k, dim=-1, largest=True, sorted=True)[1]
+        masked_score_k, indices_k = torch.topk(masked_score_n, k=k, dim=-1, largest=True, sorted=True)
 
-        k_mask_n = torch.zeros_like(masked_score_n).scatter(dim=-1,
-                                                            index=indices_k,
-                                                            src=torch.ones_like(masked_score_n))
-        return NmsOutput(k_mask_n=k_mask_n.bool(), indices_k=indices_k)
+        mask_k = torch.zeros_like(masked_score_n).scatter(dim=-1,
+                                                          index=indices_k,
+                                                          src=torch.ones_like(masked_score_n))
+        return NmsOutput(chosen_mask=mask_k.bool(), indices_k=indices_k, score_k=masked_score_k)

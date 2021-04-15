@@ -167,8 +167,9 @@ class TT(NamedTuple):
 
 
 class NmsOutput(NamedTuple):
-    k_mask_n: torch.Tensor  # mask with exactly k ones
+    chosen_mask: torch.Tensor  # mask with exactly k ones
     indices_k: torch.Tensor
+    score_k: torch.Tensor # score of the chosen object
 
 
 class SparseSimilarity(NamedTuple):

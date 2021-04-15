@@ -9,6 +9,7 @@ import skimage.morphology
 from typing import Tuple, Optional, Union
 from torch.distributions.utils import broadcast_all
 from torchvision import utils
+from matplotlib import colors as mplclr
 from matplotlib import pyplot as plt
 from IPython.display import HTML
 from matplotlib import animation
