@@ -341,19 +341,22 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                              iom_threshold=iom_threshold,
                                                                              k_objects_max=k_objects_max,
                                                                              topk_only=combined_topk_only)
-            k_mask_grid = invert_convert_to_box_list(nms_output.k_mask_n.unsqueeze(dim=-1),
-                                                     original_width=score_grid.shape[-2],
-                                                     original_height=score_grid.shape[-1])
-            c_grid_after_nms = c_grid_before_nms * k_mask_grid
+            nms_mask = invert_convert_to_box_list(nms_output.chosen_mask.unsqueeze(dim=-1),
+                                                  original_width=score_grid.shape[-2],
+                                                  original_height=score_grid.shape[-1])
+            assert nms_mask.shape == c_grid_before_nms.shape
+            c_grid_after_nms = c_grid_before_nms * nms_mask
 
         # 6. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
         bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
                                  by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
+        assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1),
-                                    dim=-1, index=nms_output.indices_k)
+        c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk  # straight-through estimator
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
 
         # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape
@@ -371,14 +374,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         posterior_std=F.softplus(zinstance_std),
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
-        small_stuff_out = self.decoder_zinstance.forward(zinstance.value)
-
-        # 9. The last channel is a mask (i.e. there is a sigmoid non-linearity applied)
-        # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
-        # except inside the bounding boxes
-        small_imgs_out, small_weights_out = torch.split(small_stuff_out,
-                                                        split_size_or_sections=(small_stuff_out.shape[-3] - 1, 1),
+        small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
+                                                        split_size_or_sections=(ch_raw_image, 1),
                                                         dim=-3)
+
+
+        # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
         out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
                                          small_stuff=small_imgs_out,
                                          width_big=width_raw_image,
@@ -389,14 +390,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                           height_big=height_raw_image)
 
         # Make a shortcut so that foreground can always try to learn a little bit
-        # TODO: Do I need to make a shortcut so that backgrdoun and foreground always learn?
+        # TODO: Do I need to make a shortcut so that background and foreground always learn?
+        #  No! I compute small_imgs_in just for debug
         small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
                                      height_small=self.glimpse_size)
-        loss_shortcut = (self.PMIN / self.sigma_fg**2) * (small_imgs_in - small_imgs_out).pow(2).mean()
 
         # 10. Compute the mixing (using a softmax-like function)
+        # TODO: In the paper I say that I use c with straight-through estimator
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
@@ -422,6 +424,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # KL is at full strength if the object is certain and lower strength otherwise.
         # I clamp indicator_bk to PMIN to avoid numerical instabilities since
         # all of the instances are used in the shortcut.
+        # TODO: Use as indicator c_bk?
         indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
         zbg_kl_av = zbg.kl.mean()
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
@@ -452,7 +455,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                    min_box_size=self.min_box_size,
                                    max_box_size=self.max_box_size)
 
-            # Convert to tgrid_ideal
+            # I now know the K ideal values of t_variable.
+            # I fill now a grid with the default and ideal value of t_variable
             bb_mask_grid = torch.zeros_like(t_grid)
             tgrid_ideal = torch.zeros_like(t_grid)
             tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell

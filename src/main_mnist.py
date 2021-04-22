@@ -19,8 +19,6 @@ print("torch.__version__ --> ", torch.__version__)
 torch.manual_seed(0)
 numpy.random.seed(0)
 
-print("TEST")
-
 config = load_yaml_as_dict("./config.yaml")
 exp: neptune.run.Run = neptune.init(project='dalessioluca/genus-new',
                                     source_files=["main*.py", "*/*.py", "config.yaml"],
