@@ -464,6 +464,13 @@ class InferenceAndGeneration(torch.nn.Module):
             # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
             # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
 
+            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
+            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
+            assert torch.isfinite(tt_ideal_bk.tx).all()
+            assert torch.isfinite(tt_ideal_bk.ty).all()
+            assert torch.isfinite(tt_ideal_bk.tw).all()
+            assert torch.isfinite(tt_ideal_bk.th).all()
+
             b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
             bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
             tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
