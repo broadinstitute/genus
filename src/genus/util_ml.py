@@ -574,7 +574,6 @@ def compute_logp_bernoulli(c: torch.Tensor, logit: torch.Tensor):
          :math:`log_prob(c_grid | BERNOULLI(logit_grid))` of the same shape as :attr:`c`.
          This value is differentiable w.r.t. the :attr:`logit` but not differentiable w.r.t. :attr:`c`.
      """
-
     log_p = F.logsigmoid(logit)
     log_one_m_p = F.logsigmoid(-logit)
     log_prob_bernoulli = (c.detach() * log_p + ~c.detach() * log_one_m_p)

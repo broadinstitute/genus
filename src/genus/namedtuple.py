@@ -143,6 +143,10 @@ class Partition(NamedTuple):
 #  ------- Stuff Related to Processing (i.e. CompositionalVAE) ----  #
 #  ----------------------------------------------------------------  #
 
+class GECO(NamedTuple):
+    loss: torch.Tensor
+    hyperparam: torch.Tensor
+
 
 class DIST(NamedTuple):
     """ Container for distribution sample and KL """
@@ -232,6 +236,7 @@ class MetricMiniBatch(NamedTuple):
     mse_av: float
     fgfraction_av: float
     ncell_av: float
+    ncell_lenient_av: float
     prob_av: float
     # term in the loss function
     cost_mse: float
@@ -248,6 +253,9 @@ class MetricMiniBatch(NamedTuple):
     annealing_factor: float
     lambda_mse: float
     lambda_fgfraction: float
+    lambda_entropy: float
+    entropy_ber: float
+    reinforce_ber: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray
