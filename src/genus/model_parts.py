@@ -308,22 +308,22 @@ class InferenceAndGeneration(torch.nn.Module):
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
-        self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
+        self.geco_fgfraction_min = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
+        self.geco_fgfraction_max = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_mse_max = GecoParameter(initial_value=1.0,
+        self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
         assert config["loss"]["lambda_entropy_max"] > 1.0
-        self.geco_entropy_factor = GecoParameter(initial_value=1.0,
+        self.geco_entropy_factor = GecoParameter(initial_value=config["loss"]["lambda_entropy_max"],
                                                  min_value=1.0,
                                                  max_value=config["loss"]["lambda_entropy_max"],
                                                  linear_exp=True)
