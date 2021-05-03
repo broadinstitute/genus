@@ -253,6 +253,8 @@ class MetricMiniBatch(NamedTuple):
     annealing_factor: float
     lambda_mse: float
     lambda_fgfraction: float
+    lambda_fgfraction_max: float
+    lambda_fgfraction_min: float
     lambda_entropy: float
     entropy_ber: float
     reinforce_ber: float

@@ -136,6 +136,7 @@ def tt_to_bb(tt: TT,
              min_box_size: float,
              max_box_size: float) -> BB:
     """ Transformation from :class:`TT` to :class:`BB` """
+    # TODO: Remove this assert
     assert (tt.ix >= 0).all() and (tt.ix < tgrid_size[0]).all()
     assert (tt.iy >= 0).all() and (tt.iy < tgrid_size[1]).all()
     assert (tt.tx >= 0).all() and (tt.tx <= 1.0).all()
@@ -210,6 +211,8 @@ class GecoParameter(torch.nn.Module):
         assert initial_value >= 0
         assert (min_value is None) or (min_value >= 0)
         assert (max_value is None) or (max_value >= 0)
+        if min_value is not None and max_value is not None:
+            assert max_value > min_value, "max_value {0} should be larger than min_value {1}".format(max_value, min_value)
 
         if linear_exp:
             self.geco_raw_lambda = torch.nn.Parameter(torch.tensor(inverse_linear_exp_activation(float(initial_value)),
@@ -306,19 +309,21 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
-                                                 min_value=None,
+                                                 min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
         self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
-                                                 min_value=None,
+                                                 min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
+        self.geco_mse_max = GecoParameter(initial_value=1.0,
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
-        self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=1.0, max_value=1.0, linear_exp=False)
-        self.geco_entropy_factor = GecoParameter(initial_value=config["loss"]["lambda_entropy_max"],
+        self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
+
+        assert config["loss"]["lambda_entropy_max"] > 1.0
+        self.geco_entropy_factor = GecoParameter(initial_value=1.0,
                                                  min_value=1.0,
                                                  max_value=config["loss"]["lambda_entropy_max"],
                                                  linear_exp=True)
@@ -356,6 +361,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      noisy_sampling=noisy_sampling,
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
+        # TODO; Remove but add clamp
+        assert (t_grid >= 0).all() and (t_grid <=1).all()
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
                                           rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
@@ -516,7 +523,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                          pad_size=self.pad_size_bb,
                                          min_box_size=self.min_box_size,
                                          max_box_size=self.max_box_size)
-            assert bb_ideal_bk
 
             # Convert bounding_boxes to the t_variable in [0,1]
             tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
@@ -559,7 +565,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint < 0, parameter will be decreased
 
         geco_mse: GECO = self.geco_mse_max.forward(constraint=2*(mse_av > 1.0).float()-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 3.0).float()-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 5.0).float()-1.0)
 
         ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
         ncell_av = (prob_bk > 0.49).sum(dim=-1).float().mean()
@@ -622,6 +628,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  annealing_factor=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=geco_fgfrac_hyperparam.detach().item(),
+                                 lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
+                                 lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_entropy=geco_entropy.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
