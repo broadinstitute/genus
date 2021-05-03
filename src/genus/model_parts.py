@@ -1,5 +1,5 @@
 import torch
-from typing import Union
+from typing import Union, Tuple
 import numpy
 import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
@@ -30,7 +30,7 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
             The optimal bounding boxes in :class:`BB` of shape :math:`(*, K)`
 
         Note:
-            The optimal bounding_box  is body-fitted around :math:`mask=(mixing > 0.5)`
+            The optimal bounding_box is body-fitted around :math:`mask=(mixing > 0.5)`
             with a padding of size `attr:pad_size` pixels. If the mask is small (or completely empty)
             the optimal bounding_box is a box of the minimum_allowed size.
 
@@ -53,7 +53,6 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
     minus_w = plus_w[-1] - plus_w + 1
 
     # Find the coordinates of the full bounding boxes
-    EPS=1E-3
     full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
     full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
     full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0.0, max=mask_kh.shape[-1]).float()
@@ -73,28 +72,26 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
     ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
     ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
 
-    # Compute the box coordinates (note the clamping of bw and bh)
-    EPS=1E-3
-    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k).clamp(min=EPS, max=mask_kw.shape[-1]-EPS)
-    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k).clamp(min=EPS, max=mask_kw.shape[-1]-EPS)
+    # From the 4 corners to the center and size of bb
     ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
     ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
-    
-    #print("optimal_bb -->",torch.min(ideal_bx_k), torch.max(ideal_bx_k))
-    #print("optimal_bb -->",torch.min(ideal_by_k), torch.max(ideal_by_k))
+    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
+    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
 
     return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k)
 
 
-def tgrid_to_bb(t_grid, rawimage_size_over_tgrid_size: int, min_box_size: float, max_box_size: float,
+def tgrid_to_bb(t_grid,
+                rawimage_size: Tuple[int, int],
+                min_box_size: float,
+                max_box_size: float,
                 convert_to_box: bool=True) -> BB:
     """
     Convert the output of the zwhere decoder to a list of bounding boxes
 
     Args:
         t_grid: tensor of shape :math:`(B,4,w_grid,h_grid)` with values in (0,1)
-        rawimage_size_over_tgrid_size: int, power of 2. The difference in spatial resolution between the original image
-            and the head which predicts the bounding boxes
+        rawimage_size: width and height of the raw image
         min_box_size: minimum allowed size for the bounding boxes
         max_box_size: maximum allowed size for the bounding boxes
         convert_to_box: boo, if False keep the same shape, it true convert to list of boxes
@@ -127,34 +124,47 @@ def tgrid_to_bb(t_grid, rawimage_size_over_tgrid_size: int, min_box_size: float,
                 iy=iy_grid)
 
     return tt_to_bb(tt=tt,
-                    rawimage_size_over_tgrid_size=rawimage_size_over_tgrid_size,
+                    rawimage_size=rawimage_size,
+                    tgrid_size=t_grid.shape[-2:],
                     min_box_size=min_box_size,
                     max_box_size=max_box_size)
 
 
 def tt_to_bb(tt: TT,
-             rawimage_size_over_tgrid_size: int,
-             min_box_size: float, max_box_size: float) -> BB:
+             rawimage_size: Tuple[int, int],
+             tgrid_size: Tuple[int, int],
+             min_box_size: float,
+             max_box_size: float) -> BB:
     """ Transformation from :class:`TT` to :class:`BB` """
-    bx = (tt.ix + tt.tx) * rawimage_size_over_tgrid_size  # values in (0,width_input_image)
-    by = (tt.iy + tt.ty) * rawimage_size_over_tgrid_size  # values in (0,height_input_image)
+    assert (tt.ix >= 0).all() and (tt.ix < tgrid_size[0]).all()
+    assert (tt.iy >= 0).all() and (tt.iy < tgrid_size[1]).all()
+    assert (tt.tx >= 0).all() and (tt.tx <= 1.0).all()
+    assert (tt.ty >= 0).all() and (tt.ty <= 1.0).all()
+    assert (tt.tw >= 0).all() and (tt.tw <= 1.0).all()
+    assert (tt.th >= 0).all() and (tt.th <= 1.0).all()
+
+    bx = (tt.ix + tt.tx) * float(rawimage_size[0]) / tgrid_size[0] # values in (0,width_input_image)
+    by = (tt.iy + tt.ty) * float(rawimage_size[1]) / tgrid_size[1] # values in (0,height_input_image)
     bw = min_box_size + (max_box_size - min_box_size) * tt.tw  # values in (min_box_size, max_box_size)
     bh = min_box_size + (max_box_size - min_box_size) * tt.th  # values in (min_box_size, max_box_size)
     return BB(bx=bx, by=by, bw=bw, bh=bh)
 
 
-def bb_to_tt(bb: BB, rawimage_size_over_tgrid_size: int, min_box_size: float, max_box_size: float) -> TT:
+def bb_to_tt(bb: BB,
+             rawimage_size: Tuple[int, int],
+             tgrid_size: Tuple[int, int],
+             min_box_size: float,
+             max_box_size: float) -> TT:
     """ Transformation from :class:`BB` to :class:`TT` """
-    tw = (bb.bw - min_box_size) / (max_box_size - min_box_size)
-    th = (bb.bh - min_box_size) / (max_box_size - min_box_size)
-    ix_plus_tx = bb.bx / rawimage_size_over_tgrid_size
-    iy_plus_ty = bb.by / rawimage_size_over_tgrid_size
-    
-    #print("bb_to_tt -->",torch.min(ix_plus_tx), torch.max(ix_plus_tx))
-    #print("bb_to_tt -->",torch.min(iy_plus_ty), torch.max(iy_plus_ty))
-    
-    ix, tx = ix_plus_tx.long(), ix_plus_tx % 1.0
-    iy, ty = iy_plus_ty.long(), iy_plus_ty % 1.0
+    tw = ((bb.bw - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+    th = ((bb.bh - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+    ix_plus_tx = (bb.bx * float(tgrid_size[0]) / rawimage_size[0]).clamp(min=0, max=tgrid_size[0])
+    iy_plus_ty = (bb.by * float(tgrid_size[1]) / rawimage_size[1]).clamp(min=0, max=tgrid_size[1])
+
+    ix = ix_plus_tx.clamp(min=0, max=tgrid_size[0]-1).long()
+    iy = iy_plus_ty.clamp(min=0, max=tgrid_size[1]-1).long()
+    tx = ix_plus_tx - ix
+    ty = iy_plus_ty - iy
     return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
 
 
@@ -347,7 +357,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
-                                          rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1]//t_grid.shape[-1],
+                                          rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
                                           max_box_size=self.max_box_size)
 
@@ -506,10 +516,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                          pad_size=self.pad_size_bb,
                                          min_box_size=self.min_box_size,
                                          max_box_size=self.max_box_size)
+            assert bb_ideal_bk
 
             # Convert bounding_boxes to the t_variable in [0,1]
             tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
-                                   rawimage_size_over_tgrid_size=imgs_bcwh.shape[-1] // t_grid.shape[-1],
+                                   rawimage_size=imgs_bcwh.shape[-2:],
+                                   tgrid_size=t_grid.shape[-2:],
                                    min_box_size=self.min_box_size,
                                    max_box_size=self.max_box_size)
 
@@ -592,7 +604,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_av.detach().item(),
-                                 ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
+                                 ncell_av=ncell_av.detach().item(),
                                  ncell_lenient_av=ncell_lenient_av.detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function

@@ -229,8 +229,9 @@ def draw_img(imgs_in: torch.Tensor,
 
     background = bg_mask * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
     bb1 = bb_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
-    bb2 = bb_ideal if draw_ideal_boxes else torch.zeros_like(rec_imgs_no_bb)
-    bb = bb1 + bb2
+    bb2 = bb_almost_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb3 = bb_ideal if draw_ideal_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb = bb1 + bb2 + bb3
     mask_no_bb = (torch.sum(bb, dim=-3, keepdim=True) == 0)
     imgs_rec_with_bb = mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb
 
