@@ -285,7 +285,7 @@ def draw_bounding_boxes(bounding_box: BB,
         img = PIL.Image.new(mode='RGB', size=(width, height), color=0)  # black canvas
         draw = PIL.ImageDraw.Draw(img)
         for k in range(p_n.shape[1]):
-            if p_n[n, k] > 0.5:
+            if p_n[n, k] >= 0.499:  # break symmetry of p = 1-p for p = 0.5
                 draw.rectangle(x1y1x3y3[n, k, :].cpu().numpy(), outline=color, fill=None)
                 draw.point(bxby[n, k, :].cpu().numpy(), fill=color)
         canvas_numpy[n, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((height, width, 3))
