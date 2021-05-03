@@ -424,6 +424,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         posterior_std=F.softplus(zinstance_std),
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
+        # print(zinstance.kl.shape) # --> batch, n_boxes, zinstance_dim
+        zinstance_kl_bk = zinstance.kl.mean(dim=-1)
         small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
                                                         split_size_or_sections=(ch_raw_image, 1),
                                                         dim=-3)
@@ -475,10 +477,16 @@ class InferenceAndGeneration(torch.nn.Module):
         # I clamp indicator_bk to PMIN to avoid numerical instabilities since
         # all of the instances are used in the shortcut.
         # TODO: Use as indicator c_bk?
+        area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
         indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
+
+        # print(zbg.kl.shape)  # -> batch, ch, w_small, h_small
         zbg_kl_av = zbg.kl.mean()
-        zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
-        zinstance_kl_av = (zinstance.kl * indicator_bk[..., None]).mean()
+
+        # print(zwhere_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zwhere_dim)
+        # print(zinstance_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zinstance_dim)
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk * area_bk).sum() / (width_raw_image * height_raw_image)
+        zinstance_kl_av = (zinstance_kl_bk * indicator_bk * area_bk).sum() / (width_raw_image * height_raw_image)
 
         # 12. Observation model
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
@@ -514,6 +522,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
             # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
 
+            # TODO: double check this
             assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
             assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
             assert torch.isfinite(tt_ideal_bk.tx).all()
@@ -541,7 +550,8 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 3.0).float()-1.0)
 
         ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
-        geco_entropy: GECO = self.geco_entropy_factor.forward(constraint=2*(ncell_lenient_av <
+        ncell_av = (prob_bk > 0.49).sum(dim=-1).float().mean()
+        geco_entropy: GECO = self.geco_entropy_factor.forward(constraint=2*(ncell_av <
                                                                             self.min_average_objects_per_patch).float()-1)
 
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()

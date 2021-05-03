@@ -204,21 +204,21 @@ def draw_img(imgs_in: torch.Tensor,
                                       prob=inference.sample_prob_k,
                                       color="red")
 
-    bb_proposed = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                                      width=imgs_in.shape[-2],
-                                      height=imgs_in.shape[-1],
-                                      prob=torch.ones_like(inference.sample_prob_k) - inference.sample_prob_k,
-                                      color="blue")
+    bb_almost_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                             width=imgs_in.shape[-2],
+                                             height=imgs_in.shape[-1],
+                                             prob=torch.ones_like(inference.sample_prob_k) - inference.sample_prob_k,
+                                             color="blue")
 
     bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
                                    width=imgs_in.shape[-2],
                                    height=imgs_in.shape[-1],
-                                   prob=inference.sample_prob_k,
+                                   prob=torch.ones_like(inference.sample_prob_k),
                                    color="green")
 
-    # Draw inferred and proposed bb on top of the input image.
+    # Draw inferred and almost_inferred bb on top of the input image.
     # This is helpful to debug the recognition network
-    bb_all = bb_inferred + bb_proposed
+    bb_all = bb_inferred + bb_almost_inferred
     mask_no_bb_all = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
     imgs_in_with_all_bb = mask_no_bb_all * imgs_in + ~mask_no_bb_all * bb_all
 
@@ -655,7 +655,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/bb_selection")
 
-    # print(output.inference.feature_map.shape) --> bathc_size, ch, w, h
+    # print(output.inference.feature_map.shape) --> batch_size, ch, w, h
     _ = show_batch(output.inference.feature_map[0].unsqueeze(-3),
                    n_col=5,
                    n_padding=4,
@@ -670,7 +670,8 @@ def plot_reconstruction_and_inference(output: Output,
     _ = show_batch(tmp,
                    n_col=tmp.shape[0]//2,
                    n_padding=4,
-                   normalize=False,
+                   normalize=True,
+                   normalize_range=(-0.5, 1.5),
                    title='small patches, epoch= {0:6d}'.format(epoch),
                    experiment=experiment,
                    neptune_name=prefix+"/small_patch")
