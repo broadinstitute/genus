@@ -201,19 +201,19 @@ def draw_img(imgs_in: torch.Tensor,
     bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
                                       width=imgs_in.shape[-2],
                                       height=imgs_in.shape[-1],
-                                      prob=inference.sample_prob_k,
+                                      c=inference.sample_prob_k >= 0.5,
                                       color="red")
 
     bb_almost_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
                                              width=imgs_in.shape[-2],
                                              height=imgs_in.shape[-1],
-                                             prob=torch.ones_like(inference.sample_prob_k) - inference.sample_prob_k,
+                                             c=inference.sample_prob_k < 0.5,
                                              color="blue")
 
     bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
                                    width=imgs_in.shape[-2],
                                    height=imgs_in.shape[-1],
-                                   prob=torch.ones_like(inference.sample_prob_k),
+                                   c=torch.ones_like(inference.sample_prob_k).bool(),
                                    color="green")
 
     # Draw inferred and almost_inferred bb on top of the input image.
@@ -241,7 +241,7 @@ def draw_img(imgs_in: torch.Tensor,
 def draw_bounding_boxes(bounding_box: BB,
                         width: int,
                         height: int,
-                        prob: torch.Tensor,
+                        c: torch.Tensor,
                         color: str = 'red') -> torch.Tensor:
     """
     Draw the bounding boxes.
@@ -250,7 +250,7 @@ def draw_bounding_boxes(bounding_box: BB,
         bounding_box: BB of shape (*,K)
         width: width in pixel of the canvas
         height: height in pixel of the canvas
-        prob: probability that box contains a foreground object of shape (*,K)
+        c: boolean indicator of shape (*,K). Only the BB corrisponding to c=True are drawn
         color: color to use to draw the bounding box
 
     Returns:
@@ -259,8 +259,8 @@ def draw_bounding_boxes(bounding_box: BB,
     Note:
         Works for any number of leading dimensions. Each leading dimension will be processed independently
     """
-
-    p_n, bx_n, by_n, bw_n, bh_n = broadcast_all(prob,
+    assert c.dtype == torch.bool
+    c_n, bx_n, by_n, bw_n, bh_n = broadcast_all(c,
                                                 bounding_box.bx, bounding_box.by,
                                                 bounding_box.bw, bounding_box.bh)
 
@@ -273,19 +273,19 @@ def draw_bounding_boxes(bounding_box: BB,
     bxby = torch.stack((bx_n, by_n), dim=-1)
 
     # Reshape
-    independet_dim = list(p_n.shape[:-1])
+    independet_dim = list(c_n.shape[:-1])
     canvas_numpy = torch.zeros(independet_dim + [height, width, 3]).flatten(end_dim=-4).numpy()  # shape (*,w,h,3)
     bxby = bxby.flatten(end_dim=-3)          # (b,k,2) -> (*,k,2)
     x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)  # (b,k,4) -> (*,k,2)
-    p_n = p_n.flatten(end_dim=-2)            # (b,k)   -> (*,k)
+    c_n = c_n.flatten(end_dim=-2)            # (b,k)   -> (*,k)
 
     # draw the bounding boxes
-    for n in range(p_n.shape[0]):
+    for n in range(c_n.shape[0]):
         # Draw on PIL
         img = PIL.Image.new(mode='RGB', size=(width, height), color=0)  # black canvas
         draw = PIL.ImageDraw.Draw(img)
-        for k in range(p_n.shape[1]):
-            if p_n[n, k] >= 0.499:  # break symmetry of p = 1-p for p = 0.5
+        for k in range(c_n.shape[1]):
+            if c_n[n, k]:
                 draw.rectangle(x1y1x3y3[n, k, :].cpu().numpy(), outline=color, fill=None)
                 draw.point(bxby[n, k, :].cpu().numpy(), fill=color)
         canvas_numpy[n, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((height, width, 3))

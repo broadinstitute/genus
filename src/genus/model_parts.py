@@ -362,7 +362,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
         # TODO; Remove but add clamp
-        assert (t_grid >= 0).all() and (t_grid <=1).all()
+        assert (t_grid >= 0.0).all() and (t_grid <=1.0).all(), "problem min={0}, max={1}".format(t_grid.max().item(),
+                                                                                                 t_grid.min().item())
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
                                           rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
