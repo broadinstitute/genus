@@ -327,6 +327,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 1. UNET
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
+        unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
         zbg_mu, zbg_std = torch.split(unet_output.zbg,
@@ -359,7 +360,6 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
 
             # 4. From logit to binarized configuration of having an object at a certain location
-            unet_prob_b1wh = torch.sigmoid(unet_output.logit)
             if generate_synthetic_data:
                 # sample from dpp prior
                 c_grid_before_nms_mcsamples = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
@@ -476,7 +476,6 @@ class InferenceAndGeneration(torch.nn.Module):
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
         reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
-
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
