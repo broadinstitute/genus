@@ -108,7 +108,7 @@ echo "Current values: -->" $WDL $WDL_JSON $ML_CONFIG $BUCKET
 # 1. copy ML_CONFIG in the cloud with random hash
 echo
 echo "Step1: copying $ML_CONFIG  into google bucket"
-RANDOM_HASH=$(cat /dev/urandom | env LC_CTYPE=C tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
+RANDOM_HASH=$(cat /dev/urandom | od -vAn -N8 -tx8 | head -1 | awk '{print $1}')
 ML_CONFIG_CLOUD="$BUCKET/${RANDOM_HASH}_$ML_CONFIG"
 gsutil cp $ML_CONFIG $ML_CONFIG_CLOUD 
 if [ "$?" != "0" ]; then

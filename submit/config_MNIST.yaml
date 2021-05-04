@@ -6,7 +6,7 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 128
-  MAX_EPOCHS: 51
+  MAX_EPOCHS: 501
   TEST_FREQUENCY: 5
   CHECKPOINT_FREQUENCY: 50
   gaussian_mixture: False
@@ -31,8 +31,7 @@ architecture:
   zwhere_dim: 4  # must be a multiple of 4
 
   # related to encoding-decoding of glimpses
-  glimpse_size: 32
-  encoder_decoder_scale_factor: 8
+  glimpse_size: 28  # only 28 will work for now
   zinstance_dim: 64
 
   # Float values in (0,1) for the IntersectionOverMinimum threshold to be used in non-max-suppression.
@@ -57,6 +56,10 @@ input_image:
   # Small value will force the model to group distinct objects together.
   max_objects_per_patch: 8
 
+  # Float. If the average number of objects in a patch get smaller than this value
+  # it means that the model is getting stuck in a wrong solution. GECO will chick in to change course.
+  min_average_objects_per_patch: 1.0
+
   # Tuple with the range (in pixel) of the size of the objects
   range_object_size: [10, 35]
 
@@ -78,22 +81,17 @@ input_image:
   # See our example notebook to see how to choose these parameters.
   # Note that this is just the prior, the inferred number of object in each scene will in general deviate from the prior.
   # In future releases, we will make these parameters learnable.
-  DPP_learnable: False
   DPP_length: 5.0
   DPP_weight: 0.2
-  # In the current release the following parameters are not used
-  # DPP_length_min_max: [2.0, 50.0]
-  # DPP_weight_min_max: [0.01, 100.0]
-  # target_ncell_min_max: [2.0, 6.0]
 
 # parameter related to the loss function
 loss:
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
   # Do not change them unless you understand what you are doing
-  lambda_mse_min_max: [0.1, 500.0]
-  lambda_fgfraction_min_max: [0.0, 0.0]
-  # lambda_ncell_min_max: [0.1, 1.0]
+  lambda_mse_min_max: [0.1, 10.0]
+  lambda_fgfraction_max: 1000.0
+  lambda_entropy_max: 1000.0
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
@@ -110,7 +108,7 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.0001
+  lr: 0.001
   lr_geco: 0.001
 
   # Betas parameters for the Adam optimizer
