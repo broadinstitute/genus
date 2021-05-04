@@ -312,7 +312,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
-        self.geco_reinforce_ber = GecoParameter(initial_value=0.0, min_value=0.0, max_value=1.0, linear_exp=False)
+
+        # These two params are for annealing from one to zero.
+        self.geco_reinforce_ber = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -374,10 +376,16 @@ class InferenceAndGeneration(torch.nn.Module):
             # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
             c_grid_before_nms = c_grid_before_nms_mcsamples[0]
 
+            # During pretraining, annealing factor is annealed 1-> 0
+            # The boxes are selected according to:
+            # score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
             annealing_factor = self.geco_annealing_factor.get()
             if annealing_factor == 0:
+                # does not need to compute the ranking
                 prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
+
             else:
+                # compute the ranking
                 av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_bcwh).abs(),
                                                                 bounding_box=bounding_box_bn)
                 ranking_bn = compute_ranking(av_intensity_in_box_bn)
@@ -386,8 +394,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                     original_width=unet_prob_b1wh.shape[-2],
                                                                     original_height=unet_prob_b1wh.shape[-1])
 
-            # During pretraining, annealing factor is > 0 and I select the boxes according to:
-            # score = (1-a) * (c+p) + a * ranking
+            # compute:
+            # score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
             score_grid = (torch.ones_like(annealing_factor) - annealing_factor) * \
                          (c_grid_before_nms.float() + unet_prob_b1wh) + annealing_factor * prob_from_ranking_grid
 
@@ -556,17 +564,18 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint > 0, parameter will be decreased
         # if constraint < 0, parameter will be increased
         geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 5.0)*2.0-1.0)
 
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
 
+        # these two are used during pretraining. They go 1 -> 0
         ncell_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
         ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
         geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=(ncell_av > self.min_average_objects_per_patch)*2.0-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 5.0)*2.0-1.0)
 
-        logit_kl_av = - entropy_ber - geco_reinforce.hyperparam * reinforce_ber
+        logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
         # Put all the losses together
         loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction_min.loss + \
