@@ -9,9 +9,6 @@ simulation:
   MAX_EPOCHS: 501
   TEST_FREQUENCY: 5
   CHECKPOINT_FREQUENCY: 50
-  gaussian_mixture: False
-  bb_regression_always_active: True
-
 
 # architecture parameters
 architecture:

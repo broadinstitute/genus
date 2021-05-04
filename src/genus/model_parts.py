@@ -136,37 +136,29 @@ def tt_to_bb(tt: TT,
              min_box_size: float,
              max_box_size: float) -> BB:
     """ Transformation from :class:`TT` to :class:`BB` """
-    # TODO: Remove this assert
-    assert (tt.ix >= 0).all() and (tt.ix < tgrid_size[0]).all()
-    assert (tt.iy >= 0).all() and (tt.iy < tgrid_size[1]).all()
-    assert (tt.tx >= 0).all() and (tt.tx <= 1.0).all()
-    assert (tt.ty >= 0).all() and (tt.ty <= 1.0).all()
-    assert (tt.tw >= 0).all() and (tt.tw <= 1.0).all()
-    assert (tt.th >= 0).all() and (tt.th <= 1.0).all()
-
-    bx = (tt.ix + tt.tx) * float(rawimage_size[0]) / tgrid_size[0] # values in (0,width_input_image)
-    by = (tt.iy + tt.ty) * float(rawimage_size[1]) / tgrid_size[1] # values in (0,height_input_image)
+    bx = (tt.ix + tt.tx) * float(rawimage_size[0]) / tgrid_size[0] # values in (0, rawimage_size[0])
+    by = (tt.iy + tt.ty) * float(rawimage_size[1]) / tgrid_size[1] # values in (0, rawimage_size[1])
     bw = min_box_size + (max_box_size - min_box_size) * tt.tw  # values in (min_box_size, max_box_size)
     bh = min_box_size + (max_box_size - min_box_size) * tt.th  # values in (min_box_size, max_box_size)
     return BB(bx=bx, by=by, bw=bw, bh=bh)
 
 
-def bb_to_tt(bb: BB,
-             rawimage_size: Tuple[int, int],
-             tgrid_size: Tuple[int, int],
-             min_box_size: float,
-             max_box_size: float) -> TT:
-    """ Transformation from :class:`BB` to :class:`TT` """
-    tw = ((bb.bw - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
-    th = ((bb.bh - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
-    ix_plus_tx = (bb.bx * float(tgrid_size[0]) / rawimage_size[0]).clamp(min=0, max=tgrid_size[0])
-    iy_plus_ty = (bb.by * float(tgrid_size[1]) / rawimage_size[1]).clamp(min=0, max=tgrid_size[1])
-
-    ix = ix_plus_tx.clamp(min=0, max=tgrid_size[0]-1).long()
-    iy = iy_plus_ty.clamp(min=0, max=tgrid_size[1]-1).long()
-    tx = ix_plus_tx - ix
-    ty = iy_plus_ty - iy
-    return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
+# def bb_to_tt(bb: BB,
+#              rawimage_size: Tuple[int, int],
+#              tgrid_size: Tuple[int, int],
+#              min_box_size: float,
+#              max_box_size: float) -> TT:
+#     """ Transformation from :class:`BB` to :class:`TT` """
+#     tw = ((bb.bw - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+#     th = ((bb.bh - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+#     ix_plus_tx = (bb.bx * float(tgrid_size[0]) / rawimage_size[0]).clamp(min=0, max=tgrid_size[0])
+#     iy_plus_ty = (bb.by * float(tgrid_size[1]) / rawimage_size[1]).clamp(min=0, max=tgrid_size[1])
+#
+#     ix = ix_plus_tx.clamp(min=0, max=tgrid_size[0]-1).long()
+#     iy = iy_plus_ty.clamp(min=0, max=tgrid_size[1]-1).long()
+#     tx = ix_plus_tx - ix
+#     ty = iy_plus_ty - iy
+#     return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
 
 
 def linear_exp_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
@@ -251,9 +243,8 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # TODO: Remove these two
+        # TODO: Remove?
         self.PMIN = 1E-3
-        self.bb_regression_always_active = config["simulation"]["bb_regression_always_active"]
 
         # variables
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
@@ -367,7 +358,8 @@ class InferenceAndGeneration(torch.nn.Module):
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
                                           rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
-                                          max_box_size=self.max_box_size)
+                                          max_box_size=self.max_box_size,
+                                          convert_to_box=True)
 
         with torch.no_grad():
 
@@ -489,6 +481,7 @@ class InferenceAndGeneration(torch.nn.Module):
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
         reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
+        logit_kl_av = - entropy_ber - reinforce_ber
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
@@ -514,74 +507,76 @@ class InferenceAndGeneration(torch.nn.Module):
         # 13. Other cost functions
         # Cost for non-overlapping masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
-        mask_overlap_cost = mask_overlap_b1wh.mean()
+        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
-        # Cost for ideal bounding boxes
-        with torch.no_grad():
-            # Compute the ideal bounding boxes from the mixing probabilities
-            bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
-                                         bounding_boxes_k=bounding_box_bk,
-                                         pad_size=self.pad_size_bb,
-                                         min_box_size=self.min_box_size,
-                                         max_box_size=self.max_box_size)
+        # Compute the ideal bounding boxes from the mixing probabilities and the regression cost
+        bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
+                                     bounding_boxes_k=bounding_box_bk,
+                                     pad_size=self.pad_size_bb,
+                                     min_box_size=self.min_box_size,
+                                     max_box_size=self.max_box_size)
+        bb_regression_bk = torch.abs(bb_ideal_bk.bx - bounding_box_bk.bx) + \
+                           torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
+                           torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
+                           torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
+        bb_regression_cost = self.bb_regression_strength * (bb_regression_bk * c_attached_bk).sum() / batch_size
 
-            # Convert bounding_boxes to the t_variable in [0,1]
-            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
-                                   rawimage_size=imgs_bcwh.shape[-2:],
-                                   tgrid_size=t_grid.shape[-2:],
-                                   min_box_size=self.min_box_size,
-                                   max_box_size=self.max_box_size)
-
-            # I now know the K ideal values of t_variable.
-            # I fill now a grid with the default and ideal value of t_variable
-            bb_mask_grid = torch.zeros_like(t_grid)
-            tgrid_ideal = torch.zeros_like(t_grid)
-            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
-            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
-            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
-            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
-
-            # TODO: double check this
-            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
-            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
-            assert torch.isfinite(tt_ideal_bk.tx).all()
-            assert torch.isfinite(tt_ideal_bk.ty).all()
-            assert torch.isfinite(tt_ideal_bk.tw).all()
-            assert torch.isfinite(tt_ideal_bk.th).all()
-
-            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
-            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
-            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
-            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
-            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
-            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
+##      with torch.no_grad():
+##            # Convert bounding_boxes to the t_variable in [0,1]
+##            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
+##                                   rawimage_size=imgs_bcwh.shape[-2:],
+##                                   tgrid_size=t_grid.shape[-2:],
+##                                   min_box_size=self.min_box_size,
+##                                   max_box_size=self.max_box_size)
+##
+##            # I now know the K ideal values of t_variable.
+##            # I fill now a grid with the default and ideal value of t_variable
+##            bb_mask_grid = torch.zeros_like(t_grid)
+##            tgrid_ideal = torch.zeros_like(t_grid)
+##            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
+##            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
+##            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+##            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
+##
+##            # TODO: double check this
+##            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
+##            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
+##            assert torch.isfinite(tt_ideal_bk.tx).all()
+##            assert torch.isfinite(tt_ideal_bk.ty).all()
+##            assert torch.isfinite(tt_ideal_bk.tw).all()
+##            assert torch.isfinite(tt_ideal_bk.th).all()
+##
+##            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
+##            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
+##            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
+##            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
+##            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
+##            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
 
         # Outside torch.no_grad() compute the bb_regression_cost
         # TODO: Compute regression for all or only some of the boxes?
         # bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
-        bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
+        # bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be increased
         # if constraint < 0, parameter will be decreased
-
         geco_mse: GECO = self.geco_mse_max.forward(constraint=2*(mse_av > 1.0).float()-1.0)
         geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 5.0).float()-1.0)
-
-        ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
-        ncell_av = (prob_bk > 0.49).sum(dim=-1).float().mean()
-        geco_entropy: GECO = self.geco_entropy_factor.forward(constraint=2*(ncell_av <
-                                                                            self.min_average_objects_per_patch).float()-1)
 
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=2.0*(fgfrac_av < self.target_fgfraction_min).float() - 1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=2.0*(fgfrac_av > self.target_fgfraction_max).float() - 1.0)
 
+        ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
+        ncell_av = (prob_bk > 0.49).sum(dim=-1).float().mean()
+        #geco_entropy: GECO = self.geco_entropy_factor.forward(constraint=2*(ncell_av <
+        #                                                                    self.min_average_objects_per_patch).float()-1)
+
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_entropy.loss + geco_mse.loss + \
+        loss_geco = geco_annealing.loss + geco_mse.loss + \
                     geco_fgfraction_min.loss + geco_fgfraction_max.loss
 
-        logit_kl_av = - geco_entropy.hyperparam * entropy_ber - reinforce_ber
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
@@ -631,7 +626,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction=geco_fgfrac_hyperparam.detach().item(),
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
-                                 lambda_entropy=geco_entropy.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
