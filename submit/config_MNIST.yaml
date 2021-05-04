@@ -69,7 +69,7 @@ input_image:
   # The goal is to segment the scene into objects not to achieve perfect reconstruction.
   # Therefore use a not-to-small value.
   # For example, if the image intensity is the range (0,1) then use 0.1
-  target_mse_max: 0.075
+  target_mse_max: 0.076
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
