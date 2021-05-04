@@ -227,13 +227,13 @@ class GecoParameter(torch.nn.Module):
         return transformed_lambda.detach()
 
     def forward(self, constraint):
-        # THis is first since it clamps lambda in the allowed range
+        # This is first since it clamps lambda in the allowed range
         transformed_lambda = self.get()
 
         # Minimization of the loss function leads to:
-        # if constraint > 0, parameter will be increased
-        # if constraint < 0, parameter will be decreased
-        loss_geco = - self.geco_raw_lambda * constraint.detach()
+        # Constraint satisfied -----> constraint > 0 ---> reduce the parameter
+        # Constraint is violated ---> constraint < 0 ---> increase the parameter
+        loss_geco = self.geco_raw_lambda * constraint.detach()
 
         return GECO(loss=loss_geco, hyperparam=transformed_lambda)
 
