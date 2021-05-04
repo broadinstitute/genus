@@ -299,26 +299,20 @@ class InferenceAndGeneration(torch.nn.Module):
         self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
-        self.geco_fgfraction_min = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
+        # Dynamical parameter controlled by GECO
+        self.geco_fgfraction_min = GecoParameter(initial_value=10.0,
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_fgfraction_max = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
+        self.geco_fgfraction_max = GecoParameter(initial_value=10.0,
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
+        self.geco_mse_max = GecoParameter(initial_value=10.0,
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
-
-        assert config["loss"]["lambda_entropy_max"] > 1.0
-        self.geco_entropy_factor = GecoParameter(initial_value=config["loss"]["lambda_entropy_max"],
-                                                 min_value=1.0,
-                                                 max_value=config["loss"]["lambda_entropy_max"],
-                                                 linear_exp=True)
-
 
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
@@ -519,7 +513,7 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = self.bb_regression_strength * (bb_regression_bk * c_attached_bk).sum() / batch_size
+        bb_regression_cost = self.bb_regression_strength * (bb_regression_bk * c_detached_bk).sum() / batch_size
 
 ##      with torch.no_grad():
 ##            # Convert bounding_boxes to the t_variable in [0,1]
@@ -561,26 +555,19 @@ class InferenceAndGeneration(torch.nn.Module):
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be increased
         # if constraint < 0, parameter will be decreased
-        geco_mse: GECO = self.geco_mse_max.forward(constraint=2*(mse_av > 1.0).float()-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 5.0).float()-1.0)
-
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=2.0*(fgfrac_av < self.target_fgfraction_min).float() - 1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=2.0*(fgfrac_av > self.target_fgfraction_max).float() - 1.0)
-
-        ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
-        ncell_av = (prob_bk > 0.49).sum(dim=-1).float().mean()
-        #geco_entropy: GECO = self.geco_entropy_factor.forward(constraint=2*(ncell_av <
-        #                                                                    self.min_average_objects_per_patch).float()-1)
+        geco_mse: GECO = self.geco_mse_max.forward(constraint=2*(mse_av > 1.0).float()-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 5.0).float()-1.0)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_mse.loss + \
-                    geco_fgfraction_min.loss + geco_fgfraction_max.loss
+        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction_min.loss + geco_fgfraction_max.loss
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
-                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
+                   geco_fgfrac_hyperparam * p_times_mask_bk1wh.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av
         loss_tot = loss_vae + loss_geco
@@ -606,13 +593,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_av.detach().item(),
-                                 ncell_av=ncell_av.detach().item(),
-                                 ncell_lenient_av=ncell_lenient_av.detach().item(),
+                                 ncell_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
+                                 ncell_lenient_av=(prob_bk > 0.3).sum(dim=-1).float().mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=(geco_mse.hyperparam * mse_av).detach().item(),
                                  cost_mask_overlap_av=(geco_mse.hyperparam * mask_overlap_cost).detach().item(),
-                                 cost_fgfraction=(geco_fgfrac_hyperparam * out_mask_bk1wh.mean()).detach().item(),
+                                 cost_fgfraction=(geco_fgfrac_hyperparam * p_times_mask_bk1wh.mean()).detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
                                  kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
