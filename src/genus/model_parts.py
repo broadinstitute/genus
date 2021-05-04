@@ -573,7 +573,7 @@ class InferenceAndGeneration(torch.nn.Module):
         ncell_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
         ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
         geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=(ncell_av > self.min_average_objects_per_patch)*2.0-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 5.0)*2.0-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 2.0)*2.0-1.0)
 
         logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
