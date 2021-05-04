@@ -255,6 +255,7 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction: float
     lambda_fgfraction_max: float
     lambda_fgfraction_min: float
+    lambda_reinforce: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy

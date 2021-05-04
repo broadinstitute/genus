@@ -312,6 +312,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
+        self.geco_reinforce_ber = GecoParameter(initial_value=0.0, min_value=0.0, max_value=1.0, linear_exp=False)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -475,7 +476,7 @@ class InferenceAndGeneration(torch.nn.Module):
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
         reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
-        logit_kl_av = - entropy_ber - reinforce_ber
+
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
@@ -553,16 +554,24 @@ class InferenceAndGeneration(torch.nn.Module):
         # bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
 
         # GECO (i.e. make the hyper-parameters dynamical)
-        # if constraint > 0, parameter will be increased
-        # if constraint < 0, parameter will be decreased
+        # if constraint > 0, parameter will be decreased
+        # if constraint < 0, parameter will be increased
+        geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 5.0)*2.0-1.0)
+
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
-        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=2.0*(fgfrac_av < self.target_fgfraction_min).float() - 1.0)
-        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=2.0*(fgfrac_av > self.target_fgfraction_max).float() - 1.0)
-        geco_mse: GECO = self.geco_mse_max.forward(constraint=2*(mse_av > 1.0).float()-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=2*(mse_av > 5.0).float()-1.0)
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
+
+        ncell_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
+        ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
+        geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=(ncell_av > self.min_average_objects_per_patch)*2.0-1.0)
+
+        logit_kl_av = - entropy_ber - geco_reinforce.hyperparam * reinforce_ber
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction_min.loss + geco_fgfraction_max.loss
+        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction_min.loss + \
+                    geco_fgfraction_max.loss + geco_reinforce.loss
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
@@ -593,8 +602,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_av.detach().item(),
-                                 ncell_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
-                                 ncell_lenient_av=(prob_bk > 0.3).sum(dim=-1).float().mean().detach().item(),
+                                 ncell_av=ncell_av.detach().item(),
+                                 ncell_lenient_av=ncell_lenient_av.detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=(geco_mse.hyperparam * mse_av).detach().item(),
@@ -613,6 +622,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction=geco_fgfrac_hyperparam.detach().item(),
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
+                                 lambda_reinforce=geco_reinforce.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
