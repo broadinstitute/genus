@@ -508,6 +508,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 13. Other cost functions
         # Cost for non-overlapping masks
+        # TODO: overlap penalty should not suppress the probability, only the masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 

@@ -87,12 +87,11 @@ loss:
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
   # Do not change them unless you understand what you are doing
   lambda_mse_min_max: [0.1, 10.0]
-  lambda_fgfraction_max: 1000.0
-  lambda_entropy_max: 1000.0
+  lambda_fgfraction_max: 10000.0
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
-  mask_overlap_penalty_strength: 0.1
+  mask_overlap_penalty_strength: 0.0
   bounding_box_regression_penalty_strength: 0.1
   bounding_box_regression_padding: 3
 
