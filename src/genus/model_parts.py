@@ -418,8 +418,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk  # straight-through estimator
+        # c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        # c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk  # straight-through estimator
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
 
         # 7. Crop the unet_features according to the selected boxes
@@ -445,18 +445,15 @@ class InferenceAndGeneration(torch.nn.Module):
 
 
         # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
-        out_img_bkcwh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                         small_stuff=small_imgs_out,
-                                         width_big=width_raw_image,
-                                         height_big=height_raw_image)
-        out_mask_bk1wh = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                          small_stuff=torch.sigmoid(small_weights_out),
-                                          width_big=width_raw_image,
-                                          height_big=height_raw_image)
+        big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
+                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out)), dim=-3),
+                                     width_big=width_raw_image,
+                                     height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
+        out_img_bkcwh,  out_mask_bk1wh = torch.split(big_stuff,
+                                                     split_size_or_sections=(ch_raw_image, 1),
+                                                     dim=-3)
 
-        # Make a shortcut so that foreground can always try to learn a little bit
-        # TODO: Do I need to make a shortcut so that background and foreground always learn?
-        #  No! I compute small_imgs_in just for debug
+        # I am cropping this for debug to see if the instance encoder-decoder can learn to reconstruct the small patches
         small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
@@ -484,6 +481,7 @@ class InferenceAndGeneration(torch.nn.Module):
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
         reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
+
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
@@ -522,7 +520,7 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = self.bb_regression_strength * (bb_regression_bk * c_detached_bk).sum() / batch_size
+        bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum() / batch_size
 
 ##      with torch.no_grad():
 ##            # Convert bounding_boxes to the t_variable in [0,1]
