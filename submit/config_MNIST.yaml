@@ -29,7 +29,7 @@ architecture:
 
   # related to encoding-decoding of glimpses
   glimpse_size: 28  # only 28 will work for now
-  zinstance_dim: 64
+  zinstance_dim: 20
 
   # Float values in (0,1) for the IntersectionOverMinimum threshold to be used in non-max-suppression.
   # Lower value lead to a more strict NMS.
@@ -66,7 +66,7 @@ input_image:
   # The goal is to segment the scene into objects not to achieve perfect reconstruction.
   # Therefore use a not-to-small value.
   # For example, if the image intensity is the range (0,1) then use 0.1
-  target_mse_max: 0.076
+  target_mse_max: 0.075
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
@@ -86,13 +86,13 @@ loss:
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
   # Do not change them unless you understand what you are doing
-  lambda_mse_min_max: [0.1, 10.0]
+  lambda_mse_min_max: [0.1, 500.01]
   lambda_fgfraction_max: 10000.0
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
-  mask_overlap_penalty_strength: 0.0
-  bounding_box_regression_penalty_strength: 0.1
+  mask_overlap_penalty_strength: 0.001
+  bounding_box_regression_penalty_strength: 0.001
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
