@@ -565,6 +565,7 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
 
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
+        fgfrac_lenient_av = mixing_fg_b1wh.mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
 
@@ -609,6 +610,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_av.detach().item(),
+                                 fgfraction_lenient_av=fgfrac_lenient_av.detach().item(),
                                  ncell_av=ncell_av.detach().item(),
                                  ncell_lenient_av=ncell_lenient_av.detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),

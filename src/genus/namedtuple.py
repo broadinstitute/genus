@@ -235,6 +235,7 @@ class MetricMiniBatch(NamedTuple):
     # monitoring
     mse_av: float
     fgfraction_av: float
+    fgfraction_lenient_av: float
     ncell_av: float
     ncell_lenient_av: float
     prob_av: float
