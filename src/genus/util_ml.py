@@ -546,7 +546,7 @@ def sample_and_kl_diagonal_normal(posterior_mu: torch.Tensor,
         sample = torch.zeros_like(random) + torch.ones_like(random) * random if noisy_sampling else torch.zeros_like(random)
     else:
         # working with the posterior
-        sample = post_mu + post_std * random if noisy_sampling else post_mu.expand_as(random)
+        sample = post_mu + post_std * random if noisy_sampling else post_mu
 
     return DIST(value=sample, kl=kl)
 

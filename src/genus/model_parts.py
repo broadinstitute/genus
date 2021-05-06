@@ -336,7 +336,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                       split_size_or_sections=unet_output.zbg.shape[-3]//2,
                                       dim=-3)
         zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
-                                                  posterior_std=F.softplus(zbg_std),
+                                                  posterior_std=F.softplus(zbg_std)+1E-3,
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
         out_background_bcwh = self.decoder_zbg(zbg.value)
@@ -346,7 +346,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                             split_size_or_sections=unet_output.zwhere.shape[-3]//2,
                                             dim=-3)
         zwhere: DIST = sample_and_kl_diagonal_normal(posterior_mu=zwhere_mu,
-                                                     posterior_std=F.softplus(zwhere_std),
+                                                     posterior_std=F.softplus(zwhere_std)+1E-3,
                                                      noisy_sampling=noisy_sampling,
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
@@ -434,7 +434,7 @@ class InferenceAndGeneration(torch.nn.Module):
         zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
         zinstance_mu, zinstance_std = torch.split(zinstance_tmp, split_size_or_sections=zinstance_tmp.shape[-1]//2, dim=-1)
         zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
-                                                        posterior_std=F.softplus(zinstance_std),
+                                                        posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
         # print(zinstance.kl.shape) # --> batch, n_boxes, zinstance_dim
