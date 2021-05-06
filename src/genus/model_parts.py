@@ -308,6 +308,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
+        self.geco_nobj_min = GecoParameter(initial_value=10.0,
+                                           min_value=0.0,
+                                           max_value=config["loss"]["lambda_nobject_max"],
+                                           linear_exp=True)
+        self.geco_nobj_max = GecoParameter(initial_value=10.0,
+                                           min_value=0.0,
+                                           max_value=config["loss"]["lambda_nobject_max"],
+                                           linear_exp=True)
         self.geco_mse_max = GecoParameter(initial_value=10.0,
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
@@ -480,6 +488,10 @@ class InferenceAndGeneration(torch.nn.Module):
             logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
             baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
             d_mb = (logp_dpp_before_nms_mb - baseline_b)
+            n_tmp1 = self.grid_dpp.n_mean
+            n_tmp2 = self.grid_dpp.n_stddev
+            target_nobj_min = n_tmp1 - n_tmp2
+            target_nobj_max = n_tmp1 + n_tmp2
         reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
 
 
@@ -562,18 +574,28 @@ class InferenceAndGeneration(torch.nn.Module):
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be decreased
         # if constraint < 0, parameter will be increased
+
+        # mse should be smaller than maximum allowed values
         geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
 
+        # fgfraction should in in range
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
         fgfrac_lenient_av = mixing_fg_b1wh.mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
 
-        # these two are used during pretraining. They go 1 -> 0
-        ncell_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
-        ncell_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
-        geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=(ncell_av > self.min_average_objects_per_patch)*2.0-1.0)
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=(mse_av < 2.0)*2.0-1.0)
+        # nobject should be in range
+        nobj_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
+        nobj_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
+        geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=(nobj_av >  target_nobj_min)*2.0-1.0)
+        geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=(nobj_av <  target_nobj_max)*2.0-1.0)
+
+        # if all the other conditions are satisfied I am going to decrease the warming parameters
+        everything_in_range = (mse_av < 3.0) * \
+                              (fgfrac_av > self.target_fgfraction_min) * (fgfrac_av < self.target_fgfraction_max) * \
+                              (nobj_av > target_nobj_min) * (nobj_av < target_nobj_max)
+        geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=everything_in_range*2.0-1.0)
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=everything_in_range*2.0-1.0)
 
         logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
@@ -582,9 +604,11 @@ class InferenceAndGeneration(torch.nn.Module):
                     geco_fgfraction_max.loss + geco_reinforce.loss
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
+        geco_nobj_hyperparam = geco_nobj_min.hyperparam - geco_nobj_max.hyperparam
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
                    geco_fgfrac_hyperparam * p_times_mask_bk1wh.mean() + \
+                   geco_nobj_hyperparam * prob_bk.sum()/batch_size + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av
         loss_tot = loss_vae + loss_geco
@@ -611,8 +635,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_av.detach().item(),
                                  fgfraction_lenient_av=fgfrac_lenient_av.detach().item(),
-                                 ncell_av=ncell_av.detach().item(),
-                                 ncell_lenient_av=ncell_lenient_av.detach().item(),
+                                 nobj_av=nobj_av.detach().item(),
+                                 nobj_lenient_av=nobj_lenient_av.detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=(geco_mse.hyperparam * mse_av).detach().item(),

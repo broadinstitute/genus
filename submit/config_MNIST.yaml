@@ -53,10 +53,6 @@ input_image:
   # Small value will force the model to group distinct objects together.
   max_objects_per_patch: 8
 
-  # Float. If the average number of objects in a patch get smaller than this value
-  # it means that the model is getting stuck in a wrong solution. GECO will chick in to change course.
-  min_average_objects_per_patch: 1.0
-
   # Tuple with the range (in pixel) of the size of the objects
   range_object_size: [10, 35]
 
@@ -88,6 +84,7 @@ loss:
   # Do not change them unless you understand what you are doing
   lambda_mse_min_max: [0.1, 500.01]
   lambda_fgfraction_max: 10000.0
+  lambda_nobject_max: 10000.0
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
