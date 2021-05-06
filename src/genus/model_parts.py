@@ -564,7 +564,7 @@ class InferenceAndGeneration(torch.nn.Module):
                     geco_nobj_min.loss + geco_nobj_max.loss
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
-        geco_nobj_hyperparam = geco_nobj_min.hyperparam - geco_nobj_max.hyperparam
+        geco_nobj_hyperparam = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
                    geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
