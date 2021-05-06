@@ -249,8 +249,6 @@ class InferenceAndGeneration(torch.nn.Module):
         # variables
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
-
-        self.min_average_objects_per_patch = config["input_image"]["min_average_objects_per_patch"]
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
@@ -321,7 +319,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
 
-        # These two params are for annealing from one to zero.
+        # These two params are control the warm-up phase and are annealed from ONE to ZERO
         self.geco_reinforce_ber = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
@@ -504,25 +502,23 @@ class InferenceAndGeneration(torch.nn.Module):
         indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
 
         # print(zbg.kl.shape)  # -> batch, ch, w_small, h_small
-        zbg_kl_av = zbg.kl.mean()
-
         # print(zwhere_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zwhere_dim)
         # print(zinstance_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zinstance_dim)
-        zwhere_kl_av = (zwhere_kl_bk * indicator_bk * area_bk).sum() / (width_raw_image * height_raw_image)
-        zinstance_kl_av = (zinstance_kl_bk * indicator_bk * area_bk).sum() / (width_raw_image * height_raw_image)
+        zbg_kl_av = zbg.kl.mean()
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk * area_bk).sum() / (batch_size * width_raw_image * height_raw_image)
+        zinstance_kl_av = (zinstance_kl_bk * indicator_bk * area_bk).sum() / (batch_size * width_raw_image * height_raw_image)
 
         # 12. Observation model
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
 
-        # 13. Other cost functions
-        # Cost for non-overlapping masks
+        # 13. Cost for non-overlapping masks
         # TODO: overlap penalty should not suppress the probability, only the masks
         mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
-        # Compute the ideal bounding boxes from the mixing probabilities and the regression cost
+        # 14. Cost for bounding boxes not being properly fitted around the object
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
                                      bounding_boxes_k=bounding_box_bk,
                                      pad_size=self.pad_size_bb,
@@ -534,43 +530,6 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
         bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum() / batch_size
 
-##      with torch.no_grad():
-##            # Convert bounding_boxes to the t_variable in [0,1]
-##            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
-##                                   rawimage_size=imgs_bcwh.shape[-2:],
-##                                   tgrid_size=t_grid.shape[-2:],
-##                                   min_box_size=self.min_box_size,
-##                                   max_box_size=self.max_box_size)
-##
-##            # I now know the K ideal values of t_variable.
-##            # I fill now a grid with the default and ideal value of t_variable
-##            bb_mask_grid = torch.zeros_like(t_grid)
-##            tgrid_ideal = torch.zeros_like(t_grid)
-##            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
-##            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
-##            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
-##            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
-##
-##            # TODO: double check this
-##            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
-##            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
-##            assert torch.isfinite(tt_ideal_bk.tx).all()
-##            assert torch.isfinite(tt_ideal_bk.ty).all()
-##            assert torch.isfinite(tt_ideal_bk.tw).all()
-##            assert torch.isfinite(tt_ideal_bk.th).all()
-##
-##            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
-##            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
-##            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
-##            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
-##            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
-##            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
-
-        # Outside torch.no_grad() compute the bb_regression_cost
-        # TODO: Compute regression for all or only some of the boxes?
-        # bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
-        # bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
-
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be decreased
         # if constraint < 0, parameter will be increased
@@ -578,13 +537,13 @@ class InferenceAndGeneration(torch.nn.Module):
         # mse should be smaller than maximum allowed values
         geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
 
-        # fgfraction should in in range
+        # fgfraction should in target range
         fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
         fgfrac_lenient_av = mixing_fg_b1wh.mean()
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
 
-        # nobject should be in range
+        # nobject should be in target range
         nobj_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
         nobj_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=(nobj_av >  target_nobj_min)*2.0-1.0)
@@ -600,15 +559,16 @@ class InferenceAndGeneration(torch.nn.Module):
         logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction_min.loss + \
-                    geco_fgfraction_max.loss + geco_reinforce.loss
+        loss_geco = geco_annealing.loss +  geco_reinforce.loss + geco_mse.loss + \
+                    geco_fgfraction_min.loss + geco_fgfraction_max.loss + \
+                    geco_nobj_min.loss + geco_nobj_max.loss
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
         geco_nobj_hyperparam = geco_nobj_min.hyperparam - geco_nobj_max.hyperparam
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
-                   geco_fgfrac_hyperparam * p_times_mask_bk1wh.mean() + \
-                   geco_nobj_hyperparam * prob_bk.sum()/batch_size + \
+                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
+                   geco_nobj_hyperparam * prob_bk.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av
         loss_tot = loss_vae + loss_geco
@@ -664,3 +624,41 @@ class InferenceAndGeneration(torch.nn.Module):
                                  accuracy=-1.0)
 
         return inference, metric
+
+
+#########      with torch.no_grad():
+#########            # Convert bounding_boxes to the t_variable in [0,1]
+#########            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
+#########                                   rawimage_size=imgs_bcwh.shape[-2:],
+#########                                   tgrid_size=t_grid.shape[-2:],
+#########                                   min_box_size=self.min_box_size,
+#########                                   max_box_size=self.max_box_size)
+#########
+#########            # I now know the K ideal values of t_variable.
+#########            # I fill now a grid with the default and ideal value of t_variable
+#########            bb_mask_grid = torch.zeros_like(t_grid)
+#########            tgrid_ideal = torch.zeros_like(t_grid)
+#########            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
+#########            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
+#########            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+#########            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
+#########
+#########            # TODO: double check this
+#########            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
+#########            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
+#########            assert torch.isfinite(tt_ideal_bk.tx).all()
+#########            assert torch.isfinite(tt_ideal_bk.ty).all()
+#########            assert torch.isfinite(tt_ideal_bk.tw).all()
+#########            assert torch.isfinite(tt_ideal_bk.th).all()
+#########
+#########            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
+#########            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
+#########            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
+#########            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
+#########            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
+#########            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
+#######
+######## Outside torch.no_grad() compute the bb_regression_cost
+######## TODO: Compute regression for all or only some of the boxes?
+######## bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
+######## bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()

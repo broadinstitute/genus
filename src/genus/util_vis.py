@@ -182,9 +182,10 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        tmp_file_name = neptune_name.replace("/", "_")
-        fig.savefig(tmp_file_name + ".png")
-        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
 
     plt.close(fig)
     return fig
@@ -318,9 +319,10 @@ def plot_grid(img,
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        tmp_file_name = neptune_name.replace("/", "_")
-        fig.savefig(tmp_file_name + ".png")
-        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig
 
@@ -351,9 +353,10 @@ def plot_img_and_seg(img: torch.Tensor,
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        tmp_file_name = neptune_name.replace("/", "_")
-        fig.savefig(tmp_file_name + ".png")
-        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig
 
@@ -399,8 +402,9 @@ def plot_tiling(tiling,
 
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        fig.savefig(neptune_name + ".png")
-        experiment[neptune_name].log(File(neptune_name + ".png"))
+        # fig.savefig(neptune_name + ".png")
+        # experiment[neptune_name].log(File(neptune_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig
 
@@ -416,9 +420,11 @@ def plot_concordance(concordance,
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        tmp_file_name = neptune_name.replace("/", "_")
-        fig.savefig(tmp_file_name + ".png")
-        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+
     plt.close(fig)
     return fig
 
