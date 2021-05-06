@@ -464,9 +464,10 @@ def show_batch(images: torch.Tensor,
 
     if (neptune_name is not None) and (experiment is not None):
         # experiment[neptune_name].log(fig)
-        tmp_file_name = neptune_name.replace("/", "_")
-        fig.savefig(tmp_file_name + ".png")
-        experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        #tmp_file_name = neptune_name.replace("/", "_")
+        #fig.savefig(tmp_file_name + ".png")
+        #experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
 
     plt.close(fig)
     return fig
