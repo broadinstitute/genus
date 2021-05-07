@@ -243,8 +243,8 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # TODO: Remove?
-        self.PMIN = 1E-3
+        # TODO: Remove? No!
+        self.shortcut_strenght = 1E-3
 
         # variables
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
@@ -465,7 +465,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
                                      height_small=self.glimpse_size)
-
+        rec_shortcut = ((small_imgs_in - small_imgs_out)/self.sigma_fg).pow(2).mean()
+        kl_shortcut = zinstance_kl_bk.mean()
+        loss_shortcut = self.shortcut_strenght * (rec_shortcut + kl_shortcut)
 
         # 10. Compute the mixing (using a softmax-like function)
         # TODO: In the paper I say that I use c with straight-through estimator
@@ -497,11 +499,9 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Compute the KL divergences of the Gaussian Posterior
         # KL is at full strength if the object is certain and lower strength otherwise.
-        # I clamp indicator_bk to PMIN to avoid numerical instabilities since
-        # all of the instances are used in the shortcut.
         # TODO: Use as indicator c_bk?
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
-        indicator_bk = prob_bk.clamp(min=self.PMIN).detach()
+        indicator_bk = prob_bk.detach()
 
         # print(zbg.kl.shape)  # -> batch, ch, w_small, h_small
         # print(zwhere_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zwhere_dim)
@@ -568,12 +568,15 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
         geco_nobj_hyperparam = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
 
-        loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
-                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
-                   geco_nobj_hyperparam * prob_bk.mean() + \
-                   zinstance_kl_av + zbg_kl_av + logit_kl_av + \
-                   bb_regression_cost + zwhere_kl_av
-        loss_tot = loss_vae + loss_geco
+#        loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
+#                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
+#                   geco_nobj_hyperparam * prob_bk.mean() + \
+#                   zinstance_kl_av + zbg_kl_av + logit_kl_av + \
+#                   bb_regression_cost + zwhere_kl_av + \
+#                   loss_shortcut
+#        loss_tot = loss_vae + loss_geco
+
+        loss_tot = loss_shortcut
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),

@@ -82,6 +82,9 @@ loss:
   # The loss functions has many terms whose importance is controlled by the 3 values below.
   # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
   # Do not change them unless you understand what you are doing
+  # The idea is that lambda_nobject and lambda_fgfraction can become as big as necessary to force the parameters
+  # to be in the desired range.
+  # lambda_mse should not become too large otherwise the KL term is meaningless.
   lambda_mse_min_max: [0.1, 10.0]
   lambda_fgfraction_max: 10000.0
   lambda_nobject_max: 10000.0
