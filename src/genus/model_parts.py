@@ -459,11 +459,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      split_size_or_sections=(ch_raw_image, 1),
                                                      dim=-3)
 
-        # I am cropping this for debug to see if the instance encoder-decoder can learn to reconstruct the small patches
+        # Crop small patches and add a weak loss so that instance encoder-decoder learns something even
+        # if fgfraction goes to zero accidentally.
         small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
                                      height_small=self.glimpse_size)
+
 
         # 10. Compute the mixing (using a softmax-like function)
         # TODO: In the paper I say that I use c with straight-through estimator
