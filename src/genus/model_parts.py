@@ -373,7 +373,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # 4. From logit to binarized configuration of having an object at a certain location
             if generate_synthetic_data:
                 # sample from dpp prior
-                c_grid_before_nms = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
+                c_grid_before_nms = self.grid_dpp.sample(size=unet_prob_b1wh.size())
             else:
                 # sample from posterior
                 c_grid_before_nms = (torch.rand_like(unet_prob_b1wh) < unet_prob_b1wh) if noisy_sampling \

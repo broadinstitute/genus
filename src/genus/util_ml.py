@@ -464,10 +464,12 @@ class Grid_DPP(torch.nn.Module):
     def sample(self, size: torch.Size):
         """
         Draw a random sample of size torch.Size according to the current values of length_scale, weight.
-        Note that size must be at least 2D.
+        The last two dimensions are treated as spatial coordinates.
+        All other dimension are assumed independent.
         The samples are not differentiable.
         """
-        assert len(size) >= 2
+        assert len(size) >= 2, "the spatial dimension must be at least 2. Instead I found {0}".format(len(size))
+
         current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
                               self.similiraty_kernel.weight_value.data.item(),
                               size[-2], size[-1])

@@ -20,7 +20,7 @@ torch.manual_seed(0)
 numpy.random.seed(0)
 
 config = load_yaml_as_dict("./config.yaml")
-exp: neptune.run.Run = neptune.init(project='dalessioluca/genus-new',
+exp: neptune.run.Run = neptune.init(project=project=config["neptune_project"],
                                     source_files=["main*.py", "*/*.py", "config.yaml"],
                                     mode="async",
                                     capture_stdout=True,
