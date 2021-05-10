@@ -1,5 +1,5 @@
 # neptune project for logging the simulation results
-neptune_project: "dalessioluca/genus"
+neptune_project: "cellarium/genus"
 
 # simulation-level parameters
 simulation:
@@ -96,7 +96,9 @@ loss:
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
-  n_mc_samples: 100
+  mc_temperatures: [1.0, 2.0, 3.0, 4.0, 5.0]
+  n_mc_samples_for_temperature: 20
+
 
 # parameter related to the optimizer
 optimizer:

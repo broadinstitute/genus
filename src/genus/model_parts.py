@@ -243,15 +243,18 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # TODO: Remove? No!
+        # TODO: Remove shortcut? No!
         self.shortcut_strenght = 1E-3
+        self.mc_temperatures = torch.nn.Parameter(data=torch.tensor(config["loss"]["mc_temperatures"],
+                                                                    dtype=torch.float), requires_grad=False)
+        self.n_mc_samples_for_temperature = config["loss"]["n_mc_samples_for_temperature"]
 
         # variables
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
-        self.n_mc_samples = config["loss"]["n_mc_samples"]
+
 
         self.min_box_size = config["input_image"]["range_object_size"][0]
         self.max_box_size = config["input_image"]["range_object_size"][1]
@@ -370,18 +373,13 @@ class InferenceAndGeneration(torch.nn.Module):
             # 4. From logit to binarized configuration of having an object at a certain location
             if generate_synthetic_data:
                 # sample from dpp prior
-                c_grid_before_nms_mcsamples = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
+                c_grid_before_nms = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
             else:
                 # sample from posterior
-                prob_expanded = unet_prob_b1wh.expand(self.n_mc_samples, -1,-1,-1,-1)
-                c_grid_before_nms_mcsamples = (torch.rand_like(prob_expanded) < prob_expanded)
-                if not noisy_sampling:
-                    c_grid_before_nms_mcsamples[0] = (prob_expanded[0] > 0.5)
+                c_grid_before_nms = (torch.rand_like(unet_prob_b1wh) < unet_prob_b1wh) if noisy_sampling \
+                    else (unet_prob_b1wh > 0.5)
 
             # 5. NMS + top-K operation
-            # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
-            c_grid_before_nms = c_grid_before_nms_mcsamples[0]
-
             # During pretraining, annealing factor is annealed 1-> 0
             # The boxes are selected according to:
             # score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
@@ -389,7 +387,6 @@ class InferenceAndGeneration(torch.nn.Module):
             if annealing_factor == 0:
                 # does not need to compute the ranking
                 prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
-
             else:
                 # compute the ranking
                 av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_bcwh).abs(),
@@ -423,10 +420,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        # In all step below I am using the soft version of c, i.e. c -> p. Therefore I currently do not need to collect c_k.
         # c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
         # c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk  # straight-through estimator
-        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
 
         # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape
@@ -443,12 +441,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
-        # print(zinstance.kl.shape) # --> batch, n_boxes, zinstance_dim
         zinstance_kl_bk = zinstance.kl.mean(dim=-1)
         small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
                                                         split_size_or_sections=(ch_raw_image, 1),
                                                         dim=-3)
-
 
         # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
@@ -459,8 +455,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      split_size_or_sections=(ch_raw_image, 1),
                                                      dim=-3)
 
-        # Crop small patches and add a weak loss so that instance encoder-decoder learns something even
-        # if fgfraction goes to zero accidentally.
+        # Crop small patches and add a weak loss so that instance-encoder and instance-decoder can learn a bit
+        # It is just a way to make the model more robust
         small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
@@ -469,56 +465,31 @@ class InferenceAndGeneration(torch.nn.Module):
         kl_shortcut = zinstance_kl_bk.mean()
         loss_shortcut = self.shortcut_strenght * (rec_shortcut + kl_shortcut)
 
-        # 10. Compute the mixing (using a softmax-like function)
-        # TODO: In the paper I say that I use c with straight-through estimator
+        # 10. Compute the mixing (using a softmax-like function).
+        # I need two versions. One with probability attached and one detached.
+
+        # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
-        # 11. Compute the KL divergences
-        # Compute KL divergence between the DPP prior and the posterior:
-        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
-        # The first term is the negative entropy of the Bernoulli distribution.
-        # It can be computed analytically and its minimization w.r.t. "a" leads to high entropy posteriors.
-        # The second term can be estimated by REINFORCE ESTIMATOR and makes
-        # the posterior have more weight on configuration which are likely under the prior
-        entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
-        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
-                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        with torch.no_grad():
-            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
-            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            d_mb = (logp_dpp_before_nms_mb - baseline_b)
-            n_tmp1 = self.grid_dpp.n_mean
-            n_tmp2 = self.grid_dpp.n_stddev
-            target_nobj_min = n_tmp1 - n_tmp2
-            target_nobj_max = n_tmp1 + n_tmp2
-        reinforce_ber = (logp_ber_before_nms_mb * d_mb.detach()).mean()
+        # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
+        p_detached_times_mask_bk1wh = prob_bk[..., None, None, None].detach() * out_mask_bk1wh
+        tmp_bk1wh = p_detached_times_mask_bk1wh / torch.sum(p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mask_overlap_b1wh = tmp_bk1wh.sum(dim=-4).pow(2) - tmp_bk1wh.pow(2).sum(dim=-4)
+        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
-
-        # Compute the KL divergences of the Gaussian Posterior
-        # KL is at full strength if the object is certain and lower strength otherwise.
-        # TODO: Use as indicator c_bk?
+        # Since reconstruction gradient are proportional to p the KL should also be proportional to p
+        p_detached_bk = prob_bk.detach()
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
-        indicator_bk = prob_bk.detach()
-
-        # print(zbg.kl.shape)  # -> batch, ch, w_small, h_small
-        # print(zwhere_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zwhere_dim)
-        # print(zinstance_kl_bk.shape) # --> batch, n_boxes (because I have already done the average over zinstance_dim)
+        zinstance_kl_av = (zinstance_kl_bk * area_bk * p_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
         zbg_kl_av = zbg.kl.mean()
-        zwhere_kl_av = (zwhere_kl_bk * indicator_bk * area_bk).sum() / (batch_size * width_raw_image * height_raw_image)
-        zinstance_kl_av = (zinstance_kl_bk * indicator_bk * area_bk).sum() / (batch_size * width_raw_image * height_raw_image)
 
         # 12. Observation model
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
-
-        # 13. Cost for non-overlapping masks
-        # TODO: overlap penalty should not suppress the probability, only the masks
-        mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
-        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
         # 14. Cost for bounding boxes not being properly fitted around the object
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
@@ -530,7 +501,56 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = self.bb_regression_strength * bb_regression_bk.sum() / batch_size
+        bb_regression_cost = (p_detached_bk * bb_regression_bk).sum() / batch_size
+        zwhere_kl_av = (p_detached_bk * zwhere_kl_bk).sum() / batch_size
+
+        # TODO: Do this using importance sampling. The important distribution should be a
+        # 11. Compute the KL divergences
+        # Compute KL divergence between the DPP prior and the posterior:
+        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
+        # The first term is the negative entropy of the Bernoulli distribution.
+        # It can be computed analytically and its minimization w.r.t. "a" leads to high entropy posteriors.
+        # The second term can be estimated by REINFORCE ESTIMATOR and makes
+        # the posterior have more weight on configuration which are likely under the prior
+        entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
+
+        # APPROACH 1:
+        logit_expanded_v1 = unet_output.logit.expand([self.n_mc_samples_for_temperature,
+                                                      self.mc_temperatures.shape[0],-1,-1,-1,-1])
+        prob_expanded_v1 = torch.sigmoid(logit_expanded_v1)
+        c_mcsamples_v1 = (torch.rand_like(prob_expanded_v1) < prob_expanded_v1)
+        logp_ber_ntb_v1 = compute_logp_bernoulli(c=c_mcsamples_v1.detach(), logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        with torch.no_grad():
+            logp_dpp_ntb_v1 = self.grid_dpp.log_prob(value=c_mcsamples_v1.squeeze(-3).detach())
+            baseline_tb_v1 = logp_dpp_ntb_v1.mean(dim=0) # average w.r.t. the samples taken and the same temperature
+            d_ntb_v1 = (logp_dpp_ntb_v1 - baseline_tb_v1)
+            n_tmp1 = self.grid_dpp.n_mean
+            n_tmp2 = self.grid_dpp.n_stddev
+            target_nobj_min = n_tmp1 - n_tmp2
+            target_nobj_max = n_tmp1 + n_tmp2
+        reinforce_ber_v1 = (logp_ber_ntb_v1 * d_ntb_v1.detach()).mean()
+
+        # APPROACH 2
+        temp_block = self.mc_temperatures.view(1,-1,1,1,1,1).detach()
+        logit_expanded_v2 = unet_output.logit.expand([self.n_mc_samples_for_temperature,
+                                                      self.mc_temperatures.shape[0],-1,-1,-1,-1]) / temp_block
+        prob_expanded_v2 = torch.sigmoid(logit_expanded_v2)
+        c_mcsamples_v2 = (torch.rand_like(prob_expanded_v2) < prob_expanded_v2)
+        logp_ber_ntb_v2 = compute_logp_bernoulli(c=c_mcsamples_v2, logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        with torch.no_grad():
+            logp_ber_importance_ntb = compute_logp_bernoulli(c=c_mcsamples_v2, logit=logit_expanded_v2).sum(dim=(-1, -2, -3))
+            importance_weight = (logp_ber_ntb_v2 - logp_ber_importance_ntb).exp()
+            logp_dpp_ntb_v2 = self.grid_dpp.log_prob(value=c_mcsamples_v2.squeeze(-3).detach())
+            baseline_tb_v2 = logp_dpp_ntb_v2.mean(dim=0)  # average w.r.t. the samples taken and the same temperature
+            d_ntb_v2 = (logp_dpp_ntb_v2 - baseline_tb_v2)
+        reinforce_ber_v2 = (importance_weight * logp_ber_ntb_v2 * d_ntb_v2.detach()).mean()
+
+        # For debug I can print this ones
+        # print("v1 vs v2",reinforce_ber_v1, reinforce_ber_v2)
+        # print("v1 vs v2",logp_ber_ntb_v1.mean(), (importance_weight*logp_ber_ntb_v2).mean())
+        # print("v1 vs v2",(logp_ber_ntb_v1*logp_dpp_ntb_v1).mean(),
+        #       (importance_weight*logp_ber_ntb_v2*logp_dpp_ntb_v2).mean())
+
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be decreased
@@ -558,7 +578,7 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_reinforce: GECO = self.geco_reinforce_ber.forward(constraint=everything_in_range*2.0-1.0)
         geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=everything_in_range*2.0-1.0)
 
-        logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
+        logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber_v1
 
         # Put all the losses together
         loss_geco = geco_annealing.loss +  geco_reinforce.loss + geco_mse.loss + \
@@ -568,15 +588,13 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
         geco_nobj_hyperparam = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
 
-#        loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
-#                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
-#                   geco_nobj_hyperparam * prob_bk.mean() + \
-#                   zinstance_kl_av + zbg_kl_av + logit_kl_av + \
-#                   bb_regression_cost + zwhere_kl_av + \
-#                   loss_shortcut
-#        loss_tot = loss_vae + loss_geco
-
-        loss_tot = loss_shortcut
+        loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
+                   geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
+                   geco_nobj_hyperparam * prob_bk.mean() + \
+                   zinstance_kl_av + zbg_kl_av + logit_kl_av + \
+                   bb_regression_cost + zwhere_kl_av + \
+                   loss_shortcut
+        loss_tot = loss_vae + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -621,7 +639,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobject=geco_nobj_hyperparam.detach().item(),
                                  lambda_reinforce=geco_reinforce.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
-                                 reinforce_ber=reinforce_ber.detach().item(),
+                                 reinforce_ber=reinforce_ber_v2.detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
