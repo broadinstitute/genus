@@ -241,11 +241,13 @@ class MetricMiniBatch(NamedTuple):
     cost_mse: float
     cost_mask_overlap_av: float
     cost_fgfraction: float
+    cost_nobj: float
     cost_bb_regression_av: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
     kl_logit: float
+    shortcut_loss: float
     # debug
     similarity_l: float
     similarity_w: float

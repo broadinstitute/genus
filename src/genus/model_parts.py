@@ -628,12 +628,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # terms in the loss function
                                  cost_mse=(geco_mse.hyperparam * mse_av).detach().item(),
                                  cost_mask_overlap_av=(geco_mse.hyperparam * mask_overlap_cost).detach().item(),
-                                 cost_fgfraction=(geco_fgfrac_hyperparam * p_times_mask_bk1wh.mean()).detach().item(),
+                                 cost_fgfraction=(geco_fgfrac_hyperparam * out_mask_bk1wh.mean()).detach().item(),
+                                 cost_nobj=(geco_nobj_hyperparam * unet_output.logit.mean()).detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
                                  kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
                                  kl_zwhere=zwhere_kl_av.detach().item(),
                                  kl_logit=logit_kl_av.detach().item(),
+                                 shortcut_loss=shortcut_loss.detach().item(),
                                  # debug
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
