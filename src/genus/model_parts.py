@@ -461,7 +461,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                      big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
                                      width_small=self.glimpse_size,
                                      height_small=self.glimpse_size)
-        rec_shortcut = ((small_imgs_in - small_imgs_out)/self.sigma_fg).pow(2).mean()
+        rec_shortcut = ((small_imgs_in.detach() - small_imgs_out)/self.sigma_fg).pow(2).mean()
         kl_shortcut = zinstance_kl_bk.mean()
         loss_shortcut = self.shortcut_strenght * (rec_shortcut + kl_shortcut)
 
@@ -501,8 +501,9 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = (p_detached_bk * bb_regression_bk).sum() / batch_size
+        bb_regression_cost = self.bb_regression_strength * (p_detached_bk * bb_regression_bk).sum() / batch_size
         zwhere_kl_av = (p_detached_bk * zwhere_kl_bk).sum() / batch_size
+
 
         # TODO: Do this using importance sampling. The important distribution should be a
         # 11. Compute the KL divergences
@@ -515,9 +516,8 @@ class InferenceAndGeneration(torch.nn.Module):
         entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
 
         # APPROACH 1:
-        logit_expanded_v1 = unet_output.logit.expand([self.n_mc_samples_for_temperature,
-                                                      self.mc_temperatures.shape[0],-1,-1,-1,-1])
-        prob_expanded_v1 = torch.sigmoid(logit_expanded_v1)
+        prob_expanded_v1 = unet_prob_b1wh.expand([self.n_mc_samples_for_temperature,
+                                                  self.mc_temperatures.shape[0],-1,-1,-1,-1])  # keep: batch,ch,w,h
         c_mcsamples_v1 = (torch.rand_like(prob_expanded_v1) < prob_expanded_v1)
         logp_ber_ntb_v1 = compute_logp_bernoulli(c=c_mcsamples_v1.detach(), logit=unet_output.logit).sum(dim=(-1, -2, -3))
         with torch.no_grad():
