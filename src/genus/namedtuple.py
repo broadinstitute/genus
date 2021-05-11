@@ -212,8 +212,6 @@ class Inference(NamedTuple):
     sample_bb_k: BB
     sample_bb_ideal_k: BB
     # Debug
-    small_imgs_in: torch.Tensor
-    small_imgs_out: torch.Tensor
     feature_map: torch.Tensor
 
 

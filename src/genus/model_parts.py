@@ -448,43 +448,20 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out)), dim=-3),
+                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out), torch.ones_like(small_weights_out)), dim=-3),
                                      width_big=width_raw_image,
                                      height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
-        out_img_bkcwh,  out_mask_bk1wh = torch.split(big_stuff,
-                                                     split_size_or_sections=(ch_raw_image, 1),
-                                                     dim=-3)
+        out_img_bkcwh,  out_mask_bk1wh, out_square_bk1wh = torch.split(big_stuff,
+                                                                       split_size_or_sections=(ch_raw_image, 1, 1),
+                                                                       dim=-3)
 
-        # TODO: I am unsure if this is needed
-        # Crop small patches and add a weak loss so that instance-encoder and instance-decoder can learn a bit
-        # It is just a way to make the model more robust
-        shortcut_zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map.detach())
-        shortcut_zinstance_mu, shortcut_zinstance_std = torch.split(shortcut_zinstance_tmp,
-                                                                    split_size_or_sections=shortcut_zinstance_tmp.shape[-1] // 2,
-                                                                    dim=-1)
-        shortcut_zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=shortcut_zinstance_mu,
-                                                        posterior_std=F.softplus(shortcut_zinstance_std) + 1E-3,
-                                                        noisy_sampling=True,
-                                                        sample_from_prior=False)
-        shortcut_zinstance_kl_bk = shortcut_zinstance.kl.mean(dim=-1)
-        shortcut_small_imgs_out, _ = torch.split(self.decoder_zinstance.forward(shortcut_zinstance.value),
-                                                 split_size_or_sections=(ch_raw_image, 1),
-                                                 dim=-3)
-        shortcut_small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-                                              big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-                                              width_small=self.glimpse_size,
-                                              height_small=self.glimpse_size)
-        shortcut_rec = ((shortcut_small_imgs_in.detach() - shortcut_small_imgs_out)/self.sigma_fg).pow(2).mean()
-        shortcut_kl = shortcut_zinstance_kl_bk.mean()
-        shortcut_loss = self.shortcut_strenght * (shortcut_rec + shortcut_kl)
 
         # 10. Compute the mixing (using a softmax-like function).
         # I need two versions. One with probability attached and one detached.
 
-        # TODO: I am de-facto capping mixing_fg to 0.95. This means that the BG can receive a gradient from all pixels
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
-        mixing_bk1wh = 0.95 * p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes. Note that mixing fg is always less than 0.95
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
@@ -565,6 +542,19 @@ class InferenceAndGeneration(torch.nn.Module):
         # print("v1 vs v2",(logp_ber_ntb_v1*logp_dpp_ntb_v1).mean(),
         #       (importance_weight*logp_ber_ntb_v2*logp_dpp_ntb_v2).mean())
 
+        # TODO: I am adding shortcut for both the foreground and the background.
+        #  This means that, regardless the masks, the model will always learn to reconstruct the background and foreground
+        #  This is a protection against the mask doing something stupid:
+        #  if mask=0 -> the foreground can not learn
+        #  if mask=1 almost everywhere -> the background can not learn
+        # Crop small patches and add a weak loss so that instance-encoder and instance-decoder can learn a bit
+        # It is just a way to make the model more robust
+        shortcut_rec_bk1wh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(dim=-4)) / self.sigma_fg).pow(2)
+        shortcut_rec_fg = (out_square_bk1wh * shortcut_rec_bk1wh).sum() / out_square_bk1wh.sum()
+        shortcut_rec_bg =  ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).mean()
+        shortcut_kl_fg = zinstance_kl_bk.mean()
+        shortcut_kl_bg = zbg.kl.mean()
+        shortcut_loss = self.shortcut_strenght * (shortcut_rec_fg + shortcut_kl_fg + shortcut_rec_bg + shortcut_kl_bg)
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint > 0, parameter will be decreased
@@ -604,7 +594,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
                    geco_fgfrac_hyperparam * out_mask_bk1wh.mean() + \
-                   geco_nobj_hyperparam * prob_bk.mean() + \
+                   geco_nobj_hyperparam * unet_output.logit.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av + \
                    shortcut_loss
@@ -621,8 +611,6 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              small_imgs_in=shortcut_small_imgs_in.detach(),
-                              small_imgs_out=shortcut_small_imgs_out.detach(),
                               feature_map=unet_output.features.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()

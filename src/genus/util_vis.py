@@ -672,17 +672,17 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/f_map")
 
-    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
-    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h
-    tmp = torch.cat((output.inference.small_imgs_in[0], output.inference.small_imgs_out[0]), dim=0)
-    _ = show_batch(tmp,
-                   n_col=tmp.shape[0]//2,
-                   n_padding=4,
-                   normalize=True,
-                   normalize_range=(-0.5, 1.5),
-                   title='small patches, epoch= {0:6d}'.format(epoch),
-                   experiment=experiment,
-                   neptune_name=prefix+"/small_patch")
+####    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
+####    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h
+####    tmp = torch.cat((output.inference.small_imgs_in[0], output.inference.small_imgs_out[0]), dim=0)
+####    _ = show_batch(tmp,
+####                   n_col=tmp.shape[0]//2,
+####                   n_padding=4,
+####                   normalize=True,
+####                   normalize_range=(-0.5, 1.5),
+####                   title='small patches, epoch= {0:6d}'.format(epoch),
+####                   experiment=experiment,
+####                   neptune_name=prefix+"/small_patch")
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")
