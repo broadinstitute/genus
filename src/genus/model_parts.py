@@ -317,7 +317,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                            min_value=0.0,
                                            max_value=config["loss"]["lambda_nobject_max"],
                                            linear_exp=True)
-        self.geco_mse_max = GecoParameter(initial_value=10.0,
+        self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
@@ -455,23 +455,37 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      split_size_or_sections=(ch_raw_image, 1),
                                                      dim=-3)
 
+        # TODO: I am unsure if this is needed
         # Crop small patches and add a weak loss so that instance-encoder and instance-decoder can learn a bit
         # It is just a way to make the model more robust
-        small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
-                                     big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
-                                     width_small=self.glimpse_size,
-                                     height_small=self.glimpse_size)
-        rec_shortcut = ((small_imgs_in.detach() - small_imgs_out)/self.sigma_fg).pow(2).mean()
-        kl_shortcut = zinstance_kl_bk.mean()
-        loss_shortcut = self.shortcut_strenght * (rec_shortcut + kl_shortcut)
+        shortcut_zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map.detach())
+        shortcut_zinstance_mu, shortcut_zinstance_std = torch.split(shortcut_zinstance_tmp,
+                                                                    split_size_or_sections=shortcut_zinstance_tmp.shape[-1] // 2,
+                                                                    dim=-1)
+        shortcut_zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=shortcut_zinstance_mu,
+                                                        posterior_std=F.softplus(shortcut_zinstance_std) + 1E-3,
+                                                        noisy_sampling=True,
+                                                        sample_from_prior=False)
+        shortcut_zinstance_kl_bk = shortcut_zinstance.kl.mean(dim=-1)
+        shortcut_small_imgs_out, _ = torch.split(self.decoder_zinstance.forward(shortcut_zinstance.value),
+                                                 split_size_or_sections=(ch_raw_image, 1),
+                                                 dim=-3)
+        shortcut_small_imgs_in = Cropper.crop(bounding_box=bounding_box_bk,
+                                              big_stuff=imgs_bcwh.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1),
+                                              width_small=self.glimpse_size,
+                                              height_small=self.glimpse_size)
+        shortcut_rec = ((shortcut_small_imgs_in.detach() - shortcut_small_imgs_out)/self.sigma_fg).pow(2).mean()
+        shortcut_kl = shortcut_zinstance_kl_bk.mean()
+        shortcut_loss = self.shortcut_strenght * (shortcut_rec + shortcut_kl)
 
         # 10. Compute the mixing (using a softmax-like function).
         # I need two versions. One with probability attached and one detached.
 
+        # TODO: I am de-facto capping mixing_fg to 0.95. This means that the BG can receive a gradient from all pixels
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
         p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
-        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
+        mixing_bk1wh = 0.95 * p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes. Note that mixing fg is always less than 0.95
         mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
@@ -530,20 +544,20 @@ class InferenceAndGeneration(torch.nn.Module):
             target_nobj_max = n_tmp1 + n_tmp2
         reinforce_ber_v1 = (logp_ber_ntb_v1 * d_ntb_v1.detach()).mean()
 
-        # APPROACH 2
-        temp_block = self.mc_temperatures.view(1,-1,1,1,1,1).detach()
-        logit_expanded_v2 = unet_output.logit.expand([self.n_mc_samples_for_temperature,
-                                                      self.mc_temperatures.shape[0],-1,-1,-1,-1]) / temp_block
-        prob_expanded_v2 = torch.sigmoid(logit_expanded_v2)
-        c_mcsamples_v2 = (torch.rand_like(prob_expanded_v2) < prob_expanded_v2)
-        logp_ber_ntb_v2 = compute_logp_bernoulli(c=c_mcsamples_v2, logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        with torch.no_grad():
-            logp_ber_importance_ntb = compute_logp_bernoulli(c=c_mcsamples_v2, logit=logit_expanded_v2).sum(dim=(-1, -2, -3))
-            importance_weight = (logp_ber_ntb_v2 - logp_ber_importance_ntb).exp()
-            logp_dpp_ntb_v2 = self.grid_dpp.log_prob(value=c_mcsamples_v2.squeeze(-3).detach())
-            baseline_tb_v2 = logp_dpp_ntb_v2.mean(dim=0)  # average w.r.t. the samples taken and the same temperature
-            d_ntb_v2 = (logp_dpp_ntb_v2 - baseline_tb_v2)
-        reinforce_ber_v2 = (importance_weight * logp_ber_ntb_v2 * d_ntb_v2.detach()).mean()
+#        # APPROACH 2
+#        temp_block = self.mc_temperatures.view(1,-1,1,1,1,1).detach()
+#        logit_expanded_v2 = unet_output.logit.expand([self.n_mc_samples_for_temperature,
+#                                                      self.mc_temperatures.shape[0],-1,-1,-1,-1]) / temp_block
+#        prob_expanded_v2 = torch.sigmoid(logit_expanded_v2)
+#        c_mcsamples_v2 = (torch.rand_like(prob_expanded_v2) < prob_expanded_v2)
+#        logp_ber_ntb_v2 = compute_logp_bernoulli(c=c_mcsamples_v2, logit=unet_output.logit).sum(dim=(-1, -2, -3))
+#        with torch.no_grad():
+#            logp_ber_importance_ntb = compute_logp_bernoulli(c=c_mcsamples_v2, logit=logit_expanded_v2).sum(dim=(-1, -2, -3))
+#            importance_weight = (logp_ber_ntb_v2 - logp_ber_importance_ntb).exp()
+#            logp_dpp_ntb_v2 = self.grid_dpp.log_prob(value=c_mcsamples_v2.squeeze(-3).detach())
+#            baseline_tb_v2 = logp_dpp_ntb_v2.mean(dim=0)  # average w.r.t. the samples taken and the same temperature
+#            d_ntb_v2 = (logp_dpp_ntb_v2 - baseline_tb_v2)
+#        reinforce_ber_v2 = (importance_weight * logp_ber_ntb_v2 * d_ntb_v2.detach()).mean()
 
         # For debug I can print this ones
         # print("v1 vs v2",reinforce_ber_v1, reinforce_ber_v2)
@@ -593,7 +607,7 @@ class InferenceAndGeneration(torch.nn.Module):
                    geco_nobj_hyperparam * prob_bk.mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av + \
-                   loss_shortcut
+                   shortcut_loss
         loss_tot = loss_vae + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
@@ -607,8 +621,8 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              small_imgs_in=small_imgs_in.detach(),
-                              small_imgs_out=small_imgs_out.detach(),
+                              small_imgs_in=shortcut_small_imgs_in.detach(),
+                              small_imgs_out=shortcut_small_imgs_out.detach(),
                               feature_map=unet_output.features.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
@@ -639,7 +653,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobject=geco_nobj_hyperparam.detach().item(),
                                  lambda_reinforce=geco_reinforce.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
-                                 reinforce_ber=reinforce_ber_v2.detach().item(),
+                                 reinforce_ber=reinforce_ber_v1.detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
