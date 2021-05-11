@@ -24,7 +24,7 @@ architecture:
   unet_ch_feature_map: 16
 
   # Integers. Latent dimension for z_background and z_where
-  zbg_dim: 4  # small value otherwise the background can learn to reconstruct the foreground
+  zbg_dim: 10  # small value otherwise the background can learn to reconstruct the foreground
   zwhere_dim: 4  # must be a multiple of 4
 
   # related to encoding-decoding of glimpses
@@ -51,7 +51,7 @@ input_image:
   # Integer. Maximum number of objects in each patch of square size patch_size x patch_size.
   # A too large value will lead to waste computations.
   # Small value will force the model to group distinct objects together.
-  max_objects_per_patch: 8
+  max_objects_per_patch: 10
 
   # Tuple with the range (in pixel) of the size of the objects
   range_object_size: [10, 35]
@@ -96,18 +96,18 @@ loss:
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
-  mc_temperatures: [1.0, 2.0, 3.0, 4.0, 5.0]
-  n_mc_samples_for_temperature: 20
+  mc_temperatures: [3.0]
+  n_mc_samples_for_temperature: 100
 
 
 # parameter related to the optimizer
 optimizer:
   # Can be "adam", "SGD" or "RMSprop". In all our experiments we have used Adam.
-  type: "RMSprop"
+  type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.001
-  lr_geco: 0.0001
+  lr: 0.0001
+  lr_geco: 0.00001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
