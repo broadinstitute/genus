@@ -472,7 +472,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
         msefg_minus_msebg_bkcwh = mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(dim=-4)
         mse_av = ((mixing_bk1wh * msefg_minus_msebg_bkcwh).sum(dim=-4) + mse_bg_bcwh).mean()
-        print("mean", msefg_minus_msebg_bkcwh.mean(), msefg_minus_msebg_bkcwh.min(), msefg_minus_msebg_bkcwh.max())
+        #print("mean", msefg_minus_msebg_bkcwh.mean(), msefg_minus_msebg_bkcwh.min(), msefg_minus_msebg_bkcwh.max())
 
         # 14. Cost for bounding boxes not being properly fitted around the object
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
@@ -486,7 +486,6 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
         bb_regression_cost = self.bb_regression_strength * (c_p_detached_bk * bb_regression_bk).sum() / batch_size
         zwhere_kl_av = (c_p_detached_bk * zwhere_kl_bk).sum() / batch_size
-
 
         # 11. Compute the KL divergences
         # Compute KL divergence between the DPP prior and the posterior:
@@ -515,6 +514,8 @@ class InferenceAndGeneration(torch.nn.Module):
             # print("logit_target", logit_target)
         reinforce_ber = (logp_ber_nb * d_ntb.detach()).mean()
         logit_kl_av = - entropy_ber - reinforce_ber
+
+        # TODO: remove
 
 ####        # APPROACH 2
 ####        temp_block = self.mc_temperatures.view(1,-1,1,1,1,1).detach()
