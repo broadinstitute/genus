@@ -26,7 +26,7 @@ architecture:
   unet_ch_feature_map: 16
 
   # Integers. Latent dimension for z_background and z_where
-  zbg_dim: 6  # small value otherwise the background can learn to reconstruct the foreground
+  zbg_dim: 10  # small value otherwise the background can learn to reconstruct the foreground
   zwhere_dim: 4  # must be a multiple of 4
 
   # related to encoding-decoding of glimpses
