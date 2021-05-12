@@ -244,7 +244,7 @@ class InferenceAndGeneration(torch.nn.Module):
         super().__init__()
 
         # TODO: Remove shortcut? No!
-        self.shortcut_strenght = 1E-3
+        self.shortcut_strenght = 0.0
         self.n_mc_samples = config["loss"]["n_mc_samples"]
 
         # variables
@@ -415,10 +415,7 @@ class InferenceAndGeneration(torch.nn.Module):
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
         logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.sigmoid(logit_bk)
-
-        # In all step below I am using the soft version of c, i.e. c -> p. Therefore I currently do not need to collect c_k.
-        # c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        # c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk  # straight-through estimator
+        c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
         # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape
@@ -453,19 +450,21 @@ class InferenceAndGeneration(torch.nn.Module):
         # I need two versions. One with probability attached and one detached.
 
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
-        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
-        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        # Value is given by the max(c,p), gradient will go through p.
+        c_p_detached_bk = torch.max(prob_bk, c_detached_bk).detach()
+        c_p_attached_bk = (c_p_detached_bk - prob_bk).detach() + prob_bk
+        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh
+        mixing_bk1wh = c_p_times_mask_bk1wh / torch.sum(c_p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
-        p_detached_times_mask_bk1wh = prob_bk[..., None, None, None].detach() * out_mask_bk1wh
-        tmp_bk1wh = p_detached_times_mask_bk1wh / torch.sum(p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        c_p_detached_times_mask_bk1wh = c_p_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
+        tmp_bk1wh = c_p_detached_times_mask_bk1wh / torch.sum(c_p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mask_overlap_b1wh = tmp_bk1wh.sum(dim=-4).pow(2) - tmp_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
-        # Since reconstruction gradient are proportional to p the KL should also be proportional to p
-        p_detached_bk = prob_bk.detach()
+        # Since reconstruction gradient are proportional to c_p the KL should also be proportional to c_p
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
-        zinstance_kl_av = (zinstance_kl_bk * area_bk * p_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
+        zinstance_kl_av = (zinstance_kl_bk * area_bk * c_p_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
         zbg_kl_av = zbg.kl.mean()
 
         # 12. Observation model
@@ -484,8 +483,8 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = self.bb_regression_strength * (p_detached_bk * bb_regression_bk).sum() / batch_size
-        zwhere_kl_av = (p_detached_bk * zwhere_kl_bk).sum() / batch_size
+        bb_regression_cost = self.bb_regression_strength * (c_p_detached_bk * bb_regression_bk).sum() / batch_size
+        zwhere_kl_av = (c_p_detached_bk * zwhere_kl_bk).sum() / batch_size
 
 
         # 11. Compute the KL divergences
@@ -571,8 +570,8 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
 
         # nobject should be in target range
-        nobj_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
-        nobj_lenient_av = (prob_bk > 0.3).sum(dim=-1).float().mean()
+        nobj_av = (c_p_detached_bk > 0.5).sum(dim=-1).float().mean()
+        nobj_lenient_av = (c_p_detached_bk > 0.3).sum(dim=-1).float().mean()
         nobj_in_range = (nobj_av >  target_nobj_min) * (nobj_av <  target_nobj_max)
         geco_nobj: GECO = self.geco_nobj_inrange.forward(constraint=nobj_in_range*2.0-1.0)
 
@@ -588,10 +587,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
                    geco_fgfrac_hyperparam * mixing_bk1wh.mean() + \
-                   geco_nobj.hyperparam * torch.abs(unet_output.logit - logit_target).mean() + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
-                   bb_regression_cost + zwhere_kl_av + \
-                   shortcut_loss
+                   bb_regression_cost + zwhere_kl_av
+                   # shortcut_loss
+                   # geco_nobj.hyperparam * torch.abs(unet_output.logit - logit_target).mean() + \
         loss_tot = loss_vae + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
