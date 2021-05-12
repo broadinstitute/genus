@@ -260,6 +260,10 @@ class MetricMiniBatch(NamedTuple):
     delta_mse_mean: float
     delta_mse_min: float
     delta_mse_max: float
+    nobj_c_grid: float
+    logit_mean: float
+    logit_min: float
+    logit_max: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray

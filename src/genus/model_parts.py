@@ -658,6 +658,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  delta_mse_mean=msefg_minus_msebg_bkcwh.mean().detach().item(),
                                  delta_mse_min=msefg_minus_msebg_bkcwh.min().detach().item(),
                                  delta_mse_max=msefg_minus_msebg_bkcwh.max().detach().item(),
+                                 nobj_c_grid=c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean().detach().item(),
+                                 logit_mean=unet_output.logit.mean().detach().item(),
+                                 logit_min=unet_output.logit.min().detach().item(),
+                                 logit_max=unet_output.logit.max().detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
