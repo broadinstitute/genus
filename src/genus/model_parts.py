@@ -306,7 +306,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_nobj_inrange = GecoParameter(initial_value=10.0,
+        self.geco_nobj_inrange = GecoParameter(initial_value=0.0,
                                                min_value=0.0,
                                                max_value=config["loss"]["lambda_nobject_max"],
                                                linear_exp=True)
@@ -558,26 +558,29 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint > 0, parameter will be decreased
         # if constraint < 0, parameter will be increased
 
-        # mse should be smaller than maximum allowed values
-        geco_mse: GECO = self.geco_mse_max.forward(constraint=(mse_av < 1.0)*2.0-1.0)
+        # First I make sure that the FG_FRACTION is in the desired range
+        with torch.no_grad():
+            mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
+            fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
+            fgfrac_lenient_av = mixing_fg_b1wh.mean()
+            fgfraction_in_range = (fgfrac_hard_av > self.target_fgfraction_min) * (fgfrac_hard_av < self.target_fgfraction_max)
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_hard_av > self.target_fgfraction_min)*2.0-1.0)
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_hard_av < self.target_fgfraction_max)*2.0-1.0)
 
-        # fgfraction should be in target range
-        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
-        fgfrac_av = (mixing_fg_b1wh > 0.5).float().mean()
-        fgfrac_lenient_av = mixing_fg_b1wh.mean()
-        fgfraction_in_range = (fgfrac_av > self.target_fgfraction_min) * (fgfrac_av < self.target_fgfraction_max)
-        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_av > self.target_fgfraction_min)*2.0-1.0)
-        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_av < self.target_fgfraction_max)*2.0-1.0)
-
-        # nobject should be in target range
-        nobj_av = (c_p_detached_bk > 0.5).sum(dim=-1).float().mean()
+        # Next make sure that N_OBJ is in the desired range
+        nobj_hard_av = (c_p_detached_bk > 0.5).sum(dim=-1).float().mean()
         nobj_lenient_av = (c_p_detached_bk > 0.3).sum(dim=-1).float().mean()
-        nobj_in_range = (nobj_av >  target_nobj_min) * (nobj_av <  target_nobj_max)
-        geco_nobj: GECO = self.geco_nobj_inrange.forward(constraint=nobj_in_range*2.0-1.0)
+        nobj_in_range = (nobj_hard_av >  target_nobj_min) * (nobj_hard_av <  target_nobj_max)
+        nobj_and_fgfraction_in_range = nobj_in_range * fgfraction_in_range
+        geco_nobj: GECO = self.geco_nobj_inrange.forward(constraint=nobj_and_fgfraction_in_range*2.0-1.0)
 
-        # if all the other conditions are satisfied I am going to decrease the warming parameters
-        everything_in_range = (mse_av < 5.0) * nobj_in_range * fgfraction_in_range
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=everything_in_range*2.0-1.0)
+        # Next can decrease the annealing term
+        annealing_in_range = (mse_av < 5.0) * nobj_in_range * fgfraction_in_range
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=annealing_in_range*2.0-1.0)
+
+        # Finally, I can decrease reconstruction
+        everything_in_range =  (mse_av < 1.0) * nobj_in_range * fgfraction_in_range
+        geco_mse: GECO = self.geco_mse_max.forward(constraint=everything_in_range*2.0-1.0)
 
         # Put all the losses together
         loss_geco = geco_annealing.loss +  geco_mse.loss + geco_nobj.loss + \
@@ -611,9 +614,9 @@ class InferenceAndGeneration(torch.nn.Module):
         metric = MetricMiniBatch(loss=loss_tot,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
-                                 fgfraction_av=fgfrac_av.detach().item(),
+                                 fgfraction_av=fgfrac_hard_av.detach().item(),
                                  fgfraction_lenient_av=fgfrac_lenient_av.detach().item(),
-                                 nobj_av=nobj_av.detach().item(),
+                                 nobj_av=nobj_hard_av.detach().item(),
                                  nobj_lenient_av=nobj_lenient_av.detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function
