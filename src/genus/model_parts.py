@@ -217,6 +217,14 @@ class GecoParameter(torch.nn.Module):
             self.raw_min_value = min_value
             self.raw_max_value = max_value
 
+        self.first_iter = True
+
+    @torch.no_grad()
+    def set(self, value: float):
+        raw_value = inverse_linear_exp_activation(value) if self.linear_exp else value
+        self.geco_raw_lambda.data.fill_(raw_value)
+        self.geco_raw_lambda.clamp_(min=self.raw_min_value, max=self.raw_max_value)
+
     @torch.no_grad()
     def get(self):
         self.geco_raw_lambda.data.clamp_(min=self.raw_min_value, max=self.raw_max_value)
@@ -234,6 +242,8 @@ class GecoParameter(torch.nn.Module):
         # Constraint satisfied -----> constraint > 0 ---> reduce the parameter
         # Constraint is violated ---> constraint < 0 ---> increase the parameter
         loss_geco = self.geco_raw_lambda * constraint.detach()
+
+        self.first_iter = False
 
         return GECO(loss=loss_geco, hyperparam=transformed_lambda)
 
@@ -298,7 +308,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_fgfraction_min = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
+        self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
@@ -451,9 +461,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
         # Value is given by the max(c,p), gradient will go through p.
+        # I add 1E-2 so that mixing is never zero and there is always a bit of signal to learn the foreground
         c_p_detached_bk = torch.max(prob_bk, c_detached_bk).detach()
         c_p_attached_bk = (c_p_detached_bk - prob_bk).detach() + prob_bk
-        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh
+        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh + 1E-2
         mixing_bk1wh = c_p_times_mask_bk1wh / torch.sum(c_p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
@@ -562,6 +573,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # First I make sure that the FG_FRACTION is in the desired range
         with torch.no_grad():
+            if self.geco_fgfraction_min.first_iter:
+                self.geco_fgfraction_min.set(value=10.0+msefg_minus_msebg_bkcwh.max().item())
+                self.geco_fgfraction_max.set(value=10.0)
+
             mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
             fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
             fgfrac_lenient_av = mixing_fg_b1wh.mean()
