@@ -470,8 +470,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # 12. Observation model
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
         mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_bcwh = torch.sum(mixing_bk1wh * (mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(dim=-4)), dim=-4) + mse_bg_bcwh
-        mse_av = mse_bcwh.mean()
+        msefg_minus_msebg_bkcwh = mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(dim=-4)
+        mse_av = ((mixing_bk1wh * msefg_minus_msebg_bkcwh).sum(dim=-4) + mse_bg_bcwh).mean()
+        print("mean", msefg_minus_msebg_bkcwh.mean(), msefg_minus_msebg_bkcwh.min(), msefg_minus_msebg_bkcwh.max())
 
         # 14. Cost for bounding boxes not being properly fitted around the object
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
@@ -588,8 +589,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
-        loss_vae = geco_mse.hyperparam * (mse_av + mask_overlap_cost) + \
-                   geco_fgfrac_hyperparam * mixing_bk1wh.mean() + \
+        loss_vae = geco_mse.hyperparam * (mse_av + geco_fgfrac_hyperparam * mixing_bk1wh.mean() + mask_overlap_cost) + \
                    zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    bb_regression_cost + zwhere_kl_av
                    # shortcut_loss
