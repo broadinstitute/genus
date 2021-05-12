@@ -1,3 +1,5 @@
+# AAAAAAAA
+
 # neptune project for logging the simulation results
 neptune_project: "cellarium/genus"
 
@@ -96,8 +98,7 @@ loss:
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
-  mc_temperatures: [3.0]
-  n_mc_samples_for_temperature: 100
+  n_mc_samples: 10
 
 
 # parameter related to the optimizer
@@ -106,8 +107,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.0001
-  lr_geco: 0.00001
+  lr: 0.001
+  lr_geco: 0.0001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
