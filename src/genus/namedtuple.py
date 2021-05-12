@@ -257,6 +257,9 @@ class MetricMiniBatch(NamedTuple):
     lambda_nobject: float
     entropy_ber: float
     reinforce_ber: float
+    delta_mse_mean: float
+    delta_mse_min: float
+    delta_mse_max: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray

@@ -640,6 +640,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobject=geco_nobj.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
+                                 delta_mse_mean=msefg_minus_msebg_bkcwh.mean().detach().item(),
+                                 delta_mse_min=msefg_minus_msebg_bkcwh.min().detach().item(),
+                                 delta_mse_max=msefg_minus_msebg_bkcwh.max().detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
