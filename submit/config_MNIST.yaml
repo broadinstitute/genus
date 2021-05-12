@@ -7,7 +7,7 @@ neptune_project: "cellarium/genus"
 simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
-  BATCH_SIZE: 128
+  BATCH_SIZE: 256
   MAX_EPOCHS: 501
   TEST_FREQUENCY: 5
   CHECKPOINT_FREQUENCY: 50

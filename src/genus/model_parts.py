@@ -298,11 +298,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_fgfraction_min = GecoParameter(initial_value=10.0,
+        self.geco_fgfraction_min = GecoParameter(initial_value=config["loss"]["lambda_fgfraction_max"],
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_fgfraction_max = GecoParameter(initial_value=10.0,
+        self.geco_fgfraction_max = GecoParameter(initial_value=0.0,
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
