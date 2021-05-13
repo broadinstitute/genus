@@ -309,26 +309,25 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
-                                                 min_value=0.0,
-                                                 max_value=config["loss"]["lambda_fgfraction_max"],
-                                                 linear_exp=True)
-        self.geco_fgfraction_max = GecoParameter(initial_value=0.0,
-                                                 min_value=0.0,
-                                                 max_value=config["loss"]["lambda_fgfraction_max"],
-                                                 linear_exp=True)
         self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
 
-        #self.geco_nobj_inrange = GecoParameter(initial_value=0.0,
-        #                                       min_value=0.0,
-        #                                       max_value=config["loss"]["lambda_nobject_max"],
-        #                                       linear_exp=True)
+        # The coupling is (geco_fgfraction_max - geco_fgfraction_min).
+        # The initial value gaurantees that the model start from the empty solution
+        # TODO: DO I need the min value for geco_fgfraction_max?
+        self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
+                                                 min_value=0.0,
+                                                 max_value=config["loss"]["lambda_fgfraction_max"],
+                                                 linear_exp=True)
+        self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
+                                                 min_value=0.1,
+                                                 max_value=config["loss"]["lambda_fgfraction_max"],
+                                                 linear_exp=True)
 
-        # This params controls the warm-up phase and are annealed from ONE to ZERO
-        self.geco_reinforce = GecoParameter(initial_value=0.0, min_value=0.0, max_value=1.0, linear_exp=False)
+        # This params controls the warm-up phase and are annealed linearly from ONE to ZERO
+        self.geco_reinforce = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -402,10 +401,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                     original_width=unet_prob_b1wh.shape[-2],
                                                                     original_height=unet_prob_b1wh.shape[-1])
 
-            # compute:
-            # score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
-            score_grid = (torch.ones_like(annealing_factor) - annealing_factor) * \
-                         (c_grid_before_nms.float() + unet_prob_b1wh) + annealing_factor * prob_from_ranking_grid
+            # compute: score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
+            score_grid = (1.0 - annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
+                         annealing_factor * prob_from_ranking_grid
 
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
@@ -445,12 +443,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
-        zinstance_kl_bk = zinstance.kl.mean(dim=-1)
+        zinstance_kl_bk = zinstance.kl.mean(dim=-1)  # average over the latent dimension
         small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
                                                         split_size_or_sections=(ch_raw_image, 1),
                                                         dim=-3)
 
         # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
+        # TODO: Remove the squares
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
                                      small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out), torch.ones_like(small_weights_out)), dim=-3),
                                      width_big=width_raw_image,
@@ -464,17 +463,17 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
         # Gradients --> go through prob.
-        # Values    --> is max(c,p,self.min_prob)
-        c_p_detached_bk = torch.max(prob_bk, c_detached_bk).detach()
-        c_p_attached_bk = (c_p_detached_bk.clamp(min=self.min_prob) - prob_bk).detach() + prob_bk
-        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh
-        mixing_bk1wh = c_p_times_mask_bk1wh / torch.sum(c_p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        # Values    --> is max(p,self.min_prob)
+        p_detached_bk = prob_bk.clamp(min=self.min_prob).detach()
+        p_attached_bk = (p_detached_bk - prob_bk).detach() + prob_bk
+        p_times_mask_bk1wh = p_attached_bk[..., None, None, None] * out_mask_bk1wh
+        mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
-        mixing_bg_b1wh = (1.0 + 1E-2) * torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
-        c_p_detached_times_mask_bk1wh = c_p_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
-        tmp_bk1wh = c_p_detached_times_mask_bk1wh / torch.sum(c_p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        p_detached_times_mask_bk1wh = p_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
+        tmp_bk1wh = p_detached_times_mask_bk1wh / torch.sum(p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mask_overlap_b1wh = tmp_bk1wh.sum(dim=-4).pow(2) - tmp_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
@@ -487,9 +486,12 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
             mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
 
+        # TODO: which indicator should I use? p and 1?
         # Since reconstruction gradient are proportional to c_p the KL should also be proportional to c_p
+        indicator_bk = p_detached_bk.detach()
+        # indicator_bk = torch.ones_like(p_detached_bk).detach()
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
-        zinstance_kl_av = (zinstance_kl_bk * area_bk * c_p_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
+        zinstance_kl_av = (zinstance_kl_bk * area_bk * indicator_bk).sum() / (batch_size * width_raw_image * height_raw_image)
         zbg_kl_av = zbg.kl.mean()
 
         # 14. Cost for bounding boxes not being properly fitted around the object
@@ -502,8 +504,8 @@ class InferenceAndGeneration(torch.nn.Module):
                            torch.abs(bb_ideal_bk.by - bounding_box_bk.by) + \
                            torch.abs(bb_ideal_bk.bw - bounding_box_bk.bw) + \
                            torch.abs(bb_ideal_bk.bh - bounding_box_bk.bh)
-        bb_regression_cost = self.bb_regression_strength * (c_p_detached_bk * bb_regression_bk).sum() / batch_size
-        zwhere_kl_av = (c_p_detached_bk * zwhere_kl_bk).sum() / batch_size
+        bb_regression_cost = self.bb_regression_strength * (indicator_bk * bb_regression_bk).sum() / batch_size
+        zwhere_kl_av = (indicator_bk * zwhere_kl_bk).sum() / batch_size
 
         # 11. Compute the KL divergences
         # Compute KL divergence between the DPP prior and the posterior:
@@ -544,19 +546,19 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfrac_hyperparam = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
         # Next I decide whether to increase or decrease the reinforce term.
-        # More reinforce leads to fewer objects
-        # Reinforce starts at ZERO and becomes ONE at the end of the annealing procedure
+        # Reducing geco_reinforce.hyperparam leads to fewer objects
+        # Reinforce starts at ONE and becomes ZERO at the end of the annealing procedure
         nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
         nobj_grid_inrange = (nobj_grid_av > target_nobj_min) * (nobj_grid_av < target_nobj_max)
         nobj_grid_is_large_enough = (nobj_grid_av > target_nobj_min)
         nobj_grid_is_too_small = (nobj_grid_av < target_nobj_min)
         rec_is_acceptable = (mse_av < 5.0)
 
-        decrease_reinforce = nobj_grid_is_too_small
-        increase_reinforce = nobj_grid_is_large_enough * fgfraction_in_range * rec_is_acceptable
+        decrease_reinforce = nobj_grid_is_large_enough * fgfraction_in_range * rec_is_acceptable
+        increase_reinforce = nobj_grid_is_too_small
 
         geco_reinforce: GECO = self.geco_reinforce.forward(constraint=1.0*increase_reinforce - 1.0*decrease_reinforce)
-        logit_kl_av = - entropy_ber - geco_reinforce.hyperparam * reinforce_ber
+        logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
         # Next can decrease the annealing term
         # Note that annealing can never be increased. Constraint is either negative or zero
