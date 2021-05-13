@@ -233,37 +233,28 @@ class MetricMiniBatch(NamedTuple):
     # monitoring
     mse_av: float
     fgfraction_av: float
-    fgfraction_lenient_av: float
+    nobj_grid_av: float
     nobj_av: float
-    nobj_lenient_av: float
     prob_av: float
     # term in the loss function
     cost_mse: float
     cost_mask_overlap_av: float
     cost_fgfraction: float
-    cost_nobj: float
+    # cost_nobj: float
     cost_bb_regression_av: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
     kl_logit: float
-    shortcut_loss: float
     # debug
     similarity_l: float
     similarity_w: float
     annealing_factor: float
     lambda_mse: float
     lambda_fgfraction: float
-    lambda_nobject: float
+    lambda_reinforce: float
     entropy_ber: float
     reinforce_ber: float
-    delta_mse_mean: float
-    delta_mse_min: float
-    delta_mse_max: float
-    nobj_c_grid: float
-    logit_mean: float
-    logit_min: float
-    logit_max: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray

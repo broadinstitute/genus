@@ -190,8 +190,8 @@ def inverse_linear_exp_activation(y: Union[float, torch.Tensor]) -> Union[float,
 class GecoParameter(torch.nn.Module):
     """ Dynamical parameter with value in [min_value, max_value].
         Note:
-            if constraint > 0, parameter will be increased
             if constraint < 0, parameter will be decreased
+            if constraint > 0, parameter will be increased
     """
     def __init__(self, initial_value: float,
                  min_value: Union[float, None]=None,
@@ -239,9 +239,9 @@ class GecoParameter(torch.nn.Module):
         transformed_lambda = self.get()
 
         # Minimization of the loss function leads to:
-        # Constraint satisfied -----> constraint > 0 ---> reduce the parameter
-        # Constraint is violated ---> constraint < 0 ---> increase the parameter
-        loss_geco = self.geco_raw_lambda * constraint.detach()
+        # Constraint satisfied -----> constraint < 0 ---> reduce the parameter
+        # Constraint is violated ---> constraint > 0 ---> increase the parameter
+        loss_geco = - self.geco_raw_lambda * constraint.detach()
 
         self.first_iter = False
 
@@ -254,7 +254,8 @@ class InferenceAndGeneration(torch.nn.Module):
         super().__init__()
 
         # TODO: Remove shortcut? No!
-        self.shortcut_strenght = 0.0
+        self.GMM = config["loss"]["GMM"]
+        self.min_prob=1E-2
         self.n_mc_samples = config["loss"]["n_mc_samples"]
 
         # variables
@@ -316,16 +317,18 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
-        self.geco_nobj_inrange = GecoParameter(initial_value=0.0,
-                                               min_value=0.0,
-                                               max_value=config["loss"]["lambda_nobject_max"],
-                                               linear_exp=True)
         self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
                                           min_value=config["loss"]["lambda_mse_min_max"][0],
                                           max_value=config["loss"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
 
+        #self.geco_nobj_inrange = GecoParameter(initial_value=0.0,
+        #                                       min_value=0.0,
+        #                                       max_value=config["loss"]["lambda_nobject_max"],
+        #                                       linear_exp=True)
+
         # This params controls the warm-up phase and are annealed from ONE to ZERO
+        self.geco_reinforce = GecoParameter(initial_value=0.0, min_value=0.0, max_value=1.0, linear_exp=False)
         self.geco_annealing_factor = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -460,12 +463,14 @@ class InferenceAndGeneration(torch.nn.Module):
         # I need two versions. One with probability attached and one detached.
 
         # This is the mixing that will be used in the reconstruction. It's gradient will push probability up and down
-        # Value is given by the max(c,p), gradient will go through p.
-        # I add 1E-2 so that mixing is never zero and there is always a bit of signal to learn the foreground
+        # Gradients --> go through prob.
+        # Values    --> is max(c,p,self.min_prob)
         c_p_detached_bk = torch.max(prob_bk, c_detached_bk).detach()
-        c_p_attached_bk = (c_p_detached_bk - prob_bk).detach() + prob_bk
-        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh + 1E-2
+        c_p_attached_bk = (c_p_detached_bk.clamp(min=self.min_prob) - prob_bk).detach() + prob_bk
+        c_p_times_mask_bk1wh = c_p_attached_bk[..., None, None, None] * out_mask_bk1wh
         mixing_bk1wh = c_p_times_mask_bk1wh / torch.sum(c_p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
+        mixing_bg_b1wh = (1.0 + 1E-2) * torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
         c_p_detached_times_mask_bk1wh = c_p_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
@@ -473,17 +478,19 @@ class InferenceAndGeneration(torch.nn.Module):
         mask_overlap_b1wh = tmp_bk1wh.sum(dim=-4).pow(2) - tmp_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
+        # 12. Observation model
+        if self.GMM:
+            rec_img_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
+            mse_av = ((rec_img_bcwh - imgs_bcwh)/self.sigma_fg).pow(2).mean()
+        else:
+            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
+            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+            mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
+
         # Since reconstruction gradient are proportional to c_p the KL should also be proportional to c_p
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
         zinstance_kl_av = (zinstance_kl_bk * area_bk * c_p_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
         zbg_kl_av = zbg.kl.mean()
-
-        # 12. Observation model
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        msefg_minus_msebg_bkcwh = mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(dim=-4)
-        mse_av = ((mixing_bk1wh * msefg_minus_msebg_bkcwh).sum(dim=-4) + mse_bg_bcwh).mean()
-        #print("mean", msefg_minus_msebg_bkcwh.mean(), msefg_minus_msebg_bkcwh.min(), msefg_minus_msebg_bkcwh.max())
 
         # 14. Cost for bounding boxes not being properly fitted around the object
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
@@ -520,96 +527,56 @@ class InferenceAndGeneration(torch.nn.Module):
             n_stdev = self.grid_dpp.n_stddev
             target_nobj_min = n_mean - n_stdev
             target_nobj_max = n_mean + n_stdev
-            prob_target = n_mean / torch.numel(unet_output.logit[-2:])
-            logit_target = torch.log(prob_target) - torch.log1p(-prob_target)
+            # prob_target = n_mean / torch.numel(unet_output.logit[-2:])
+            # logit_target = torch.log(prob_target) - torch.log1p(-prob_target)
             # print("logit_target", logit_target)
         reinforce_ber = (logp_ber_nb * d_ntb.detach()).mean()
-        logit_kl_av = - entropy_ber - reinforce_ber
-
-        # TODO: remove
-
-####        # APPROACH 2
-####        temp_block = self.mc_temperatures.view(1,-1,1,1,1,1).detach()
-####        logit_expanded_ntb1wh = unet_output.logit.expand([self.n_mc_samples_for_temperature,
-####                                                          self.mc_temperatures.shape[0],-1,-1,-1,-1]) / temp_block
-####        prob_expanded_ntb1wh = torch.sigmoid(logit_expanded_ntb1wh)
-####        c_mcsamples_ntb1wh = (torch.rand_like(prob_expanded_ntb1wh) < prob_expanded_ntb1wh)
-####        logp_ber_ntb = compute_logp_bernoulli(c=c_mcsamples_ntb1wh, logit=unet_output.logit).sum(dim=(-1, -2, -3))
-####        with torch.no_grad():
-####            logp_ber_importance_ntb = compute_logp_bernoulli(c=c_mcsamples_ntb1wh,
-####                                                             logit=logit_expanded_ntb1wh).sum(dim=(-1, -2, -3))
-####            importance_weight_ntb = (logp_ber_ntb - logp_ber_importance_ntb).exp()
-####            logp_dpp_ntb = self.grid_dpp.log_prob(value=c_mcsamples_ntb1wh.squeeze(-3).detach())
-####            baseline_tb = logp_dpp_ntb.mean(dim=0)  # average w.r.t. the samples taken and the same temperature
-####            d_ntb = (logp_dpp_ntb - baseline_tb)
-####            n_mean = self.grid_dpp.n_mean
-####            n_stdev = self.grid_dpp.n_stddev
-####            target_nobj_min = n_mean - n_stdev
-####            target_nobj_max = n_mean + n_stdev
-####            target_nobj_av = n_mean
-####        reinforce_ber = (importance_weight_ntb * logp_ber_ntb * d_ntb.detach()).mean()
-####        logit_kl_av = - entropy_ber - reinforce_ber
-
-        # TODO: If the constraint that fgfraction is in range then this is not necessary
-        #  Maybe this can be removed
-        #
-        #  I am adding shortcut for both the foreground and the background.
-        #  This means that, regardless the masks, the model will always learn to reconstruct the background and foreground
-        #  This is a protection against the mask doing something stupid:
-        #  if mask=0 -> the foreground can not learn
-        #  if mask=1 almost everywhere -> the background can not learn
-        # Crop small patches and add a weak loss so that instance-encoder and instance-decoder can learn a bit
-        # It is just a way to make the model more robust
-        shortcut_rec_bk1wh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(dim=-4)) / self.sigma_fg).pow(2)
-        shortcut_rec_fg = (out_square_bk1wh * shortcut_rec_bk1wh).sum() / out_square_bk1wh.sum()
-        shortcut_rec_bg =  ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2).mean()
-        shortcut_kl_fg = zinstance_kl_bk.mean()
-        shortcut_kl_bg = zbg.kl.mean()
-        shortcut_loss = self.shortcut_strenght * (shortcut_rec_fg + shortcut_kl_fg + shortcut_rec_bg + shortcut_kl_bg)
 
         # GECO (i.e. make the hyper-parameters dynamical)
-        # if constraint > 0, parameter will be decreased
-        # if constraint < 0, parameter will be increased
+        # if constraint < 0, parameter will be decreased
+        # if constraint > 0, parameter will be increased
 
         # First I make sure that the FG_FRACTION is in the desired range
-        with torch.no_grad():
-            if self.geco_fgfraction_min.first_iter:
-                self.geco_fgfraction_min.set(value=10.0+msefg_minus_msebg_bkcwh.max().item())
-                self.geco_fgfraction_max.set(value=10.0)
+        fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
+        fgfraction_in_range = (fgfrac_hard_av > self.target_fgfraction_min) * (fgfrac_hard_av < self.target_fgfraction_max)
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=1.0-2.0*(fgfrac_hard_av > self.target_fgfraction_min))
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=1.0-2.0*(fgfrac_hard_av < self.target_fgfraction_max))
+        geco_fgfrac_hyperparam = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
-            mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
-            fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
-            fgfrac_lenient_av = mixing_fg_b1wh.mean()
-            fgfraction_in_range = (fgfrac_hard_av > self.target_fgfraction_min) * (fgfrac_hard_av < self.target_fgfraction_max)
-        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=(fgfrac_hard_av > self.target_fgfraction_min)*2.0-1.0)
-        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=(fgfrac_hard_av < self.target_fgfraction_max)*2.0-1.0)
+        # Next I decide whether to increase or decrease the reinforce term.
+        # More reinforce leads to fewer objects
+        # Reinforce starts at ZERO and becomes ONE at the end of the annealing procedure
+        nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
+        nobj_grid_inrange = (nobj_grid_av > target_nobj_min) * (nobj_grid_av < target_nobj_max)
+        nobj_grid_is_large_enough = (nobj_grid_av > target_nobj_min)
+        nobj_grid_is_too_small = (nobj_grid_av < target_nobj_min)
+        rec_is_acceptable = (mse_av < 5.0)
 
-        # Next make sure that N_OBJ is in the desired range
-        nobj_hard_av = (c_p_detached_bk > 0.5).sum(dim=-1).float().mean()
-        nobj_lenient_av = (c_p_detached_bk > 0.3).sum(dim=-1).float().mean()
-        nobj_in_range = (nobj_hard_av >  target_nobj_min) * (nobj_hard_av <  target_nobj_max)
-        nobj_and_fgfraction_in_range = nobj_in_range * fgfraction_in_range
-        geco_nobj: GECO = self.geco_nobj_inrange.forward(constraint=nobj_and_fgfraction_in_range*2.0-1.0)
+        decrease_reinforce = nobj_grid_is_too_small
+        increase_reinforce = nobj_grid_is_large_enough * fgfraction_in_range * rec_is_acceptable
+
+        geco_reinforce: GECO = self.geco_reinforce.forward(constraint=1.0*increase_reinforce - 1.0*decrease_reinforce)
+        logit_kl_av = - entropy_ber - geco_reinforce.hyperparam * reinforce_ber
 
         # Next can decrease the annealing term
-        annealing_in_range = (mse_av < 5.0) * nobj_in_range * fgfraction_in_range
-        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=annealing_in_range*2.0-1.0)
+        # Note that annealing can never be increased. Constraint is either negative or zero
+        decrease_annealing = rec_is_acceptable * nobj_grid_inrange * fgfraction_in_range
+        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=-1.0*decrease_annealing)
 
-        # Finally, I can decrease reconstruction
-        everything_in_range =  (mse_av < 1.0) * nobj_in_range * fgfraction_in_range
-        geco_mse: GECO = self.geco_mse_max.forward(constraint=everything_in_range*2.0-1.0)
+        # Finally if everything else is right, I can decrease the reconstruction
+        increase_lambda_mse =  (mse_av > 1.0)
+        decrease_lambda_mse =  (mse_av < 1.0) * nobj_grid_inrange * fgfraction_in_range
+        geco_mse: GECO = self.geco_mse_max.forward(constraint=1.0*increase_lambda_mse-1.0*decrease_lambda_mse)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss +  geco_mse.loss + geco_nobj.loss + \
+        loss_geco = geco_annealing.loss +  geco_mse.loss + geco_reinforce.loss + \
                     geco_fgfraction_min.loss + geco_fgfraction_max.loss
 
-        geco_fgfrac_hyperparam =  geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
+        loss_vae = zinstance_kl_av + zbg_kl_av + logit_kl_av + \
+                   geco_mse.hyperparam * (mse_av + bb_regression_cost + zwhere_kl_av +
+                                          geco_fgfrac_hyperparam * mixing_fg_b1wh.mean() +
+                                          mask_overlap_cost)
 
-        loss_vae = geco_mse.hyperparam * (mse_av + geco_fgfrac_hyperparam * mixing_bk1wh.mean() + mask_overlap_cost) + \
-                   zinstance_kl_av + zbg_kl_av + logit_kl_av + \
-                   bb_regression_cost + zwhere_kl_av
-                   # shortcut_loss
-                   # geco_nobj.hyperparam * torch.abs(unet_output.logit - logit_target).mean() + \
         loss_tot = loss_vae + loss_geco
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
@@ -631,37 +598,28 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  fgfraction_av=fgfrac_hard_av.detach().item(),
-                                 fgfraction_lenient_av=fgfrac_lenient_av.detach().item(),
-                                 nobj_av=nobj_hard_av.detach().item(),
-                                 nobj_lenient_av=nobj_lenient_av.detach().item(),
+                                 nobj_grid_av=nobj_grid_av.detach().item(),
+                                 nobj_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=(geco_mse.hyperparam * mse_av).detach().item(),
                                  cost_mask_overlap_av=(geco_mse.hyperparam * mask_overlap_cost).detach().item(),
                                  cost_fgfraction=(geco_fgfrac_hyperparam * out_mask_bk1wh.mean()).detach().item(),
-                                 cost_nobj=(geco_nobj.hyperparam * torch.abs(unet_output.logit - logit_target).mean()).detach().item(),
+                                 #cost_nobj=(geco_nobj.hyperparam * torch.abs(unet_output.logit - logit_target).mean()).detach().item(),
                                  cost_bb_regression_av=bb_regression_cost.detach().item(),
                                  kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
                                  kl_zwhere=zwhere_kl_av.detach().item(),
                                  kl_logit=logit_kl_av.detach().item(),
-                                 shortcut_loss=shortcut_loss.detach().item(),
                                  # debug
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  annealing_factor=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=geco_fgfrac_hyperparam.detach().item(),
-                                 lambda_nobject=geco_nobj.hyperparam.detach().item(),
+                                 lambda_reinforce=geco_reinforce.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
-                                 delta_mse_mean=msefg_minus_msebg_bkcwh.mean().detach().item(),
-                                 delta_mse_min=msefg_minus_msebg_bkcwh.min().detach().item(),
-                                 delta_mse_max=msefg_minus_msebg_bkcwh.max().detach().item(),
-                                 nobj_c_grid=c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean().detach().item(),
-                                 logit_mean=unet_output.logit.mean().detach().item(),
-                                 logit_min=unet_output.logit.min().detach().item(),
-                                 logit_max=unet_output.logit.max().detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
