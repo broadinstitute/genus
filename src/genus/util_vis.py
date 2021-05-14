@@ -437,7 +437,7 @@ def show_batch(images: torch.Tensor,
                n_padding: int = 10,
                n_mc_samples: int = 1,
                title: Optional[str] = None,
-               pad_value: int = 1,
+               pad_value: float = 1,
                normalize: bool = False,
                normalize_range: Optional[tuple] = None,
                figsize: Optional[Tuple[float, float]] = None,
@@ -671,6 +671,28 @@ def plot_reconstruction_and_inference(output: Output,
                    title='feature map, epoch= {0:6d}'.format(epoch),
                    experiment=experiment,
                    neptune_name=prefix+"/f_map")
+
+    _ = show_batch(output.inference.delta_msefg_msebg[:,0].unsqueeze(-3),
+                   n_col=5,
+                   n_padding=4,
+                   pad_value=0.5,
+                   normalize=True,
+                   normalize_range=(-1.0, 1.0),
+                   title='delta_msefg_msebg, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/delta_mse")
+
+    fig = plt.figure(figsize=(12,12))
+    mask = (output.inference.delta_msefg_msebg != 0)
+    plt.hist(output.inference.delta_msefg_msebg[mask], density=True, bins=20)
+    plt.title("epoch="+str(epoch))
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix+"/delta_mse_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+
+
+
 
 ####    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
 ####    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h

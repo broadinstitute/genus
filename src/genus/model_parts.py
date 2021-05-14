@@ -320,7 +320,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                                  max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
-        self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
+        self.geco_fgfraction_min = GecoParameter(initial_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                                  min_value=0.0,
                                                  max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
@@ -482,12 +482,13 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_fg_bcwh = ((rec_img_fg_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
             mse_av = (mixing_fg_b1wh * mse_fg_bcwh + mixing_bg_b1wh * mse_bg_bcwh).mean()
-            delta_msefg_msebg_bcwh = mse_fg_bcwh - mse_bg_bcwh
+            delta_msefg_msebg_bcwh = (out_square_bk1wh.sum(dim=-4) > 0.5).float() * (mse_fg_bcwh - mse_bg_bcwh)
         else:
             mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
             mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-            delta_msefg_msebg_bcwh = torch.min(mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(-4), dim=-4)[0]
+            delta_msefg_msebg_bcwh = (out_square_bk1wh * (mse_fg_bkcwh -
+                                                          mse_bg_bcwh.unsqueeze(-4))).view(batch_size, -1, width_raw_image, height_raw_image)
 
         # TODO: which indicator should I use? p and 1?
         # Since reconstruction gradient are proportional to c_p the KL should also be proportional to c_p
@@ -591,7 +592,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         loss_vae = zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    geco_mse.hyperparam * (mse_av + bb_regression_cost + zwhere_kl_av +
-                                          geco_fgfrac_hyperparam * mixing_p_detached_bk1wh.sum(dim=-4).mean() +
+                                          geco_fgfrac_hyperparam * out_mask_bk1wh.mean() +
                                           mask_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
