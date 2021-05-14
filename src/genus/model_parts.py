@@ -562,8 +562,12 @@ class InferenceAndGeneration(torch.nn.Module):
         nobj_grid_not_too_small = (nobj_grid_av > target_nobj_min)
         nobj_grid_too_small = (nobj_grid_av < target_nobj_min)
 
-        decrease_reinforce = nobj_grid_not_too_small * fgfraction_in_range * mse_in_range
-        increase_reinforce = nobj_grid_too_small
+        nobj_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
+        nobj_too_large = (nobj_av > target_nobj_max)
+        nobj_too_small = (nobj_av < target_nobj_min)
+
+        decrease_reinforce = (nobj_grid_not_too_small * fgfraction_in_range * mse_in_range) or nobj_too_large
+        increase_reinforce = nobj_grid_too_small or nobj_too_small
         geco_reinforce: GECO = self.geco_reinforce.forward(constraint=1.0*increase_reinforce - 1.0*decrease_reinforce)
         logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
@@ -575,7 +579,9 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=-1.0*decrease_annealing)
 
         # MSE
-        decrease_lambda_mse = (mse_in_range * nobj_grid_in_range * fgfraction_in_range) or mse_too_small
+        decrease_lambda_mse = (mse_in_range * nobj_grid_in_range * fgfraction_in_range) or \
+                              mse_too_small or \
+                              (nobj_too_large * (geco_reinforce.hyperparam == 0))
         increase_lambda_mse = mse_too_large
         geco_mse: GECO = self.geco_mse_max.forward(constraint=1.0*increase_lambda_mse-1.0*decrease_lambda_mse)
 

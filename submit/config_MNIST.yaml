@@ -57,12 +57,15 @@ input_image:
   range_object_size: [10, 35]
 
   # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
-  # If the image is in the range (0,1) then sigma_mse should be 0.1
-  # Target_MSE is the desired value of MSE.
+  # sigma_MSE provide the overall scale it shoul dbe chosen so that MSE=1 is a good reconstruction.
+  # For example if the input image is in the range (0,1) then sigma_mse should be 0.1
+  # Target_mse is the range of acceptable values for MSE.
   # If the value is too small, the model will ignore all the priors to try to achieve a low MSE.
   # The goal is to segment the scene into objects not to achieve perfect reconstruction.
   # Reasonable value are [1.0, 3.0]
-  # The values are used to guide the model toward the desired segmentation.
+  # The value of lambda_mse is changed during training (within the range specified by lambda_mse_min_max)
+  # to achieve a MSE in the target range.
+  # Reasonable values for lambda_mse_min_max are [0.1, 100.0]
   sigma_mse: 0.1
   target_mse_min_max: [1.0, 3.0]
   lambda_mse_min_max: [0.1, 100.0]
@@ -84,7 +87,7 @@ input_image:
 # parameter related to the loss function
 loss:
   # The type of observation model
-  GMM: False
+  GMM: True
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
