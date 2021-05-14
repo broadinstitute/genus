@@ -1,5 +1,3 @@
-# AAAAAAAA
-
 # neptune project for logging the simulation results
 neptune_project: "cellarium/genus"
 
@@ -58,13 +56,15 @@ input_image:
   # Tuple with the range (in pixel) of the size of the objects
   range_object_size: [10, 35]
 
-  # Desired value for pixel-averaged Mean Square Error, i.e. MSE = pixel_mean_of (x-x_reconstructed)**2
-  # Small value lead to more accurate reconstruction.
+  # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
+  # If the image is in the range (0,1) then sigma_mse should be 0.1
+  # Target_MSE is the desired value of MSE.
   # If the value is too small, the model will ignore all the priors to try to achieve a low MSE.
   # The goal is to segment the scene into objects not to achieve perfect reconstruction.
-  # Therefore use a not-to-small value.
-  # For example, if the image intensity is the range (0,1) then use 0.1
-  target_mse_max: 0.1
+  # Reasonable value are [1.0, 3.0]
+  # The values are used to guide the model toward the desired segmentation.
+  sigma_mse: 0.1
+  target_mse_min_max: [1.0, 3.0]
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
@@ -91,8 +91,7 @@ loss:
   # to be in the desired range.
   # lambda_mse should not become too large otherwise the KL term is meaningless.
   lambda_mse_min_max: [0.1, 10.0]
-  lambda_fgfraction_max: 1000.0
-  # lambda_nobject_max: 1000.0
+  lambda_fgfraction_min_max: [0.1, 10.0]
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
@@ -111,7 +110,7 @@ optimizer:
 
   # Learning rate. Use 1E-4
   lr: 0.001
-  lr_geco: 0.0001
+  lr_geco: 0.0005
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]

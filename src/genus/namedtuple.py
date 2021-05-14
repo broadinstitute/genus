@@ -213,6 +213,7 @@ class Inference(NamedTuple):
     sample_bb_ideal_k: BB
     # Debug
     feature_map: torch.Tensor
+    delta_msefg_msebg: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):
@@ -232,6 +233,7 @@ class MetricMiniBatch(NamedTuple):
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     # monitoring
     mse_av: float
+    mixing_fg_av: float
     fgfraction_av: float
     nobj_grid_av: float
     nobj_av: float

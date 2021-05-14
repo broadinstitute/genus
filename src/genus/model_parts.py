@@ -259,6 +259,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.n_mc_samples = config["loss"]["n_mc_samples"]
 
         # variables
+        self.target_mse_min = config["input_image"]["target_mse_min_max"][0]
+        self.target_mse_max = config["input_image"]["target_mse_min_max"][1]
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
@@ -303,9 +305,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                   dim_z=config["architecture"]["zinstance_dim"])
 
         # Observation model
-        self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
-                                                             dtype=torch.float)[..., None, None], requires_grad=False)
-        self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
+        self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
@@ -316,14 +316,13 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # The coupling is (geco_fgfraction_max - geco_fgfraction_min).
         # The initial value gaurantees that the model start from the empty solution
-        # TODO: DO I need the min value for geco_fgfraction_max?
         self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
                                                  min_value=0.0,
-                                                 max_value=config["loss"]["lambda_fgfraction_max"],
+                                                 max_value=config["loss"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
         self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
-                                                 min_value=0.1,
-                                                 max_value=config["loss"]["lambda_fgfraction_max"],
+                                                 min_value=config["loss"]["lambda_fgfraction_min_max"][0],
+                                                 max_value=config["loss"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
 
         # This params controls the warm-up phase and are annealed linearly from ONE to ZERO
@@ -473,18 +472,22 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
         p_detached_times_mask_bk1wh = p_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
-        tmp_bk1wh = p_detached_times_mask_bk1wh / torch.sum(p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mask_overlap_b1wh = tmp_bk1wh.sum(dim=-4).pow(2) - tmp_bk1wh.pow(2).sum(dim=-4)
+        mixing_p_detached_bk1wh = p_detached_times_mask_bk1wh / torch.sum(p_detached_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mask_overlap_b1wh = mixing_p_detached_bk1wh.sum(dim=-4).pow(2) - mixing_p_detached_bk1wh.pow(2).sum(dim=-4)
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
         # 12. Observation model
         if self.GMM:
-            rec_img_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
-            mse_av = ((rec_img_bcwh - imgs_bcwh)/self.sigma_fg).pow(2).mean()
+            rec_img_fg_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4)  # sum over boxes
+            mse_fg_bcwh = ((rec_img_fg_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
+            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
+            mse_av = (mixing_fg_b1wh * mse_fg_bcwh + mixing_bg_b1wh * mse_bg_bcwh).mean()
+            delta_msefg_msebg_bcwh = mse_fg_bcwh - mse_bg_bcwh
         else:
-            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
+            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
+            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
             mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
+            delta_msefg_msebg_bcwh = torch.min(mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(-4), dim=-4)[0]
 
         # TODO: which indicator should I use? p and 1?
         # Since reconstruction gradient are proportional to c_p the KL should also be proportional to c_p
@@ -538,36 +541,42 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint < 0, parameter will be decreased
         # if constraint > 0, parameter will be increased
 
-        # First I make sure that the FG_FRACTION is in the desired range
+        # Preliminaries
+        mse_too_large =  (mse_av > self.target_mse_max)
+        mse_too_small =  (mse_av < self.target_mse_min)
+        mse_in_range = (mse_av < self.target_mse_max) * (mse_av > self.target_mse_min)
+
+        # Simple logic to decide the value of lmabda_fgfraction = lambda_fgfraction_max - lambda_fgfraction_min
+        # Note that this dynamical parameter can be BOTH POSITIVE AND NEGATIVE
         fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
         fgfraction_in_range = (fgfrac_hard_av > self.target_fgfraction_min) * (fgfrac_hard_av < self.target_fgfraction_max)
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=1.0-2.0*(fgfrac_hard_av > self.target_fgfraction_min))
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=1.0-2.0*(fgfrac_hard_av < self.target_fgfraction_max))
         geco_fgfrac_hyperparam = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
 
-        # Next I decide whether to increase or decrease the reinforce term.
-        # Reducing geco_reinforce.hyperparam leads to fewer objects
+        # REINFORCE
         # Reinforce starts at ONE and becomes ZERO at the end of the annealing procedure
+        # Reducing geco_reinforce.hyperparam leads to fewer objects
         nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
-        nobj_grid_inrange = (nobj_grid_av > target_nobj_min) * (nobj_grid_av < target_nobj_max)
-        nobj_grid_is_large_enough = (nobj_grid_av > target_nobj_min)
-        nobj_grid_is_too_small = (nobj_grid_av < target_nobj_min)
-        rec_is_acceptable = (mse_av < 5.0)
+        nobj_grid_in_range = (nobj_grid_av > target_nobj_min) * (nobj_grid_av < target_nobj_max)
+        nobj_grid_not_too_small = (nobj_grid_av > target_nobj_min)
+        nobj_grid_too_small = (nobj_grid_av < target_nobj_min)
 
-        decrease_reinforce = nobj_grid_is_large_enough * fgfraction_in_range * rec_is_acceptable
-        increase_reinforce = nobj_grid_is_too_small
-
+        decrease_reinforce = nobj_grid_not_too_small * fgfraction_in_range * mse_in_range
+        increase_reinforce = nobj_grid_too_small
         geco_reinforce: GECO = self.geco_reinforce.forward(constraint=1.0*increase_reinforce - 1.0*decrease_reinforce)
         logit_kl_av = - entropy_ber + (geco_reinforce.hyperparam - 1.0) * reinforce_ber
 
-        # Next can decrease the annealing term
-        # Note that annealing can never be increased. Constraint is either negative or zero
-        decrease_annealing = rec_is_acceptable * nobj_grid_inrange * fgfraction_in_range
+        # ANNEALING
+        # Annealing starts at ONE and becomes ZERO at the end of the annealing procedure
+        # Reducing geco_annealing_factor.hyperparam force the model to learn to localize
+        # Note that annealing can never be increased. It decrease monotonically
+        decrease_annealing = mse_in_range * nobj_grid_in_range * fgfraction_in_range
         geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=-1.0*decrease_annealing)
 
-        # Finally if everything else is right, I can decrease the reconstruction
-        increase_lambda_mse =  (mse_av > 1.0)
-        decrease_lambda_mse =  (mse_av < 1.0) * nobj_grid_inrange * fgfraction_in_range
+        # MSE
+        decrease_lambda_mse = (mse_in_range * nobj_grid_in_range * fgfraction_in_range) or mse_too_small
+        increase_lambda_mse = mse_too_large
         geco_mse: GECO = self.geco_mse_max.forward(constraint=1.0*increase_lambda_mse-1.0*decrease_lambda_mse)
 
         # Put all the losses together
@@ -576,7 +585,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         loss_vae = zinstance_kl_av + zbg_kl_av + logit_kl_av + \
                    geco_mse.hyperparam * (mse_av + bb_regression_cost + zwhere_kl_av +
-                                          geco_fgfrac_hyperparam * mixing_fg_b1wh.mean() +
+                                          geco_fgfrac_hyperparam * mixing_p_detached_bk1wh.sum(dim=-4).mean() +
                                           mask_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
@@ -592,7 +601,8 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              feature_map=unet_output.features.detach())
+                              feature_map=unet_output.features.detach(),
+                              delta_msefg_msebg=delta_msefg_msebg_bcwh.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
@@ -600,6 +610,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  # number of objects
+                                 mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
                                  fgfraction_av=fgfrac_hard_av.detach().item(),
                                  nobj_grid_av=nobj_grid_av.detach().item(),
                                  nobj_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
