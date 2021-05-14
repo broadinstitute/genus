@@ -102,7 +102,7 @@ loss:
 # parameter related to the optimizer
 optimizer:
   # Can be "adam", "SGD" or "RMSprop". In all our experiments we have used Adam.
-  type: "adam"
+  type: "RMSprop"
 
   # Learning rate. Use 1E-4
   lr: 0.001

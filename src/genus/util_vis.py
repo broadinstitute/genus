@@ -684,7 +684,7 @@ def plot_reconstruction_and_inference(output: Output,
 
     fig = plt.figure(figsize=(12,12))
     mask = (output.inference.delta_msefg_msebg != 0)
-    plt.hist(output.inference.delta_msefg_msebg[mask], density=True, bins=20)
+    plt.hist(output.inference.delta_msefg_msebg[mask].cpu().detach().numpy(), density=True, bins=20)
     plt.title("epoch="+str(epoch))
     fig.tight_layout()
     if (prefix is not None) and (experiment is not None):
