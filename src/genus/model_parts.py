@@ -309,20 +309,20 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_mse_max = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
-                                          min_value=config["loss"]["lambda_mse_min_max"][0],
-                                          max_value=config["loss"]["lambda_mse_min_max"][1],
+        self.geco_mse_max = GecoParameter(initial_value=config["input_image"]["lambda_mse_min_max"][1],
+                                          min_value=config["input_image"]["lambda_mse_min_max"][0],
+                                          max_value=config["input_image"]["lambda_mse_min_max"][1],
                                           linear_exp=True)
 
         # The coupling is (geco_fgfraction_max - geco_fgfraction_min).
         # The initial value gaurantees that the model start from the empty solution
+        self.geco_fgfraction_max = GecoParameter(initial_value=config["input_image"]["lambda_fgfraction_min_max"][0],
+                                                 min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
+                                                 linear_exp=True)
         self.geco_fgfraction_min = GecoParameter(initial_value=0.0,
                                                  min_value=0.0,
-                                                 max_value=config["loss"]["lambda_fgfraction_min_max"][1],
-                                                 linear_exp=True)
-        self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
-                                                 min_value=config["loss"]["lambda_fgfraction_min_max"][0],
-                                                 max_value=config["loss"]["lambda_fgfraction_min_max"][1],
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
 
         # This params controls the warm-up phase and are annealed linearly from ONE to ZERO

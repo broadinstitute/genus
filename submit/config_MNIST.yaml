@@ -65,11 +65,13 @@ input_image:
   # The values are used to guide the model toward the desired segmentation.
   sigma_mse: 0.1
   target_mse_min_max: [1.0, 3.0]
+  lambda_mse_min_max: [0.1, 100.0]
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.15]
+  lambda_fgfraction_min_max: [0.1, 5.0 ]
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # At the current moment these parameters are NOT learnable and need to be chosen differently for each dataset.
@@ -83,15 +85,6 @@ input_image:
 loss:
   # The type of observation model
   GMM: False
-
-  # The loss functions has many terms whose importance is controlled by the 3 values below.
-  # We use an automatic method to adjust these parameters but the user can specify the range of acceptable values.
-  # Do not change them unless you understand what you are doing
-  # The idea is that lambda_nobject and lambda_fgfraction can become as big as necessary to force the parameters
-  # to be in the desired range.
-  # lambda_mse should not become too large otherwise the KL term is meaningless.
-  lambda_mse_min_max: [0.1, 10.0]
-  lambda_fgfraction_min_max: [0.1, 10.0]
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
