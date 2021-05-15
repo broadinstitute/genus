@@ -6,8 +6,8 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 256
-  MAX_EPOCHS: 501
-  TEST_FREQUENCY: 5
+  MAX_EPOCHS: 1501
+  TEST_FREQUENCY: 50
   CHECKPOINT_FREQUENCY: 50
 
 # architecture parameters
@@ -83,7 +83,7 @@ input_image:
   # In future releases, we will make these parameters learnable.
   DPP_length: 5.0
   DPP_weight: 0.2
-  lambda_nobj_min_max: [0.1, 10]
+  lambda_nobj_min_max: [0.01, 100]
 
 # parameter related to the loss function
 loss:
@@ -106,8 +106,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.001
-  lr_geco: 0.0005
+  lr: 0.0001
+  lr_geco: 0.0001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -121,7 +121,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: True
+  is_active: False
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"

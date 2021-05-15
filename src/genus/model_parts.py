@@ -508,7 +508,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # the posterior have more weight on configuration which are likely under the prior
         entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
 
-        # Use the Bernoulli distribution at Temperature = 1 to evaluate the KL divergence
+        # Draw samples for the Bernoulli posterior
         prob_expanded_nb1wh = unet_prob_b1wh.expand([self.n_mc_samples, -1, -1, -1, -1])  # keep: batch,ch,w,h
         c_mcsamples_nb1wh = (torch.rand_like(prob_expanded_nb1wh) < prob_expanded_nb1wh)
         logp_ber_nb = compute_logp_bernoulli(c=c_mcsamples_nb1wh.detach(),
@@ -524,9 +524,6 @@ class InferenceAndGeneration(torch.nn.Module):
             n_stdev = self.grid_dpp.n_stddev
             target_nobj_min = n_mean - n_stdev
             target_nobj_max = n_mean + n_stdev
-            # prob_target = n_mean / torch.numel(unet_output.logit[-2:])
-            # logit_target = torch.log(prob_target) - torch.log1p(-prob_target)
-            # print("logit_target", logit_target)
 
         reinforce_ber = (logp_ber_nb * d_nb.detach()).mean()
         logit_kl_av = - entropy_ber - reinforce_ber
@@ -546,8 +543,7 @@ class InferenceAndGeneration(torch.nn.Module):
             nobj_grid_too_large = (nobj_grid_av > target_nobj_max)
             nobj_grid_too_small = (nobj_grid_av < target_nobj_min)
             nobj_grid_in_range = ~nobj_grid_too_small * ~nobj_grid_too_large
-            constraint_nobj_smooth = torch.max(nobj_grid_av - target_nobj_max, target_nobj_min - nobj_grid_av)
-            # constraint_nobj_piecewise = -2.0 * nobj_grid_in_range + 1.0
+            constraint_nobj_piecewise = 1.0 * nobj_grid_too_large - 1.0 * nobj_grid_too_small
 
             # Constraint is positive if outside range and negative if in range
             fgfraction_av = mixing_fg_b1wh.mean()
@@ -566,7 +562,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing_piecewise)
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction_smooth)
-        geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj_smooth)
+        geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj_piecewise)
         geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse_piecewise)
 
         # Put all the losses together
