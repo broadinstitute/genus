@@ -83,7 +83,10 @@ input_image:
   # In future releases, we will make these parameters learnable.
   DPP_length: 5.0
   DPP_weight: 0.2
-  lambda_nobj_min_max: [0.01, 100]
+
+  # Similar to beta VAE. This is the prefactor in front of (KL_INSTANCE + KL_BG)
+  lambda_instance_min_max: [0.1, 100.0]
+
 
 # parameter related to the loss function
 loss:

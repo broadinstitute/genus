@@ -317,11 +317,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                              min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                              linear_exp=True)
-        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
-                                       min_value=config["input_image"]["lambda_nobj_min_max"][0],
-                                       max_value=config["input_image"]["lambda_nobj_min_max"][1],
-                                       linear_exp=True)
+        self.geco_instance = GecoParameter(initial_value=config["input_image"]["lambda_instance_min_max"][0],
+                                           min_value=config["input_image"]["lambda_instance_min_max"][0],
+                                           max_value=config["input_image"]["lambda_instance_min_max"][1],
+                                           linear_exp=True)
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
+
+
 
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -533,45 +535,51 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint < 0, parameter will be decreased
         # if constraint > 0, parameter will be increased
         with torch.no_grad():
-            mse_too_large =  (mse_av > self.target_mse_max)
-            mse_too_small =  (mse_av < self.target_mse_min)
-            mse_in_range = ~mse_too_small * ~mse_too_large
-            constraint_mse_piecewise = 1.0 * mse_too_large - 1.0 * mse_too_small
 
-            # Constraint is positive if outside range and negative if in range
+            # MSE:
+            # If too few object make reconstruction more important (so that KL_DPP takes over)
+            # If too many object make reconstruction less important (so that KL_DPP dominates)
             nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
             nobj_grid_too_large = (nobj_grid_av > target_nobj_max)
             nobj_grid_too_small = (nobj_grid_av < target_nobj_min)
-            nobj_grid_in_range = ~nobj_grid_too_small * ~nobj_grid_too_large
-            constraint_nobj_piecewise = 1.0 * nobj_grid_too_large - 1.0 * nobj_grid_too_small
+            constraint_mse = 1.0 * nobj_grid_too_small - 1.0 * nobj_grid_too_large
 
-            # Constraint is positive if outside range and negative if in range
+            # FG_FRACTION:
+            # Push mixing_fg_b1wh up or down as necessary
+            # Constranit is positive if outside range and negative if in range
             fgfraction_av = mixing_fg_b1wh.mean()
-            fgfraction_too_large = (fgfraction_av > self.target_fgfraction_max)
             fgfraction_too_small = (fgfraction_av < self.target_fgfraction_min)
-            fgfraction_in_range = ~fgfraction_too_small * ~fgfraction_too_large
-            constraint_fgfraction_smooth = torch.max(fgfraction_av - self.target_fgfraction_max,
-                                                     self.target_fgfraction_min - fgfraction_av)
-            # constraint_fgfraction_piecewise = -2.0*fgfraction_in_range + 1.0
+            fgfraction_in_range = (fgfraction_av > self.target_fgfraction_min) * (fgfraction_av < self.target_fgfraction_max)
+            constraint_fgfraction = torch.max(fgfraction_av - self.target_fgfraction_max,
+                                              self.target_fgfraction_min - fgfraction_av)
 
-            # Annealing starts at ONE and becomes ZERO at the end of the annealing procedure
-            # Reducing geco_annealing_factor.hyperparam force the model to learn to localize
-            # Note that annealing can never be increased. It decrease monotonically
-            decrease_annealing = mse_in_range * nobj_grid_in_range * fgfraction_in_range
-            constraint_annealing_piecewise = -1.0 * decrease_annealing
+            # KL instance
+            # If reconstraction is good, you can increase KL_what and KL_bg
+            # If reconstruction is bad, decrease KL_what and KL_bg
+            mse_too_large =  (mse_av > self.target_mse_max)
+            mse_too_small =  (mse_av < self.target_mse_min)
+            mse_in_range = (mse_av > self.target_mse_min) * (mse_av < self.target_mse_max)
+            constraint_instance = 1.0 * mse_too_small - 1.0 * mse_too_large
 
-        geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing_piecewise)
-        geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction_smooth)
-        geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj_piecewise)
-        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse_piecewise)
+            # ANNEALING:
+            # If mse_in_range and fgfraction_in_range decrease annealing
+            # If nobj < nobj_min increase annealing
+            decrease_annealing = mse_in_range * fgfraction_in_range
+            increase_annealing = nobj_grid_too_small
+            constraint_annealing = 1.0 * increase_annealing - 1.0 * decrease_annealing
+
+        geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
+        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
+        geco_instance: GECO = self.geco_instance.forward(constraint=constraint_instance)
+        geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss +  geco_mse.loss + geco_nobj.loss + geco_fgfraction.loss
+        loss_geco = geco_annealing.loss + geco_mse.loss + geco_instance.loss + geco_fgfraction.loss
 
-        fgfraction_coupling = geco_fgfraction.hyperparam * mixing_fg_b1wh.mean() * (1.0 - 2.0 * fgfraction_too_small)
+        fgfraction_coupling = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach() * mixing_fg_b1wh.mean()
 
-        loss_vae = zinstance_kl_av + zbg_kl_av + \
-                   geco_nobj.hyperparam * logit_kl_av + \
+        loss_vae = logit_kl_av + \
+                   geco_instance.hyperparam * (zinstance_kl_av + zbg_kl_av) + \
                    geco_mse.hyperparam * (mse_av + bb_regression_cost + zwhere_kl_av + fgfraction_coupling + mask_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
@@ -617,7 +625,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=geco_fgfraction.hyperparam.detach().item(),
-                                 lambda_nobj=geco_nobj.hyperparam.detach().item(),
+                                 lambda_instance=geco_instance.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
