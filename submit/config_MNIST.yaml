@@ -74,7 +74,7 @@ input_image:
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.15]
-  lambda_fgfraction_min_max: [0.1, 1.0 ]
+  lambda_fgfraction_min_max: [0.01, 2.0 ]
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # At the current moment these parameters are NOT learnable and need to be chosen differently for each dataset.
@@ -83,6 +83,7 @@ input_image:
   # In future releases, we will make these parameters learnable.
   DPP_length: 5.0
   DPP_weight: 0.2
+  lambda_nobj_min_max: [0.1, 10]
 
 # parameter related to the loss function
 loss:
@@ -102,7 +103,7 @@ loss:
 # parameter related to the optimizer
 optimizer:
   # Can be "adam", "SGD" or "RMSprop". In all our experiments we have used Adam.
-  type: "RMSprop"
+  type: "adam"
 
   # Learning rate. Use 1E-4
   lr: 0.001
