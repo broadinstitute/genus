@@ -118,14 +118,14 @@ class SimilarityKernel(torch.nn.Module):
         assert weight > 0, "Error: weight MUST BE > 0"
 
         if length_scale_min_max is None:
-            length_scale_min_max = [min(2.0, length_scale), max(50.0, length_scale)]
+            length_scale_min_max = [min(0.5, length_scale), max(50.0, length_scale)]
         else:
             assert (length_scale_min_max[0] > 0) and (length_scale_min_max[0] < length_scale) and \
                    (length_scale_min_max[-1] >
                     length_scale), "length_scale and/or lenght_scale_min_max have invalid values"
 
         if weight_min_max is None:
-            weight_min_max = [min(2.0, weight), max(50.0, weight)]
+            weight_min_max = [min(1E-4, weight), max(50.0, weight)]
         else:
             assert (weight_min_max[0] > 0) and (weight_min_max[0] < weight) and (weight_min_max[-1] > weight), \
                 "weigth and/or weigth_min_max have invalid values"
