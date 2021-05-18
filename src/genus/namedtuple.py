@@ -250,6 +250,9 @@ class MetricMiniBatch(NamedTuple):
     kl_zwhere: float
     kl_logit: float
     # debug
+    logit_min: float
+    logit_mean: float
+    logit_max: float
     similarity_l: float
     similarity_w: float
     lambda_annealing: float
