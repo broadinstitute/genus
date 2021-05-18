@@ -6,7 +6,7 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 256
-  MAX_EPOCHS: 1501
+  MAX_EPOCHS: 4501
   TEST_FREQUENCY: 50
   CHECKPOINT_FREQUENCY: 50
 
@@ -40,6 +40,9 @@ architecture:
 # parameters describing the input image
 input_image:
 
+  # Boolean. Is the background completely zero or not?
+  is_zero_background: False
+
   # Integer. Number of channels of the image
   ch_in: 1
 
@@ -57,7 +60,7 @@ input_image:
   range_object_size: [10, 35]
 
   # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
-  # sigma_MSE provide the overall scale it shoul dbe chosen so that MSE=1 is a good reconstruction.
+  # sigma_MSE provide the overall scale it should be chosen so that MSE=1 is a good reconstruction.
   # For example if the input image is in the range (0,1) then sigma_mse should be 0.1
   # Target_mse is the range of acceptable values for MSE.
   # If the value is too small, the model will ignore all the priors to try to achieve a low MSE.
@@ -74,24 +77,30 @@ input_image:
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.15]
-  lambda_fgfraction_min_max: [0.01, 2.0]
+  lambda_fgfraction_min_max: [0.1, 5.0]
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
-  # At the current moment these parameters are NOT learnable and need to be chosen differently for each dataset.
-  # See our example notebook to see how to choose these parameters.
-  # Note that this is just the prior, the inferred number of object in each scene will in general deviate from the prior.
-  # In future releases, we will make these parameters learnable.
+  #
+  # If DPP_learnable_parameters == False then
+  # 1. DPP_length and DPP_weight are fixed and need to be chosen differently for each dataset.
+  #    See our example notebook to see how to choose these parameters.
+  # 2. target_nobj_av_per_patch_min_max is NOT used
+  #
+  # If DPP_learnable_parameters == True then
+  # 1. DPP_length and DPP_weight specify only the initial value for those parameters which can change during training
+  # 2. target_nobj_av_per_patch_min_max specify the tolerable range for the average number of object in each patch.
+  #    This value will be used to tune the DPP_length and DPP_weight parameter
+  DPP_learnable_parameters: True
   DPP_length: 5.0
   DPP_weight: 0.2
-
-  # Similar to beta VAE. This is the prefactor in front of (KL_INSTANCE + KL_BG)
-  lambda_instance_min_max: [0.1, 100.0]
+  target_nobj_av_per_patch_min_max: [2.2, 4.2]
+  lambda_nobj_min_max: [ 0.1, 100.0 ]
 
 
 # parameter related to the loss function
 loss:
   # The type of observation model
-  GMM: False
+  GMM: True
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
@@ -109,8 +118,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.0001
-  lr_geco: 0.0001
+  lr: 0.0003
+  lr_geco: 0.0003
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]

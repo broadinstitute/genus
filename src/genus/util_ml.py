@@ -439,9 +439,6 @@ class Grid_DPP(torch.nn.Module):
         self.finite_dpp:  Optional[FiniteDPP] = None
         self.fingerprint = (None, None, None, None)
         self.learnable_params = learnable_params
-        if self.learnable_params:
-            raise NotImplementedError("At the moment, \
-            the lenght_scale and weight of the DPP prior need to be fixed by the users")
 
     @property
     def n_mean(self):
