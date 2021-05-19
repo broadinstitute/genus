@@ -213,7 +213,6 @@ class Inference(NamedTuple):
     sample_bb_ideal_k: BB
     # Debug
     feature_map: torch.Tensor
-    delta_msefg_msebg: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):

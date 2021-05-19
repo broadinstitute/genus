@@ -68,16 +68,16 @@ input_image:
   # Reasonable value are [1.0, 3.0]
   # The value of lambda_mse is changed during training (within the range specified by lambda_mse_min_max)
   # to achieve a MSE in the target range.
-  # Reasonable values for lambda_mse_min_max are [0.1, 100.0]
+  # Reasonable values for lambda_mse_min_max are [0.1, 10.0]
   sigma_mse: 0.075
-  target_mse_min_max: [1.0, 3.0]
-  lambda_mse_min_max: [0.1, 300.0]
+  target_mse_min_max: [1.0, 3.0]  # let it be
+  lambda_mse_min_max: [0.1, 10.0] # let it be
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
-  target_fgfraction_min_max: [0.05, 0.15]
-  lambda_fgfraction_min_max: [0.1, 5.0]
+  target_fgfraction_min_max: [0.05, 0.15]  # this depends on the dataset
+  lambda_fgfraction_min_max: [0.1, 5.0]    # let it be
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   #
@@ -94,7 +94,7 @@ input_image:
   DPP_length: 5.0
   DPP_weight: 0.2
   target_nobj_av_per_patch_min_max: [2.2, 4.2]
-  lambda_nobj_min_max: [ 0.0, 0.0 ]
+  lambda_nobj_min_max: [0.1, 5.0]
 
 
 # parameter related to the loss function
@@ -105,7 +105,7 @@ loss:
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.001
-  bounding_box_regression_penalty_strength: 0.01
+  bounding_box_regression_penalty_strength: 0.1
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior

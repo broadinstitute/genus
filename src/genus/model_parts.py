@@ -475,19 +475,15 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 12. Observation model
         if self.GMM:
-            rec_img_fg_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4)  # sum over boxes
-            mse_fg_bcwh = ((rec_img_fg_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
-            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
-            mse_av = (mixing_fg_b1wh * mse_fg_bcwh + mixing_bg_b1wh * mse_bg_bcwh).mean()
-            delta_msefg_msebg_bcwh = (out_square_bk1wh.sum(dim=-4) > 0.5).float() * (mse_fg_bcwh - mse_bg_bcwh)
+            rec_img_bcwh = (mixing_bk1wh * out_img_bkcwh).sum(dim=-4) + mixing_bg_b1wh * out_background_bcwh
+            mse_av = ((rec_img_bcwh - imgs_bcwh) / self.sigma_mse).pow(2).mean()
         else:
             mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
             mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
             mse_av = ((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh).mean()
-            delta_msefg_msebg_bcwh = (out_square_bk1wh * (mse_fg_bkcwh -
-                                                          mse_bg_bcwh.unsqueeze(-4))).view(batch_size, -1, width_raw_image, height_raw_image)
 
-        # TODO: which indicator should I use? p and 1?
+        # TODO: which indicator should I use? p or c or 1
+        # indicator_bk = c_detached_bk.detach()
         # indicator_bk = prob_bk.detach()
         indicator_bk = torch.ones_like(prob_bk).detach()
         area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
@@ -529,10 +525,10 @@ class InferenceAndGeneration(torch.nn.Module):
                 log_dpp_after_nms = torch.zeros_like(entropy_ber)
                 n_mean = self.grid_dpp.n_mean
                 n_stdev = self.grid_dpp.n_stddev
-                target_nobj_min = n_mean - n_stdev
-                target_nobj_max = n_mean + n_stdev
+                target_nobj_min = (n_mean - n_stdev).cpu().detach().item()
+                target_nobj_max = (n_mean + n_stdev).cpu().detach().item()
 
-        # Reinforce learning
+        # Reinforce estimator
         prob_expanded_nb1wh = unet_prob_b1wh.expand([self.n_mc_samples, -1, -1, -1, -1])  # keep: batch,ch,w,h
         c_mcsamples_nb1wh = (torch.rand_like(prob_expanded_nb1wh) < prob_expanded_nb1wh)
         logp_ber_nb = compute_logp_bernoulli(c=c_mcsamples_nb1wh.detach(),
@@ -591,14 +587,22 @@ class InferenceAndGeneration(torch.nn.Module):
         # Put all the losses together
         loss_geco = geco_annealing.loss + geco_mse.loss + geco_nobj.loss + geco_fgfraction.loss
 
-        # Note that the sign of the coupling changes when I get values below the acceptable minimum
+        # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
-        lambda_nobj = geco_nobj.hyperparam * (1 - 2.0 * nobj_grid_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
-        nobj_coupling = lambda_nobj * unet_prob_b1wh.mean()
 
-        loss_vae = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + bb_regression_cost + \
-                   geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost + nobj_coupling)
+        # If nobj is NOT too small -> push logits toward a small but finite value.
+        # If nobj is too small -----> increase all logits
+        p_target = torch.tensor(0.5*target_nobj_min, device=imgs_bcwh.device,
+                                dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
+        logit_target = torch.log(p_target) - torch.log1p(-p_target)
+        nobj_coupling = geco_nobj.hyperparam  * (~nobj_grid_too_small * torch.abs(unet_output.logit - logit_target) -
+                                                 nobj_grid_too_small * unet_output.logit).mean()
+
+        loss_vae = logit_kl_av + nobj_coupling + \
+                   zinstance_kl_av + zbg_kl_av + \
+                   zwhere_kl_av + bb_regression_cost + \
+                   geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
 
@@ -613,8 +617,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              feature_map=unet_output.features.detach(),
-                              delta_msefg_msebg=delta_msefg_msebg_bcwh.detach())
+                              feature_map=unet_output.features.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
@@ -646,7 +649,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 lambda_nobj=lambda_nobj.detach().item(),
+                                 lambda_nobj=geco_nobj.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
