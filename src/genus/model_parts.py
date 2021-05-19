@@ -462,10 +462,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 10. Compute the mixing (using a softmax-like function).
         # Note that I add a small value to both foreground and background so that they can learn
-        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh #+ 1E-3 * out_square_bk1wh
+        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh + 1E-3 * out_square_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
-        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh #(1.0 + 1E-3) * \
+        mixing_bg_b1wh = (1.0 + 1E-3) * torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # I use p_detached here b/c the mask_overlap_cost should change the masks not the probabilities.
         p_detached_times_mask_bk1wh = prob_bk[..., None, None, None].detach() * out_mask_bk1wh
@@ -599,10 +599,13 @@ class InferenceAndGeneration(torch.nn.Module):
         nobj_coupling = geco_nobj.hyperparam  * (~nobj_grid_too_small * torch.abs(unet_output.logit - logit_target) -
                                                  nobj_grid_too_small * unet_output.logit).mean()
 
+        recover_from_empty = - geco_nobj.hyperparam * nobj_grid_too_small * unet_output.logit
+
         loss_vae = logit_kl_av + nobj_coupling + \
                    zinstance_kl_av + zbg_kl_av + \
                    zwhere_kl_av + bb_regression_cost + \
                    geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost)
+                   #geco_mse.hyperparam * (mse_av + fgfraction_coupling + recover_from_empty + mask_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
 

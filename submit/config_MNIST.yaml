@@ -100,12 +100,12 @@ input_image:
 # parameter related to the loss function
 loss:
   # The type of observation model
-  GMM: False
+  GMM: True
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.001
-  bounding_box_regression_penalty_strength: 0.1
+  bounding_box_regression_penalty_strength: 0.01
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
