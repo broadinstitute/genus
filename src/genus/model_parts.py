@@ -594,7 +594,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Note that the sign of the coupling changes when I get values below the acceptable minimum
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
         lambda_nobj = geco_nobj.hyperparam * (1 - 2.0 * nobj_grid_too_small).detach()
-        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
+        fgfraction_coupling = torch.zeros_like(lambda_fgfraction * mixing_fg_b1wh.mean())
         nobj_coupling = lambda_nobj * unet_prob_b1wh.mean()
 
         loss_vae = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + bb_regression_cost + \
