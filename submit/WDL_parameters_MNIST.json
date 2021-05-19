@@ -4,7 +4,7 @@
   "neptune_ml.data_test":        "gs://ld-data-bucket/genus/mnist/mnist_test_80x80_n2_6_with_grid.pt",
   "neptune_ml.ground_truth":     "gs://ld-data-bucket/genus/dummy_2.pt",
   "neptune_ml.ckpt":             "gs://ld-data-bucket/genus/ckpt_GENUS_489.pt",
-  "neptune_ml.git_branch_or_commit": "72d3efde3055f09cfb368483e5d9e70239361e89", 
+  "neptune_ml.git_branch_or_commit": "560a387f607de53151ad5c9cf48164e8b6036405",
 "neptune_ml.git_repo": "https://github.com/broadinstitute/genus.git",
   "neptune_ml.main_file_name": "main_mnist.py"
 }

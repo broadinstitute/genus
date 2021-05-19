@@ -94,7 +94,7 @@ input_image:
   DPP_length: 5.0
   DPP_weight: 0.2
   target_nobj_av_per_patch_min_max: [2.2, 4.2]
-  lambda_nobj_min_max: [ 0.1, 100.0 ]
+  lambda_nobj_min_max: [ 0.0, 0.0 ]
 
 
 # parameter related to the loss function
