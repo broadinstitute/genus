@@ -312,7 +312,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_mse = GecoParameter(initial_value=config["input_image"]["lambda_mse_min_max"][1],
+        self.geco_mse = GecoParameter(initial_value=10.0,#config["input_image"]["lambda_mse_min_max"][1],
                                       min_value=config["input_image"]["lambda_mse_min_max"][0],
                                       max_value=config["input_image"]["lambda_mse_min_max"][1],
                                       linear_exp=True)
@@ -592,8 +592,10 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco = geco_annealing.loss + geco_mse.loss + geco_nobj.loss + geco_fgfraction.loss
 
         # Note that the sign of the coupling changes when I get values below the acceptable minimum
-        fgfraction_coupling = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach() * mixing_fg_b1wh.mean()
-        nobj_coupling = geco_nobj.hyperparam * (1 - 2.0 * nobj_grid_too_small).detach() * unet_prob_b1wh.mean()
+        lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
+        lambda_nobj = geco_nobj.hyperparam * (1 - 2.0 * nobj_grid_too_small).detach()
+        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
+        nobj_coupling = lambda_nobj * unet_prob_b1wh.mean()
 
         loss_vae = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + bb_regression_cost + \
                    geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost + nobj_coupling)
@@ -643,8 +645,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  similarity_w=similarity_w.detach().item(),
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
-                                 lambda_fgfraction=geco_fgfraction.hyperparam.detach().item(),
-                                 lambda_nobj=geco_nobj.hyperparam.detach().item(),
+                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
+                                 lambda_nobj=lambda_nobj.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
