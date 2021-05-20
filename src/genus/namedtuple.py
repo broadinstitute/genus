@@ -233,7 +233,8 @@ class MetricMiniBatch(NamedTuple):
     # monitoring
     mse_av: float
     mixing_fg_av: float
-    fgfraction_av: float
+    fgfraction_smooth_av: float
+    fgfraction_hard_av: float
     nobj_grid_av: float
     nobj_av: float
     prob_av: float
@@ -268,13 +269,13 @@ class MetricMiniBatch(NamedTuple):
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
-             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}".format(epoch,
-                                                                                      self.loss,
-                                                                                      self.mse_av,
-                                                                                      self.cost_mask_overlap_av,
-                                                                                      self.cost_bb_regression_av,
-                                                                                      self.fgfraction_av,
-                                                                                      self.nobj_av)
+             bb_regression={4:.3f}, fgfraction_hard_av={5:.3f}, n_cell_av={6:.3f}".format(epoch,
+                                                                                          self.loss,
+                                                                                          self.mse_av,
+                                                                                          self.cost_mask_overlap_av,
+                                                                                          self.cost_bb_regression_av,
+                                                                                          self.fgfraction_hard_av,
+                                                                                          self.nobj_av)
         return s
 
 

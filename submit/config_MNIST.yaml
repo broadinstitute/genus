@@ -60,15 +60,14 @@ input_image:
   range_object_size: [10, 35]
 
   # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
-  # sigma_MSE provide the overall scale it should be chosen so that MSE=1 is a good reconstruction.
+  # sigma_MSE provide the overall scale it should be chosen so that acceptable reconstructions are of order 1.
   # For example if the input image is in the range (0,1) then sigma_mse should be 0.1
-  # Target_mse is the range of acceptable values for MSE.
-  # If the value is too small, the model will ignore all the priors to try to achieve a low MSE.
-  # The goal is to segment the scene into objects not to achieve perfect reconstruction.
-  # Reasonable value are [1.0, 3.0]
-  # The value of lambda_mse is changed during training (within the range specified by lambda_mse_min_max)
-  # to achieve a MSE in the target range.
-  # Reasonable values for lambda_mse_min_max are [0.1, 10.0]
+  #
+  # Target_mse is the range of acceptable values for MSE. For example [1.0, 3.0]
+  #
+  # The model will tune its parameters to try to achieve MSE in this range while using as few objects as possible.
+  # If the background is too expressive or this value is too high, the model can achieve the target MSE with the background only
+  # If the foreground is not expressive enogh or this value is too low, the model will never reach the target
   sigma_mse: 0.075
   target_mse_min_max: [1.0, 3.0]  # let it be
   lambda_mse_min_max: [0.1, 100.0] # let it be
@@ -87,8 +86,8 @@ input_image:
   DPP_learnable_parameters: False
   DPP_length: 5.0
   DPP_weight: 0.3
-  target_nobj_av_per_patch_min_max: [2.2, 4.2]
-  lambda_nobj_min_max: [0.1, 100.0]
+  target_nobj_av_per_patch_min_max: [2.2, 4.2]  # depends on the dataset
+  lambda_nobj_min_max: [0.1, 100.0]  # let it be
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
@@ -107,7 +106,7 @@ loss:
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.0
   box_overlap_penalty_strength: 0.0
-  bounding_box_regression_penalty_strength: 0.01
+  bounding_box_regression_penalty_strength: 0.001
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
@@ -120,16 +119,19 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 1E-4
-  lr: 0.0003
-  lr_geco: 0.0003
+  lr: 0.001
+  lr_geco: 0.001
+  lr_geco_nobj: 0.001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
   betas_geco_adam: [0.9, 0.999]
+  betas_geco_nobj_adam: [0.9, 0.999]
 
   # Alpha parameter for the RMSprop optimizer
   alpha_rmsprop: 0.99
   alpha_geco_rmsprop: 0.99
+  alpha_geco_nobj_rmsprop: 0.99
 
 
 # parameter relative to the learning rate scheduler

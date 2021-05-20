@@ -330,11 +330,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                       min_value=config["input_image"]["lambda_mse_min_max"][0],
                                       max_value=config["input_image"]["lambda_mse_min_max"][1],
                                       linear_exp=True)
-        self.geco_fgfraction = GecoParameter(initial_value=config["input_image"]["lambda_fgfraction_min_max"][0],
+        self.geco_fgfraction = GecoParameter(initial_value=1.0,
                                              min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                              linear_exp=True)
-        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
+        self.geco_nobj = GecoParameter(initial_value=1.0,
                                        min_value=config["input_image"]["lambda_nobj_min_max"][0],
                                        max_value=config["input_image"]["lambda_nobj_min_max"][1],
                                        linear_exp=True)
@@ -582,10 +582,11 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
 
             # Preliminaries
-            fgfraction_av = mixing_fg_b1wh.mean()
-            fgfraction_too_small = (fgfraction_av < self.target_fgfraction_min)
-            fgfraction_in_range = (fgfraction_av > self.target_fgfraction_min) * \
-                                  (fgfraction_av < self.target_fgfraction_max)
+            fgfraction_smooth_av = mixing_fg_b1wh.mean()
+            fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
+            fgfraction_too_small = (fgfraction_hard_av < self.target_fgfraction_min)
+            fgfraction_in_range = (fgfraction_hard_av > self.target_fgfraction_min) * \
+                                  (fgfraction_hard_av < self.target_fgfraction_max)
 
             nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
             nobj_grid_too_large = (nobj_grid_av > target_nobj_max)
@@ -604,18 +605,20 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = 1.0 * increase_annealing - 1.0 * decrease_annealing
 
             # FG_FRACTION: as long as fg_fraction_in_range it will asymptotically be the SMALLEST allowed
-            constraint_fgfraction = torch.max(fgfraction_av - self.target_fgfraction_max,
-                                              self.target_fgfraction_min - fgfraction_av)
+            increase_fgfraction = ~fgfraction_in_range
+            decrease_fgfraction = fgfraction_in_range
+            constraint_fgfraction = torch.max(self.target_fgfraction_min - fgfraction_hard_av,
+                                              fgfraction_hard_av - self.target_fgfraction_max)
+            increase_nobj = ~nobj_grid_in_range
+            decrease_nobj = nobj_grid_in_range
+            constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
             # MSE and NOJ are changed in a coupled way (check the 3x3 matrix with all possibilities).
             # They settle at intermediate values when they are both in_range.
-            increase_mse = nobj_grid_too_small or mse_too_large
-            decrease_mse = mse_too_small * ~nobj_grid_too_small
+            increase_mse = mse_too_large
+            decrease_mse = mse_too_small
             constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
 
-            increase_nobj = nobj_grid_too_large * ~mse_too_large
-            decrease_nobj = nobj_grid_too_small
-            constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
         # Produce both the loss and the hyperparameter
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
@@ -630,11 +633,13 @@ class InferenceAndGeneration(torch.nn.Module):
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
-        # Push all logits toward a small but finite value.
+        # If not too small, push all logits toward a small but finite value.
+        # If too small, push all logit higher
         p_target = torch.tensor(0.5 * target_nobj_min, device=imgs_bcwh.device,
                                 dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
         logit_target = torch.log(p_target) - torch.log1p(-p_target)
-        obj_sparsity = torch.abs(unet_output.logit - logit_target).mean()
+        obj_sparsity = geco_nobj.hyperparam * (~nobj_grid_too_small * torch.abs(unet_output.logit - logit_target) -
+                                                nobj_grid_too_small * unet_output.logit).mean()
 
         loss_vae = logit_kl_av + geco_nobj.hyperparam * obj_sparsity + \
                    zinstance_kl_av + zbg_kl_av + \
@@ -663,7 +668,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mse_av=mse_av.detach().item(),
                                  # number of objects
                                  mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
-                                 fgfraction_av=fgfraction_av.detach().item(),
+                                 fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
+                                 fgfraction_hard_av=fgfraction_hard_av.detach().item(),
                                  nobj_grid_av=nobj_grid_av.detach().item(),
                                  nobj_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
