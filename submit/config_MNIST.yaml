@@ -118,10 +118,10 @@ optimizer:
   # Can be "adam", "SGD" or "RMSprop". In all our experiments we have used Adam.
   type: "adam"
 
-  # Learning rate. Use 1E-4
-  lr: 0.001
-  lr_geco: 0.001
-  lr_geco_nobj: 0.001
+  # Learning rate. Use 5E-4
+  lr: 0.0003
+  lr_geco: 0.0003
+  lr_geco_nobj: 0.0003
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]

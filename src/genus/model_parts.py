@@ -584,9 +584,9 @@ class InferenceAndGeneration(torch.nn.Module):
             # Preliminaries
             fgfraction_smooth_av = mixing_fg_b1wh.mean()
             fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
-            fgfraction_too_small = (fgfraction_hard_av < self.target_fgfraction_min)
-            fgfraction_in_range = (fgfraction_hard_av > self.target_fgfraction_min) * \
-                                  (fgfraction_hard_av < self.target_fgfraction_max)
+            fgfraction_av = torch.min(fgfraction_hard_av, fgfraction_smooth_av)
+            fgfraction_too_small = (fgfraction_av < self.target_fgfraction_min)
+            fgfraction_in_range = (fgfraction_av > self.target_fgfraction_min) * (fgfraction_av < self.target_fgfraction_max)
 
             nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
             nobj_grid_too_large = (nobj_grid_av > target_nobj_max)
@@ -607,15 +607,15 @@ class InferenceAndGeneration(torch.nn.Module):
             # FG_FRACTION: as long as fg_fraction_in_range it will asymptotically be the SMALLEST allowed
             increase_fgfraction = ~fgfraction_in_range
             decrease_fgfraction = fgfraction_in_range
-            constraint_fgfraction = torch.max(self.target_fgfraction_min - fgfraction_hard_av,
-                                              fgfraction_hard_av - self.target_fgfraction_max)
+            constraint_fgfraction = 1.0 * increase_fgfraction - 1.0 * decrease_fgfraction
+
+            # NOBJ
             increase_nobj = ~nobj_grid_in_range
             decrease_nobj = nobj_grid_in_range
             constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
-            # MSE and NOJ are changed in a coupled way (check the 3x3 matrix with all possibilities).
-            # They settle at intermediate values when they are both in_range.
-            increase_mse = mse_too_large
+            # MSE
+            increase_mse = mse_too_large or nobj_grid_too_small
             decrease_mse = mse_too_small
             constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
 
