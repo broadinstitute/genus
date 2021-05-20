@@ -241,6 +241,7 @@ class MetricMiniBatch(NamedTuple):
     # term in the loss function
     cost_mse: float
     cost_mask_overlap_av: float
+    cost_box_overlap_av: float
     cost_fgfraction: float
     # cost_nobj: float
     cost_bb_regression_av: float
