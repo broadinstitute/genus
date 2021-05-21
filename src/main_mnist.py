@@ -6,7 +6,7 @@ from genus.util_logging import log_object_as_artifact, log_model_summary, log_ma
 from genus.model import *
 from genus.util_vis import show_batch, plot_reconstruction_and_inference, plot_generation, plot_segmentation
 from genus.util_data import DatasetInMemory
-from genus.util import load_yaml_as_dict, load_obj, file2ckpt, append_to_dict
+from genus.util import load_yaml_as_dict, load_obj, file2ckpt, append_to_dict, linear_interpolation
 
 # Check versions
 import torch
@@ -134,6 +134,12 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
     with torch.autograd.set_detect_anomaly(False):
         with torch.enable_grad():
             vae.train()
+            weigth_DPP = linear_interpolation(epoch,
+                                              values=config["input_image"]["DPP_weight"],
+                                              times=config["input_image"]["annealing_time"])
+            print("weith_DPP in main", weigth_DPP)
+            vae.inference_and_generator.grid_dpp.similiraty_kernel.weight_value.data.fill_(weigth_DPP)
+
             # print("process one epoch train")
             train_metrics = process_one_epoch(model=vae,
                                               dataloader=train_loader,

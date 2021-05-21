@@ -9,6 +9,7 @@ from .util import convert_to_box_list, invert_convert_to_box_list, compute_avera
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
+from collections.abc import Iterable
 
 
 @torch.no_grad()
@@ -273,8 +274,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.is_zero_background = config["input_image"]["is_zero_background"]
 
         # variables
-        self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
-        self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
+        #self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
+        #self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
         self.target_mse_min = config["input_image"]["target_mse_min_max"][0]
         self.target_mse_max = config["input_image"]["target_mse_min_max"][1]
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
@@ -289,8 +290,10 @@ class InferenceAndGeneration(torch.nn.Module):
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
         # modules
-        self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
-                                 weight=config["input_image"]["DPP_weight"],
+        dpp_l = config["input_image"]["DPP_length"]
+        dpp_w = config["input_image"]["DPP_weight"]
+        self.grid_dpp = Grid_DPP(length_scale=dpp_l[0] if isinstance(dpp_l, Iterable) else float(dpp_l),
+                                 weight=dpp_w[0] if isinstance(dpp_w, Iterable) else float(dpp_w),
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
 #        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
@@ -343,10 +346,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                              min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                              linear_exp=True)
-        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
-                                       min_value=config["input_image"]["lambda_nobj_min_max"][0],
-                                       max_value=config["input_image"]["lambda_nobj_min_max"][1],
-                                       linear_exp=True)
+###        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
+###                                       min_value=config["input_image"]["lambda_nobj_min_max"][0],
+###                                       max_value=config["input_image"]["lambda_nobj_min_max"][1],
+###                                       linear_exp=True)
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
 
@@ -564,20 +567,21 @@ class InferenceAndGeneration(torch.nn.Module):
         reinforce_ber = (logp_ber_nb * d_nb.detach()).mean()
 
         # C. Make the DPP adjust to the configuration after NMS
-        if self.grid_dpp.learnable_params:
-            # DPP is trainable
-            log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
-            with torch.no_grad():
-                target_nobj_min = self.target_nobj_av_per_patch_min
-                target_nobj_max = self.target_nobj_av_per_patch_max
-        else:
-            # DPP is not trainable
-            with torch.no_grad():
-                log_dpp_after_nms = torch.zeros_like(entropy_ber)
-                n_mean = self.grid_dpp.n_mean
-                n_stdev = self.grid_dpp.n_stddev
-                target_nobj_min = (n_mean - n_stdev).cpu().detach().item()
-                target_nobj_max = (n_mean + n_stdev).cpu().detach().item()
+        # TODO: Clean up this mess
+###        if self.grid_dpp.learnable_params:
+###            # DPP is trainable
+###            log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
+###            with torch.no_grad():
+###                target_nobj_min = self.target_nobj_av_per_patch_min
+###                target_nobj_max = self.target_nobj_av_per_patch_max
+###        else:
+###            # DPP is not trainable
+        with torch.no_grad():
+            log_dpp_after_nms = torch.zeros_like(entropy_ber)
+            n_mean = self.grid_dpp.n_mean
+            n_stdev = self.grid_dpp.n_stddev
+            target_nobj_min = (n_mean - n_stdev).cpu().detach().item()
+            target_nobj_max = (n_mean + n_stdev).cpu().detach().item()
 
         # D> Put everything together
         logit_kl_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
@@ -618,34 +622,34 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # MSE
             increase_mse = mse_too_large or nobj_grid_too_small
-            decrease_mse = mse_too_small
+            decrease_mse = mse_too_small or (mse_in_range and nobj_grid_too_large)
             constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
 
             # NOBJ
-            increase_nobj = nobj_grid_too_large * ~mse_too_large
-            decrease_nobj = nobj_grid_too_small
-            constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
+            #increase_nobj = nobj_grid_too_large * ~mse_too_large
+            #decrease_nobj = nobj_grid_too_small
+            #constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
         # Produce both the loss and the hyperparameter
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
         geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
-        geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj)
+        #geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_mse.loss + geco_nobj.loss + geco_fgfraction.loss
+        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction.loss  #+geco_nobj.loss
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
         # Push all logits toward a small but finite value.
-        p_target = torch.tensor(0.5 * target_nobj_min, device=imgs_bcwh.device,
-                                dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
-        logit_target = torch.log(p_target) - torch.log1p(-p_target)
-        obj_sparsity = torch.abs(unet_output.logit - logit_target).mean()
+        #p_target = torch.tensor(0.5 * target_nobj_min, device=imgs_bcwh.device,
+        #                        dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
+        #logit_target = torch.log(p_target) - torch.log1p(-p_target)
+        #obj_sparsity = torch.abs(unet_output.logit - logit_target).mean()
 
-        loss_vae = logit_kl_av + geco_nobj.hyperparam * obj_sparsity + \
+        loss_vae = logit_kl_av + \
                    zinstance_kl_av + zbg_kl_av + \
                    zwhere_kl_av + bb_regression_cost + \
                    geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost)
@@ -697,7 +701,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 lambda_nobj=geco_nobj.hyperparam.detach().item(),
+                                 lambda_nobj=0.0, #geco_nobj.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy

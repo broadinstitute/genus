@@ -25,7 +25,7 @@ architecture:
 
   # Integers. Latent dimension for z_background and z_where
   zbg_dim: 10  # small value otherwise the background can learn to reconstruct the foreground
-  zwhere_dim: 4  # must be a multiple of 4
+  zwhere_dim: 8  # must be a multiple of 4
 
   # related to encoding-decoding of glimpses
   glimpse_size: 28  # only 28 will work for now
@@ -70,7 +70,7 @@ input_image:
   # If the foreground is not expressive enogh or this value is too low, the model will never reach the target
   sigma_mse: 0.075
   target_mse_min_max: [1.0, 3.0]  # let it be
-  lambda_mse_min_max: [0.1, 100.0] # let it be
+  lambda_mse_min_max: [0.1, 300.0] # let it be
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   #
@@ -85,9 +85,8 @@ input_image:
   #    This value will be used to tune the DPP_length and DPP_weight parameter
   DPP_learnable_parameters: False
   DPP_length: 5.0
-  DPP_weight: 0.3
-  target_nobj_av_per_patch_min_max: [2.2, 4.2]  # depends on the dataset
-  lambda_nobj_min_max: [0.1, 100.0]  # let it be
+  DPP_weight: [10.0, 0.3]
+  annealing_time: [100, 300]
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
@@ -119,9 +118,9 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 5E-4
-  lr: 0.0003
-  lr_geco: 0.0003
-  lr_geco_nobj: 0.0003
+  lr: 0.001
+  lr_geco: 0.001
+  lr_geco_nobj: 0.001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -137,7 +136,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: False
+  is_active: True
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"
@@ -149,4 +148,4 @@ scheduler:
   step_size: 500
 
   # The "multistep_LR" scheduler decays the learning rate by gamma once the number of epoch reaches one of the milestones.
-  milestones: [200, 500]
+  milestones: [100, 300]
