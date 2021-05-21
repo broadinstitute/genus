@@ -106,7 +106,7 @@ loss:
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.0
   box_overlap_penalty_strength: 0.0
-  bounding_box_regression_penalty_strength: 0.0001
+  bounding_box_regression_penalty_strength: 0.001
   bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior

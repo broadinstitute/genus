@@ -339,11 +339,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                       min_value=config["input_image"]["lambda_mse_min_max"][0],
                                       max_value=config["input_image"]["lambda_mse_min_max"][1],
                                       linear_exp=True)
-        self.geco_fgfraction = GecoParameter(initial_value=1.0,
+        self.geco_fgfraction = GecoParameter(initial_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                              linear_exp=True)
-        self.geco_nobj = GecoParameter(initial_value=1.0,
+        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
                                        min_value=config["input_image"]["lambda_nobj_min_max"][0],
                                        max_value=config["input_image"]["lambda_nobj_min_max"][1],
                                        linear_exp=True)
@@ -616,16 +616,15 @@ class InferenceAndGeneration(torch.nn.Module):
             decrease_fgfraction = fgfraction_in_range
             constraint_fgfraction = 1.0 * increase_fgfraction - 1.0 * decrease_fgfraction
 
-            # NOBJ
-            increase_nobj = ~nobj_grid_in_range
-            decrease_nobj = nobj_grid_in_range
-            constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
-
             # MSE
             increase_mse = mse_too_large or nobj_grid_too_small
             decrease_mse = mse_too_small
             constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
 
+            # NOBJ
+            increase_nobj = nobj_grid_too_large * ~mse_too_large
+            decrease_nobj = nobj_grid_too_small
+            constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
         # Produce both the loss and the hyperparameter
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
@@ -640,13 +639,11 @@ class InferenceAndGeneration(torch.nn.Module):
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
-        # If not too small, push all logits toward a small but finite value.
-        # If too small, push all logit higher
+        # Push all logits toward a small but finite value.
         p_target = torch.tensor(0.5 * target_nobj_min, device=imgs_bcwh.device,
                                 dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
         logit_target = torch.log(p_target) - torch.log1p(-p_target)
-        obj_sparsity = geco_nobj.hyperparam * (~nobj_grid_too_small * torch.abs(unet_output.logit - logit_target) -
-                                                nobj_grid_too_small * unet_output.logit).mean()
+        obj_sparsity = torch.abs(unet_output.logit - logit_target).mean()
 
         loss_vae = logit_kl_av + geco_nobj.hyperparam * obj_sparsity + \
                    zinstance_kl_av + zbg_kl_av + \
