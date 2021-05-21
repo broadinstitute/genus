@@ -306,14 +306,14 @@ class InferenceAndGeneration(torch.nn.Module):
                                dim_zwhere=config["architecture"]["zwhere_dim"],
                                dim_logit=1)
 
-        self.unet: UNetNew = UNetNew(pre_processor=None,
-                                     scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
-                                     ch_in=config["input_image"]["ch_in"],
-                                     ch_out=config["architecture"]["unet_ch_feature_map"],
-                                     dim_zbg=config["architecture"]["zbg_dim"],
-                                     dim_zwhere=config["architecture"]["zwhere_dim"],
-                                     dim_logit=1,
-                                     pretrained=True)
+###        self.unet: UNetNew = UNetNew(pre_processor=None,
+###                                     scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+###                                     ch_in=config["input_image"]["ch_in"],
+###                                     ch_out=config["architecture"]["unet_ch_feature_map"],
+###                                     dim_zbg=config["architecture"]["zbg_dim"],
+###                                     dim_zwhere=config["architecture"]["zwhere_dim"],
+###                                     dim_logit=1,
+###                                     pretrained=True)
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],

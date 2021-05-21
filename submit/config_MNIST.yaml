@@ -84,7 +84,7 @@ input_image:
   # 2. target_nobj_av_per_patch_min_max specify the tolerable range for the average number of object in each patch.
   #    This value will be used to tune the DPP_length and DPP_weight parameter
   DPP_learnable_parameters: False
-  DPP_length: 5.0
+  DPP_length: 2.0
   DPP_weight: [10.0, 0.3]
   annealing_time: [100, 300]
 
