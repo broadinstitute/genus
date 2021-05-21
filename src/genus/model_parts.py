@@ -296,15 +296,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                  weight=dpp_w[0] if isinstance(dpp_w, Iterable) else float(dpp_w),
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
-#        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
-#                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
-#                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
-#                               ch_in=config["input_image"]["ch_in"],
-#                               ch_out=config["architecture"]["unet_ch_feature_map"],
-#                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
-#                               dim_zbg=config["architecture"]["zbg_dim"],
-#                               dim_zwhere=config["architecture"]["zwhere_dim"],
-#                               dim_logit=1)
+        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
+                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
+                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+                               ch_in=config["input_image"]["ch_in"],
+                               ch_out=config["architecture"]["unet_ch_feature_map"],
+                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
+                               dim_zbg=config["architecture"]["zbg_dim"],
+                               dim_zwhere=config["architecture"]["zwhere_dim"],
+                               dim_logit=1)
 
         self.unet: UNetNew = UNetNew(pre_processor=None,
                                      scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],

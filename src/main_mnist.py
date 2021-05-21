@@ -137,7 +137,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
             weigth_DPP = linear_interpolation(epoch,
                                               values=config["input_image"]["DPP_weight"],
                                               times=config["input_image"]["annealing_time"])
-            print("weith_DPP in main", weigth_DPP)
+            # print("weith_DPP in main", weigth_DPP)
             vae.inference_and_generator.grid_dpp.similiraty_kernel.weight_value.data.fill_(weigth_DPP)
 
             # print("process one epoch train")

@@ -20,8 +20,8 @@ architecture:
   unet_scale_factor_initial_layer: 1  # at the moment only 1 will work
   unet_scale_factor_background: 16
   unet_scale_factor_boundingboxes: 8
-  unet_ch_before_first_maxpool: 16
-  unet_ch_feature_map: 16
+  unet_ch_before_first_maxpool: 8
+  unet_ch_feature_map: 8
 
   # Integers. Latent dimension for z_background and z_where
   zbg_dim: 10  # small value otherwise the background can learn to reconstruct the foreground
@@ -34,8 +34,8 @@ architecture:
   # Float values in (0,1) for the IntersectionOverMinimum threshold to be used in non-max-suppression.
   # Lower value lead to a more strict NMS.
   # Do not change them unless you understand what you are doing.
-  nms_threshold_train : 0.3
-  nms_threshold_test : 0.5
+  nms_threshold_train : 0.3 # let it be
+  nms_threshold_test : 0.5  # let it be
 
 # parameters describing the input image
 input_image:
