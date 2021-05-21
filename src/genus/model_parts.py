@@ -290,10 +290,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
 
         # modules
-        dpp_l = config["input_image"]["DPP_length"]
-        dpp_w = config["input_image"]["DPP_weight"]
-        self.grid_dpp = Grid_DPP(length_scale=dpp_l[0] if isinstance(dpp_l, Iterable) else float(dpp_l),
-                                 weight=dpp_w[0] if isinstance(dpp_w, Iterable) else float(dpp_w),
+        self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
+                                 weight=config["input_image"]["DPP_weight_initial_final"][0],
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
         self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
@@ -346,10 +344,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                              min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
                                              max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                              linear_exp=True)
-###        self.geco_nobj = GecoParameter(initial_value=config["input_image"]["lambda_nobj_min_max"][0],
-###                                       min_value=config["input_image"]["lambda_nobj_min_max"][0],
-###                                       max_value=config["input_image"]["lambda_nobj_min_max"][1],
-###                                       linear_exp=True)
+        self.geco_dpp_weigth = GecoParameter(initial_value=config["input_image"]["DPP_weight_initial_final"][0],
+                                             min_value=min(config["input_image"]["DPP_weight_initial_final"]),
+                                             max_value=max(config["input_image"]["DPP_weight_initial_final"]),
+                                             linear_exp=False)
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
 
@@ -550,6 +548,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # It can be computed analytically and its minimization w.r.t. "a" leads to high entropy posteriors.
         # The second term can be estimated by REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
+        dpp_weight = self.geco_dpp_weigth.get()
+        self.grid_dpp.similiraty_kernel.weight_value.data.fill_(dpp_weight)
 
         # A. Analytical expression for entropy
         entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
@@ -597,6 +597,7 @@ class InferenceAndGeneration(torch.nn.Module):
             fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av = torch.min(fgfraction_hard_av, fgfraction_smooth_av)
             fgfraction_too_small = (fgfraction_av < self.target_fgfraction_min)
+            fgfraction_too_large = (fgfraction_av > self.target_fgfraction_max)
             fgfraction_in_range = (fgfraction_av > self.target_fgfraction_min) * (fgfraction_av < self.target_fgfraction_max)
 
             nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
@@ -609,45 +610,44 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_in_range = (mse_av > self.target_mse_min) * (mse_av < self.target_mse_max)
 
             # Design the logic:
+            # Note that if everything is in range:
+            # 1. annealing goes down
+            # 2. DPP_weight goes down
+            # 3. fgfraction goes down
+            # 4. mse stays at its current value
 
-            # ANNEALING: as long as mse_in_range annealing it will asymptotically be the SMALLEST allowed (i.e. ZERO)
-            decrease_annealing = mse_in_range * fgfraction_in_range
-            increase_annealing = mse_too_large
+            # ANNEALING
+            decrease_annealing = ~mse_too_large
+            increase_annealing = False
             constraint_annealing = 1.0 * increase_annealing - 1.0 * decrease_annealing
 
-            # FG_FRACTION: as long as fg_fraction_in_range it will asymptotically be the SMALLEST allowed
-            increase_fgfraction = ~fgfraction_in_range
-            decrease_fgfraction = fgfraction_in_range
+            # DPP weight
+            decrease_dpp_weight = ~mse_too_large
+            increase_dpp_weight = False
+            constraint_dpp_weight = 1.0 * increase_dpp_weight - 1.0 * decrease_dpp_weight
+
+            # FG_FRACTION
+            increase_fgfraction = ~fgfraction_in_range or (fgfraction_in_range and mse_too_small)  #make it as sparse as possible
+            decrease_fgfraction = fgfraction_in_range and mse_in_range
             constraint_fgfraction = 1.0 * increase_fgfraction - 1.0 * decrease_fgfraction
 
             # MSE
-            increase_mse = mse_too_large or nobj_grid_too_small
-            decrease_mse = mse_too_small or (mse_in_range and nobj_grid_too_large)
+            increase_mse = mse_too_large or nobj_grid_too_small or fgfraction_too_small  # avoid empty distribution
+            decrease_mse = mse_too_small or (mse_in_range and nobj_grid_too_large) or (mse_in_range and fgfraction_too_large)
             constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
-
-            # NOBJ
-            #increase_nobj = nobj_grid_too_large * ~mse_too_large
-            #decrease_nobj = nobj_grid_too_small
-            #constraint_nobj = 1.0 * increase_nobj - 1.0 * decrease_nobj
 
         # Produce both the loss and the hyperparameter
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
         geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
-        #geco_nobj: GECO = self.geco_nobj.forward(constraint=constraint_nobj)
+        geco_dpp: GECO = self.geco_dpp_weigth.forward(constraint=constraint_dpp_weight)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction.loss  #+geco_nobj.loss
+        loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction.loss + geco_dpp.loss
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
         lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
-
-        # Push all logits toward a small but finite value.
-        #p_target = torch.tensor(0.5 * target_nobj_min, device=imgs_bcwh.device,
-        #                        dtype=torch.float) / torch.numel(unet_prob_b1wh[-2:])
-        #logit_target = torch.log(p_target) - torch.log1p(-p_target)
-        #obj_sparsity = torch.abs(unet_output.logit - logit_target).mean()
 
         loss_vae = logit_kl_av + \
                    zinstance_kl_av + zbg_kl_av + \
@@ -701,7 +701,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 lambda_nobj=0.0, #geco_nobj.hyperparam.detach().item(),
+                                 lambda_nobj=geco_dpp.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy
