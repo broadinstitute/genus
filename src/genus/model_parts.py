@@ -3,7 +3,7 @@ from typing import Union, Tuple
 import numpy
 import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
-from .unet import UNet
+from .unet import UNet, UNetNew
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
@@ -293,15 +293,24 @@ class InferenceAndGeneration(torch.nn.Module):
                                  weight=config["input_image"]["DPP_weight"],
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
-        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
-                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
-                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
-                               ch_in=config["input_image"]["ch_in"],
-                               ch_out=config["architecture"]["unet_ch_feature_map"],
-                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
-                               dim_zbg=config["architecture"]["zbg_dim"],
-                               dim_zwhere=config["architecture"]["zwhere_dim"],
-                               dim_logit=1)
+#        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
+#                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
+#                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+#                               ch_in=config["input_image"]["ch_in"],
+#                               ch_out=config["architecture"]["unet_ch_feature_map"],
+#                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
+#                               dim_zbg=config["architecture"]["zbg_dim"],
+#                               dim_zwhere=config["architecture"]["zwhere_dim"],
+#                               dim_logit=1)
+
+        self.unet: UNetNew = UNetNew(pre_processor=None,
+                                     scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+                                     ch_in=config["input_image"]["ch_in"],
+                                     ch_out=config["architecture"]["unet_ch_feature_map"],
+                                     dim_zbg=config["architecture"]["zbg_dim"],
+                                     dim_zwhere=config["architecture"]["zwhere_dim"],
+                                     dim_logit=1,
+                                     pretrained=True)
 
         # Encoder-Decoders
         self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
@@ -339,8 +348,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                        max_value=config["input_image"]["lambda_nobj_min_max"][1],
                                        linear_exp=True)
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
-
-
 
 
     def forward(self, imgs_bcwh: torch.Tensor,

@@ -18,27 +18,6 @@ class DoubleSpatialResolution(nn.Module):
         return y
 
 
-# class HalvesSpatialResolution(nn.Module):
-#     """
-#     Tiny wrapper around Conv2D which halves the spatial resolution of a tensor.
-#     """
-#     def __init__(self, ch_in: int, ch_out: int, reflection_padding: bool = True):
-#         super().__init__()
-#         if reflection_padding:
-#             self.conv_half = nn.Sequential(
-#                 nn.ReflectionPad2d(padding=1),
-#                 nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=0, bias=True)
-#             )
-#         else:
-#             self.conv_half = nn.Conv2d(ch_in, ch_out, kernel_size=4, stride=2, padding=1, bias=True)
-#
-#     def forward(self, x, verbose=False):
-#         y = self.conv_half(x)
-#         if verbose:
-#             print("input -> output", x.shape, y.shape)
-#         return y
-
-
 class SameSpatialResolution(nn.Module):
     """
     Implements [conv] or [conv + relu + conv]
