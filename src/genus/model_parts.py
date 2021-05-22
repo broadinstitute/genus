@@ -632,9 +632,9 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction = 1.0 * increase_fgfraction - 1.0 * decrease_fgfraction
 
             # MSE
-            increase_mse = mse_too_large or nobj_grid_too_small or fgfraction_too_small  # avoid empty distribution
-            decrease_mse = mse_too_small or (mse_in_range and nobj_grid_too_large) or (mse_in_range and fgfraction_too_large)
-            constraint_mse = 1.0 * increase_mse - 1.0 * decrease_mse
+            increase_mse = (mse_av - self.target_mse_max).clamp(min=0)
+            decrease_mse = (self.target_mse_min - mse_av).clamp(min=0)
+            constraint_mse = increase_mse + decrease_mse
 
         # Produce both the loss and the hyperparameter
         geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
@@ -646,12 +646,11 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco = geco_annealing.loss + geco_mse.loss + geco_fgfraction.loss + geco_dpp.loss
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
-        lambda_fgfraction = geco_fgfraction.hyperparam * (1.0 - 2.0 * fgfraction_too_small).detach()
+        lambda_fgfraction = (geco_fgfraction.hyperparam/self.sigma_mse).pow(2) * (1.0 - 2.0 * fgfraction_too_small).detach()
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
-        loss_vae = logit_kl_av + \
-                   zinstance_kl_av + zbg_kl_av + \
-                   zwhere_kl_av + bb_regression_cost + \
+        loss_vae = (1.0 - geco_mse.hyperparam) * (logit_kl_av + zinstance_kl_av + zbg_kl_av +
+                                                  zwhere_kl_av + bb_regression_cost) + \
                    geco_mse.hyperparam * (mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost)
 
         loss_tot = loss_vae + loss_geco
