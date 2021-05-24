@@ -333,14 +333,19 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO
-        self.geco_fgfraction = GecoParameter(initial_value=config["input_image"]["lambda_fgfraction_min_max"][0],
-                                             min_value=config["input_image"]["lambda_fgfraction_min_max"][0],
-                                             max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
-                                             linear_exp=True)
-        self.geco_kl_learnz = GecoParameter(initial_value=1.0,
+        self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
+                                                 min_value=0.0,
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
+                                                 linear_exp=True)
+        self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
+                                                 min_value=0.0,
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
+                                                 linear_exp=True)
+
+        self.geco_kl_learnz = GecoParameter(initial_value=0.01,
                                             min_value=config["input_image"]["lambda_kl_min_max"][0],
                                             max_value=config["input_image"]["lambda_kl_min_max"][1])
-        self.geco_kl_learnc = GecoParameter(initial_value=1.0,
+        self.geco_kl_learnc = GecoParameter(initial_value=0.01,
                                             min_value=config["input_image"]["lambda_kl_min_max"][0],
                                             max_value=config["input_image"]["lambda_kl_min_max"][1])
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
@@ -595,9 +600,13 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = - 1.0 * decrease_annealing
 
             # FG_FRACTION
-            increase_fgfraction = ~fgfraction_in_range
-            decrease_fgfraction = fgfraction_in_range
-            constraint_fgfraction = 1.0 * increase_fgfraction - 1.0 * decrease_fgfraction
+            decrease_fgfraction_min = fgfraction_av > self.target_fgfraction_min
+            increase_fgfraction_min = fgfraction_av < self.target_fgfraction_min
+            constraint_fgfraction_min = 1.0 * increase_fgfraction_min - 1.0 * decrease_fgfraction_min
+
+            decrease_fgfraction_max = fgfraction_av < self.target_fgfraction_max
+            increase_fgfraction_max = fgfraction_av > self.target_fgfraction_max
+            constraint_fgfraction_max = 1.0 * increase_fgfraction_max - 1.0 * decrease_fgfraction_max
 
             # KL_learn_z (I use target_mse_min in both so that each pieces is nicely reconstructed)
             increase_kl_learnz = (mse_fg_av < self.target_mse_min)
@@ -611,20 +620,28 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Produce both the loss and the hyperparameter
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
-        geco_fgfraction: GECO = self.geco_fgfraction.forward(constraint=constraint_fgfraction)
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
         geco_kl_learnz: GECO = self.geco_kl_learnz.forward(constraint=constraint_kl_learnz)
         geco_kl_learnc: GECO = self.geco_kl_learnc.forward(constraint=constraint_kl_learnc)
 
         # Put all the losses together
-        loss_geco = geco_annealing.loss + geco_fgfraction.loss + geco_kl_learnc.loss + geco_kl_learnz.loss
+        loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+                    geco_kl_learnc.loss + geco_kl_learnz.loss
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
-        lambda_fgfraction = (geco_fgfraction.hyperparam/self.sigma_mse) * (1.0 - 2.0 * fgfraction_too_small).detach()
+        lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) / self.sigma_mse
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
+
+        # Make sure that logit can not become too large or too small
+        logit_min = -6.0
+        logit_max = 6.0
+        all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                         (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
 
         loss_vae = mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost + \
                    geco_kl_learnz.hyperparam * (kl_learnz + bb_regression_cost) + \
-                   geco_kl_learnc.hyperparam * kl_learnc
+                   geco_kl_learnc.hyperparam * (kl_learnc + all_logit_in_range)
 
         loss_tot = loss_vae + loss_geco
 
