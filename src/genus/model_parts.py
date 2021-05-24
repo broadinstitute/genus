@@ -592,8 +592,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # ANNEALING
             decrease_annealing = ~mse_tot_too_large
-            increase_annealing = False
-            constraint_annealing = 1.0 * increase_annealing - 1.0 * decrease_annealing
+            constraint_annealing = - 1.0 * decrease_annealing
 
             # FG_FRACTION
             increase_fgfraction = ~fgfraction_in_range
@@ -603,12 +602,12 @@ class InferenceAndGeneration(torch.nn.Module):
             # KL_learn_z (I use target_mse_min in both so that each pieces is nicely reconstructed)
             increase_kl_learnz = (mse_fg_av < self.target_mse_min)
             decrease_kl_learnz = (mse_fg_av > self.target_mse_min)
-            constraint_kl_learnz = increase_kl_learnz + decrease_kl_learnz
+            constraint_kl_learnz = 1.0 * increase_kl_learnz - 1.0 * decrease_kl_learnz
 
             # KL_learn_c (I use target_mse_min and target_mse_mac b/c the background has lower accuracy)
             increase_kl_learnc = (mse_av < self.target_mse_min)
             decrease_kl_learnc = (mse_av > self.target_mse_max)
-            constraint_kl_learnc = increase_kl_learnc + decrease_kl_learnc
+            constraint_kl_learnc = 1.0 * increase_kl_learnc - 1.0 * decrease_kl_learnc
 
         # Produce both the loss and the hyperparameter
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
