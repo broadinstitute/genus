@@ -257,9 +257,9 @@ class MetricMiniBatch(NamedTuple):
     similarity_l: float
     similarity_w: float
     lambda_annealing: float
-    lambda_mse: float
     lambda_fgfraction: float
-    lambda_nobj: float
+    lambda_kl_learnz: float
+    lambda_kl_learnc: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy

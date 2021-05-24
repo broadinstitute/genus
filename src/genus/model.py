@@ -830,36 +830,26 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
 ##    return optimizer
 
     # split the parameters between GECO and NOT_GECO
-    geco_params, geco_nobj_params, other_params = [], [], []
+    geco_params, other_params = [], []
     for name, param in model.named_parameters():
         if ".geco" in name:
-            if "nobj" in name:
-                print("geco_nobj -->", name)
-                geco_nobj_params.append(param)
-            else:
-                print("geco params -->", name)
-                geco_params.append(param)
+            print("geco params -->", name)
+            geco_params.append(param)
         else:
             other_params.append(param)
 
     if config_optimizer["type"] == "adam":
         optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["lr_geco"],
                                        'betas': config_optimizer["betas_geco_adam"]},
-                                      {'params': geco_nobj_params, 'lr': config_optimizer["lr_geco_nobj"],
-                                       'betas': config_optimizer["betas_geco_nobj_adam"]},
                                       {'params': other_params, 'lr': config_optimizer["lr"],
                                        'betas': config_optimizer["betas_adam"]}])
     elif config_optimizer["type"] == "SGD":
         optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["lr_geco"]},
-                                     {'params': geco_nobj_params, 'lr': config_optimizer["lr_geco_nobj"]},
                                      {'params': other_params, 'lr': config_optimizer["lr"]}])
     elif config_optimizer["type"] == "RMSprop":
         optimizer = torch.optim.RMSprop([{'params': geco_params,
                                           'lr': config_optimizer["lr_geco"],
                                           'alpha': config_optimizer["alpha_geco_rmsprop"]},
-                                         {'params': geco_nobj_params,
-                                          'lr': config_optimizer["lr_geco_nobj"],
-                                          'alpha': config_optimizer["alpha_geco_nobj_rmsprop"]},
                                          {'params': other_params,
                                           'lr': config_optimizer["lr"],
                                           'alpha': config_optimizer["alpha_rmsprop"]}])
