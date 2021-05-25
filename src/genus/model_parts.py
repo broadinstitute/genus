@@ -584,8 +584,11 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # Preliminaries
             # nobj_av = prob_bk.sum(dim=-1).mean()
+            nobj_grid_before_nms_av = c_grid_before_nms.sum(dim=(-1,-2,-3)).float().mean()
             nobj_av = c_detached_bk.sum(dim=-1).float().mean()
-            nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * (nobj_av > self.target_nobj_av_per_patch_min)
+            nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * \
+                            (nobj_av > self.target_nobj_av_per_patch_min) * \
+                            (nobj_grid_before_nms_av < 2.0 * self.target_nobj_av_per_patch_max)
 
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
@@ -606,8 +609,10 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = - 1.0 * decrease_annealing
 
             # NOBJ
+            constraint_nobj_max_v1 = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
+            constraint_nobj_max_v2 = (0.5 * nobj_grid_before_nms_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj_grid > 2*target_min
+            constraint_nobj_max = max(constraint_nobj_max_v1, constraint_nobj_max_v2)
             constraint_nobj_min = 1.0 - (nobj_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
-            constraint_nobj_max = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
 
             # FG_FRACTION
             constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
@@ -619,30 +624,6 @@ class InferenceAndGeneration(torch.nn.Module):
             # KL_learn_c
             constraint_kl_learnc = (self.target_mse_min - mse_av).clamp(min=0) - \
                                    (mse_av - self.target_mse_max).clamp(min=0)
-
-            #print("DEBUG")
-            #print("constraint_annealing", constraint_annealing)
-            #print("constraint_nobj_min", constraint_nobj_min)
-            #print("constraint_nobj_max", constraint_nobj_max)
-            #print("constraint_fgfraction_min", constraint_fgfraction_min)
-            #print("constraint_fgfraction_max", constraint_fgfraction_max)
-            #print("constraint_kl_learnz", constraint_kl_learnz)
-            #print("constraint_kl_learnc", constraint_kl_learnc)
-
-
-            # decrease_nobj_min = nobj_grid_av > self.target_nobj_av_per_patch_min
-            # increase_nobj_min = nobj_grid_av < self.target_nobj_av_per_patch_min
-            # constraint_nobj_min = 1.0 * increase_nobj_min - 1.0 * decrease_nobj_min
-            # decrease_nobj_max = nobj_grid_av < self.target_nobj_av_per_patch_max
-            # increase_nobj_max = nobj_grid_av > self.target_nobj_av_per_patch_max
-            # constraint_nobj_max = 1.0 * increase_nobj_max - 1.0 * decrease_nobj_max
-            # decrease_fgfraction_min = fgfraction_av > self.target_fgfraction_min
-            # increase_fgfraction_min = fgfraction_av < self.target_fgfraction_min
-            # decrease_fgfraction_max = fgfraction_av < self.target_fgfraction_max
-            # increase_fgfraction_max = fgfraction_av > self.target_fgfraction_max
-            # constraint_fgfraction_max = 1.0 * increase_fgfraction_max - 1.0 * decrease_fgfraction_max
-            # increase_kl_learnz = (mse_fg_av < self.target_mse_min)
-            # decrease_kl_learnz = (mse_fg_av > self.target_mse_min)
 
         # Produce both the loss and the hyperparameter (I can raise constraint to some odd power to preserve the sign)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)

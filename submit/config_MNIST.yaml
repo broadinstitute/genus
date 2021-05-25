@@ -4,7 +4,7 @@ neptune_project: "cellarium/genus"
 # simulation-level parameters
 simulation:
   # can be scratch, resume, pretrained
-  type: "scratch"
+  type: "pretrained"
   BATCH_SIZE: 256
   MAX_EPOCHS: 4501
   TEST_FREQUENCY: 10
@@ -67,8 +67,8 @@ input_image:
   #
   # The model will tune its parameters to try to achieve MSE in this range while using as few objects as possible.
   # If the background is too expressive or this value is too high, the model can achieve the target MSE with the background only
-  # If the foreground is not expressive enogh or this value is too low, the model will never reach the target
-  sigma_mse: 0.075
+  # If the foreground is not expressive enough or this value is too low, the model will never reach the target
+  sigma_mse: 0.1
   target_mse_min_max: [1.0, 3.0]  # let it be
   lambda_kl_min_max: [0.001, 1000.0] # let it be
 
@@ -109,7 +109,7 @@ optimizer:
 
   # Learning rate. Use 5E-4
   lr: 0.0003
-  lr_geco: 0.0001
+  lr_geco: 0.0003
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
