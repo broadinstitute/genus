@@ -583,12 +583,8 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
 
             # Preliminaries
-            # nobj_av = prob_bk.sum(dim=-1).mean()
-            nobj_grid_before_nms_av = c_grid_before_nms.sum(dim=(-1,-2,-3)).float().mean()
-            nobj_av = c_detached_bk.sum(dim=-1).float().mean()
-            nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * \
-                            (nobj_av > self.target_nobj_av_per_patch_min) * \
-                            (nobj_grid_before_nms_av < 2.0 * self.target_nobj_av_per_patch_max)
+            nobj_in_range = (unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean() < 2*self.target_nobj_av_per_patch_max) * \
+                            (prob_bk.sum(dim=-1).mean() > self.target_nobj_av_per_patch_min)
 
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
@@ -609,17 +605,15 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = - 1.0 * decrease_annealing
 
             # NOBJ
-            constraint_nobj_max_v1 = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
-            constraint_nobj_max_v2 = (0.5 * nobj_grid_before_nms_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj_grid > 2*target_min
-            constraint_nobj_max = max(constraint_nobj_max_v1, constraint_nobj_max_v2)
-            constraint_nobj_min = 1.0 - (nobj_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
+            constraint_nobj_max = unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean() - 2.0 * self.target_nobj_av_per_patch_max  # positive if nobj > 2*target_max
+            constraint_nobj_min = prob_bk.sum(dim=-1).mean() - self.target_nobj_av_per_patch_min  # positive if nobj < target_min
 
             # FG_FRACTION
-            constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
-            constraint_fgfraction_max = (fgfraction_av / self.target_fgfraction_max) - 1.0  # positive if fgfraction > target_max
+            constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
+            constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
             # KL_learn_z
-            constraint_kl_learnz = 1.0 - (mse_fg_av / self.target_mse_min)  # positive if mse_fg_av < target_min
+            constraint_kl_learnz = self.target_mse_min - mse_fg_av # positive if mse_fg_av < target_min
 
             # KL_learn_c
             constraint_kl_learnc = (self.target_mse_min - mse_av).clamp(min=0) - \
@@ -683,8 +677,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
                                  fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
                                  fgfraction_hard_av=fgfraction_hard_av.detach().item(),
-                                 nobj_hard_av=c_detached_bk.sum(dim=-1).float().mean().detach().item(),
-                                 nobj_soft_av=prob_bk.sum(dim=-1).mean().detach().item(),
+                                 nobj_av=c_detached_bk.sum(dim=-1).float().mean().detach().item(),
                                  prob_grid_av=unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=mse_av.detach().item(),
@@ -703,7 +696,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
-                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
+                                 lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
+                                 lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_kl_learnz=geco_kl_learnz.hyperparam.detach().item(),
                                  lambda_kl_learnc=geco_kl_learnc.hyperparam.detach().item(),
                                  lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
