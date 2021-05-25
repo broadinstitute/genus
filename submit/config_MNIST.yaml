@@ -93,7 +93,7 @@ input_image:
 loss:
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
-  mask_overlap_penalty_strength: 0.001
+  mask_overlap_penalty_strength: 0.1
   box_overlap_penalty_strength: 0.0
   bounding_box_regression_penalty_strength: 0.001
   bounding_box_regression_padding: 3

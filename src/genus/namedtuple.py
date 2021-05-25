@@ -236,9 +236,8 @@ class MetricMiniBatch(NamedTuple):
     mixing_fg_av: float
     fgfraction_smooth_av: float
     fgfraction_hard_av: float
-    nobj_grid_av: float
-    nobj_av: float
-    prob_av: float
+    nobj_hard_av: float
+    nobj_soft_av: float
     prob_grid_av: float
     # term in the loss function
     cost_mse: float
@@ -278,7 +277,7 @@ class MetricMiniBatch(NamedTuple):
                                                                                           self.cost_mask_overlap_av,
                                                                                           self.cost_bb_regression_av,
                                                                                           self.fgfraction_hard_av,
-                                                                                          self.nobj_av)
+                                                                                          self.nobj_hard_av)
         return s
 
 

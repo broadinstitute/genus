@@ -583,7 +583,9 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
 
             # Preliminaries
-            nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
+            # nobj_av = prob_bk.sum(dim=-1).mean()
+            nobj_av = c_detached_bk.sum(dim=-1).float().mean()
+            nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * (nobj_av > self.target_nobj_av_per_patch_min)
 
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
@@ -592,6 +594,7 @@ class InferenceAndGeneration(torch.nn.Module):
             fgfraction_smooth_av = mixing_fg_b1wh.mean()
             fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av = torch.min(fgfraction_hard_av, fgfraction_smooth_av)
+            fgfraction_in_range = (fgfraction_av < self.target_fgfraction_max) * (fgfraction_av > self.target_fgfraction_min)
 
             # Design the logic:
             # if constraint < 0, parameter will be decreased
@@ -599,12 +602,12 @@ class InferenceAndGeneration(torch.nn.Module):
             # if constraint = 0, parameter will stay the same
 
             # ANNEALING
-            decrease_annealing = (mse_av < self.target_mse_max)
+            decrease_annealing = (mse_av < self.target_mse_max) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
 
             # NOBJ
-            constraint_nobj_min = 1.0 - (nobj_grid_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
-            constraint_nobj_max = (nobj_grid_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
+            constraint_nobj_min = 1.0 - (nobj_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
+            constraint_nobj_max = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
 
             # FG_FRACTION
             constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
@@ -699,9 +702,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
                                  fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
                                  fgfraction_hard_av=fgfraction_hard_av.detach().item(),
-                                 nobj_grid_av=nobj_grid_av.detach().item(),
-                                 nobj_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
-                                 prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
+                                 nobj_hard_av=c_detached_bk.sum(dim=-1).float().mean().detach().item(),
+                                 nobj_soft_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  prob_grid_av=unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean().detach().item(),
                                  # terms in the loss function
                                  cost_mse=mse_av.detach().item(),
