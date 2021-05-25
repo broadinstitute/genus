@@ -614,18 +614,17 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_kl_learnz = 1.0 - (mse_fg_av / self.target_mse_min)  # positive if mse_fg_av < target_min
 
             # KL_learn_c
-            increase_kl_learnc = (mse_av < self.target_mse_min)
-            decrease_kl_learnc = (mse_av > self.target_mse_max)
-            constraint_kl_learnc = 1.0 * increase_kl_learnc - 1.0 * decrease_kl_learnc
+            constraint_kl_learnc = (self.target_mse_min - mse_av).clamp(min=0) - \
+                                   (mse_av - self.target_mse_max).clamp(min=0)
 
-            print("DEBUG")
-            print("constraint_annealing", constraint_annealing)
-            print("constraint_nobj_min", constraint_nobj_min)
-            print("constraint_nobj_max", constraint_nobj_max)
-            print("constraint_fgfraction_min", constraint_fgfraction_min)
-            print("constraint_fgfraction_max", constraint_fgfraction_max)
-            print("constraint_kl_learnz", constraint_kl_learnz)
-            print("constraint_kl_learnc", constraint_kl_learnc)
+            #print("DEBUG")
+            #print("constraint_annealing", constraint_annealing)
+            #print("constraint_nobj_min", constraint_nobj_min)
+            #print("constraint_nobj_max", constraint_nobj_max)
+            #print("constraint_fgfraction_min", constraint_fgfraction_min)
+            #print("constraint_fgfraction_max", constraint_fgfraction_max)
+            #print("constraint_kl_learnz", constraint_kl_learnz)
+            #print("constraint_kl_learnc", constraint_kl_learnc)
 
 
             # decrease_nobj_min = nobj_grid_av > self.target_nobj_av_per_patch_min
