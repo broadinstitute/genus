@@ -454,6 +454,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
+        logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
         c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
@@ -583,8 +584,11 @@ class InferenceAndGeneration(torch.nn.Module):
         with torch.no_grad():
 
             # Preliminaries
-            nobj_in_range = (unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean() < 2*self.target_nobj_av_per_patch_max) * \
-                            (prob_bk.sum(dim=-1).mean() > self.target_nobj_av_per_patch_min)
+            n_av_grid = unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
+            n_av_selected = prob_bk.sum(dim=-1).mean()
+            nobj_in_range = (n_av_grid < 2*self.target_nobj_av_per_patch_max) * \
+                            (n_av_selected > self.target_nobj_av_per_patch_min)
+            #print("DEBUG", n_av_selected, n_av_grid, nobj_in_range)
 
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
@@ -605,8 +609,10 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = - 1.0 * decrease_annealing
 
             # NOBJ
-            constraint_nobj_max = unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean() - 2.0 * self.target_nobj_av_per_patch_max  # positive if nobj > 2*target_max
-            constraint_nobj_min = prob_bk.sum(dim=-1).mean() - self.target_nobj_av_per_patch_min  # positive if nobj < target_min
+            # I want the probability grid to have fewer than 2*self.target_nobj_av_per_patch_max
+            # I also want the selected object to be more than self.target_nobj_av_per_patch_min
+            constraint_nobj_max = n_av_grid - 2.0 * self.target_nobj_av_per_patch_max  # positive if nobj > 2*target_max
+            constraint_nobj_min = self.target_nobj_av_per_patch_min - n_av_selected # positive if nobj < target_min
 
             # FG_FRACTION
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
@@ -648,7 +654,7 @@ class InferenceAndGeneration(torch.nn.Module):
                    geco_kl_learnz.hyperparam * (kl_learnz + bb_regression_cost) + \
                    geco_kl_learnc.hyperparam * kl_learnc + \
                    geco_nobj_max.hyperparam * (unet_output.logit - logit_target_small).abs().mean() + \
-                   geco_nobj_min.hyperparam * (unet_output.logit - logit_target_large).abs().mean() + \
+                   geco_nobj_min.hyperparam * (logit_bk - logit_target_large).abs().mean() + \
                    all_logit_in_range
 
         loss_tot = loss_vae + loss_geco
