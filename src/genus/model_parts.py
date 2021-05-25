@@ -611,7 +611,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # NOBJ
             # I want the probability grid to have fewer than 2*self.target_nobj_av_per_patch_max
             # I also want the selected object to be more than self.target_nobj_av_per_patch_min
-            constraint_nobj_max = n_av_grid - 2.0 * self.target_nobj_av_per_patch_max  # positive if nobj > 2*target_max
+            constraint_nobj_max = n_av_grid - 4.0 * self.target_nobj_av_per_patch_max  # positive if nobj > 2*target_max
             constraint_nobj_min = self.target_nobj_av_per_patch_min - n_av_selected # positive if nobj < target_min
 
             # FG_FRACTION

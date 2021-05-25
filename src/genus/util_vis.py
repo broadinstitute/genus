@@ -22,8 +22,13 @@ and the training process. In most cases if :attr:`experiment` (of :class:`neptun
 
 #  Functions whose documentation should NOT be exposed
 
-def contours_from_labels(labels: numpy.ndarray,
+def _contours_from_labels(labels: numpy.ndarray,
                          contour_thickness: int = 1) -> numpy.ndarray:
+    """
+    This is an private functions.
+    Given an image with integer labels, it returns a boolean mask with the contours.
+    The user should not use this function directly. Call draw_contours_from_labels instead.
+    """
     assert isinstance(labels, numpy.ndarray)
     assert len(labels.shape) == 2
     assert contour_thickness >= 1
@@ -34,7 +39,13 @@ def contours_from_labels(labels: numpy.ndarray,
     return contours
 
 
-def draw_contours(image: numpy.ndarray, contours: numpy.ndarray, contours_color: str = 'red') -> numpy.ndarray:
+def _draw_contours(image: numpy.ndarray, contours: numpy.ndarray, contours_color: str = 'red') -> numpy.ndarray:
+    """
+    This is an private functions.
+    Given an image and a boolean mask with the location of the contours it generate the image with the
+    contours.
+    The user should not use this function directly. Call draw_contours_from_labels instead.
+    """
     assert isinstance(image, numpy.ndarray)
     assert isinstance(contours, numpy.ndarray)
     assert contours.dtype == bool
@@ -64,84 +75,51 @@ def draw_contours(image: numpy.ndarray, contours: numpy.ndarray, contours_color:
 
 
 def draw_contours_from_labels(image: numpy.ndarray,
-                              labels: numpy.ndarray,
+                              label: numpy.ndarray,
                               contour_thickness: int = 1,
-                              contours_color: str = 'red') -> numpy.ndarray:
-    """ Document """
-    contours = contours_from_labels(labels, contour_thickness)
-    image_with_contours = draw_contours(image, contours, contours_color)
+                              contour_color: str = 'red') -> numpy.ndarray:
+    """
+    Args:
+        image: Tensor of dimension 2 (gray scale) or 3 (RGB)
+        label: Tensor of dimension 2 with the integer labels
+        contour_thickness: Integer, the thickness of the contour
+        contour_color: String with the color of the contours. Possible values are: "red". "green" or "blue"
+
+    Returns:
+        A numpy array with the same spatial dimension as the input and 3 color channels.
+        The array contains the image with the contours overlaid.
+    """
+    contours = _contours_from_labels(label, contour_thickness)
+    image_with_contours = _draw_contours(image, contours, contour_color)
     return image_with_contours
 
 
-def movie_from_resolution_sweep(suggestion: Suggestion,
-                                image: torch.Tensor,
-                                contour_thickness: int = 2,
-                                figsize: tuple = (8, 4)):
-    assert torch.is_tensor(image)
-    if len(image.shape) == 2:
-        image = image.cpu().numpy()
-    elif len(image.shape) == 3:
-        image = image.permute(1, 2, 0).cpu().numpy()  # w,h, channel
-    else:
-        raise Exception("shape of image is not recognized")
-    
-    labels = suggestion.sweep_seg_mask[0].cpu().numpy()
-    assert labels.shape[:2] == image.shape[:2]
-    img_c = draw_contours_from_labels(image=image,
-                                      labels=labels,
-                                      contour_thickness=contour_thickness,
-                                      contours_color='red')
+def plot_img_contours_label(image: Union[torch.Tensor, numpy.ndarray],
+                            label: Union[torch.Tensor, numpy.ndarray],
+                            window: Optional[tuple] = None,
+                            contour_thickness: int = 2,
+                            contour_color: str = 'red',
+                            figsize: tuple = (24, 24),
+                            experiment: Optional[neptune.run.Run] = None,
+                            neptune_name: Optional[str] = None):
+    """ Simple wrapper which plots 3 things:
+        a) the raw image
+        b) the raw image with overlaid the contours
+        c) the raw image with overlaid the labels
 
-    fig, ax = plt.subplots(ncols=3, figsize=figsize)
-    ax_raw_image = ax[0]
-    ax_contours = ax[1]
-    ax_int_map = ax[2]
-
-    ax_raw_image.imshow(image, cmap='gray')
-    ax_raw_image.axis('off')
-    ax_raw_image.set_title("raw image")
-
-    ax_contours.imshow(img_c)
-    ax_contours.axis('off')
-    ax_contours.set_title("xxxxxx")
-
-    ax_int_map.imshow(skimage.color.label2rgb(labels, image, bg_label=0, alpha=0.25))
-    ax_int_map.axis('off')
-    ax_int_map.set_title("xxxxx")
-    plt.tight_layout()
-    plt.close()
-
-    def animate(i):
-        labels = suggestion.sweep_seg_mask[i].cpu().numpy()
-        img_c = draw_contours_from_labels(image=image,
-                                          labels=labels,
-                                          contour_thickness=contour_thickness,
-                                          contours_color='red')
-
-        title1 = 'frame={0:3d} res={1:.3f}'.format(i, suggestion.sweep_resolution[i])
-        title2 = 'ncell={0:2d} iou={1:.3f}'.format(suggestion.sweep_n_cells[i], suggestion.sweep_iou[i])
-
-        ax_contours.imshow(img_c)
-        ax_contours.set_title(title1)
-
-        ax_int_map.imshow(skimage.color.label2rgb(labels, image, bg_label=0, alpha=0.25))
-        ax_int_map.set_title(title2)
-
-    anim = animation.FuncAnimation(fig, animate, frames=suggestion.sweep_seg_mask.shape[0], interval=1000)
-
-    return HTML(anim.to_html5_video())
-
-
-def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
-                        image: Union[torch.Tensor, numpy.ndarray],
-                        window: Optional[tuple] = None,
-                        contour_thickness: int = 2,
-                        contour_color: str = 'red',
-                        figsize: tuple = (24, 24),
-                        experiment: Optional[neptune.run.Run] = None,
-                        neptune_name: Optional[str] = None):
-    assert len(label.shape) == 2
-    assert len(image.shape) == 2 or len(image.shape) == 3
+        Args:
+            image: Tensor of dimension 2 (gray scale) or 3 (RGB)
+            label: Tensor of dimension 2 with the integer labels
+            window: Tuple with 4 integers: (min_row, min_col, max_row, max_col) to identify the region to visualize
+            contour_thickness: Integer, the thickness of the contour
+            contour_color: String with the color of the contours. Possible values are: "red". "green" or "blue"
+            figsize: Tuple with 2 integers, the size of the figure
+            experiment: Neptune experiment to log the resulting image
+            neptune_name: Name to log the image in Neptune
+    """
+    assert len(label.shape) == 2, f"Lable should be a 2D tensor. Got {len(label.shape)} instead."
+    assert len(image.shape) == 2 or len(image.shape) == 3, f"Image should be a 2D (grayscale) or 3D (RGB) array." \
+                                                           f"Got {len(image.shape)} instead."
     
     assert len(label.shape) == 2
     if torch.is_tensor(label):
@@ -166,10 +144,10 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                   min(label.shape[-2], window[2]),
                   min(label.shape[-1], window[3]))
 
-    contours = contours_from_labels(label[window[0]:window[2], window[1]:window[3]], contour_thickness)
-    img_with_contours = draw_contours(image=image[window[0]:window[2], window[1]:window[3]],
-                                      contours=contours,
-                                      contours_color=contour_color)
+    img_with_contours = draw_contours_from_labels(image=image[window[0]:window[2], window[1]:window[3]],
+                                                  label=label[window[0]:window[2], window[1]:window[3]],
+                                                  contour_thickness=contour_thickness,
+                                                  contour_color=contour_color)
 
     fig, ax = plt.subplots(ncols=3, figsize=figsize)
     ax[0].imshow(image[window[0]:window[2], window[1]:window[3]], cmap='gray')
@@ -181,10 +159,6 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        # experiment[neptune_name].log(fig)
-        # tmp_file_name = neptune_name.replace("/", "_")
-        # fig.savefig(tmp_file_name + ".png")
-        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
         experiment[neptune_name].log(neptune.types.File.as_image(fig))
 
     plt.close(fig)
@@ -196,8 +170,30 @@ def draw_img(imgs_in: torch.Tensor,
              draw_bg: bool,
              draw_boxes: bool,
              draw_ideal_boxes: bool) -> Tuple[torch.Tensor, torch.Tensor]:
-    """ Draw the reconstructed image and input image with the bounding box on top.
-        It works for any number of leading dimensions """
+    """
+    Draw the reconstructed image and input image with the bounding box on top.
+
+    Args:
+        imgs_in: The raw image of shape (*, c, W, H)
+        inference: :class:'Inference' with all the inferred quantities obtained from running
+            the method :math:'process_batch_imgs'
+        draw_bg: If true the reconstructed background is added to the output images.
+        draw_boxes: If true the object bounding boxes are added to the output images.
+        draw_ideal_boxes: If true the optimal object bounding boxes are added to the output images.
+
+    Returns:
+        For each input image it returns 2 images. The reconstructed image with overlaid the bounding boxes
+        and the input image with overlaid the bounding boxes. This second is useful for debugging and understand if
+        the model has learned to localize the objects accurately.
+
+    Note:
+        Works for any number of leading dimensions. Each leading dimension will be processed independently
+
+    Note:
+        The inferred bounding boxes with p>0.5 are shown in red
+        The inferred bounding boxes with p<0.5 are shown in blue
+        The ideal bounding boxes are shown in green
+    """
 
     bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
                                       width=imgs_in.shape[-2],
@@ -294,6 +290,73 @@ def draw_bounding_boxes(bounding_box: BB,
     # Transform np to torch, rescale from [0,255] to (0,1)
     tmp = torch.from_numpy(canvas_numpy).permute(0, 3, 2, 1).float() / 255  # permute(0,3,2,1) is CORRECT
     return tmp.view(independet_dim + [3, width, height]).to(bounding_box.bx.device)
+
+
+
+
+
+
+
+
+
+
+def movie_from_resolution_sweep(suggestion: Suggestion,
+                                image: torch.Tensor,
+                                contour_thickness: int = 2,
+                                figsize: tuple = (8, 4)):
+    assert torch.is_tensor(image)
+    if len(image.shape) == 2:
+        image = image.cpu().numpy()
+    elif len(image.shape) == 3:
+        image = image.permute(1, 2, 0).cpu().numpy()  # w,h, channel
+    else:
+        raise Exception("shape of image is not recognized")
+
+    labels = suggestion.sweep_seg_mask[0].cpu().numpy()
+    assert labels.shape[:2] == image.shape[:2]
+    img_c = draw_contours_from_labels(image=image,
+                                      labels=labels,
+                                      contour_thickness=contour_thickness,
+                                      contours_color='red')
+
+    fig, ax = plt.subplots(ncols=3, figsize=figsize)
+    ax_raw_image = ax[0]
+    ax_contours = ax[1]
+    ax_int_map = ax[2]
+
+    ax_raw_image.imshow(image, cmap='gray')
+    ax_raw_image.axis('off')
+    ax_raw_image.set_title("raw image")
+
+    ax_contours.imshow(img_c)
+    ax_contours.axis('off')
+    ax_contours.set_title("xxxxxx")
+
+    ax_int_map.imshow(skimage.color.label2rgb(labels, image, bg_label=0, alpha=0.25))
+    ax_int_map.axis('off')
+    ax_int_map.set_title("xxxxx")
+    plt.tight_layout()
+    plt.close()
+
+    def animate(i):
+        labels = suggestion.sweep_seg_mask[i].cpu().numpy()
+        img_c = draw_contours_from_labels(image=image,
+                                          labels=labels,
+                                          contour_thickness=contour_thickness,
+                                          contours_color='red')
+
+        title1 = 'frame={0:3d} res={1:.3f}'.format(i, suggestion.sweep_resolution[i])
+        title2 = 'ncell={0:2d} iou={1:.3f}'.format(suggestion.sweep_n_cells[i], suggestion.sweep_iou[i])
+
+        ax_contours.imshow(img_c)
+        ax_contours.set_title(title1)
+
+        ax_int_map.imshow(skimage.color.label2rgb(labels, image, bg_label=0, alpha=0.25))
+        ax_int_map.set_title(title2)
+
+    anim = animation.FuncAnimation(fig, animate, frames=suggestion.sweep_seg_mask.shape[0], interval=1000)
+
+    return HTML(anim.to_html5_video())
 
 
 def plot_grid(img,
