@@ -2,20 +2,21 @@ import PIL.Image
 import PIL.ImageDraw
 import torch
 import numpy
-import neptune
+import neptune.new as neptune
+from neptune.new.types import File
 import skimage.color
 import skimage.morphology
 from typing import Tuple, Optional, Union
 from torch.distributions.utils import broadcast_all
 from torchvision import utils
+from matplotlib import colors as mplclr
 from matplotlib import pyplot as plt
 from IPython.display import HTML
 from matplotlib import animation
 from .namedtuple import BB, Output, Segmentation, Suggestion, Inference
-from .util_logging import log_img_only
 
 """ This module contains specialized plotting functions to visualize the segmentation results 
-and the training process. In most cases if :attr:`experiment` (of :class:`neptune.experiments.Experiment`) and 
+and the training process. In most cases if :attr:`experiment` (of :class:`neptune.run.Run`) and 
 :attr:`neptune_name` of class str are specified then the corresponding image is logged into neptune """
 
 
@@ -137,7 +138,7 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
                         contour_thickness: int = 2,
                         contour_color: str = 'red',
                         figsize: tuple = (24, 24),
-                        experiment: Optional[neptune.experiments.Experiment] = None,
+                        experiment: Optional[neptune.run.Run] = None,
                         neptune_name: Optional[str] = None):
     assert len(label.shape) == 2
     assert len(image.shape) == 2 or len(image.shape) == 3
@@ -180,8 +181,12 @@ def plot_label_contours(label: Union[torch.Tensor, numpy.ndarray],
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
+        # experiment[neptune_name].log(fig)
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+
     plt.close(fig)
     return fig
 
@@ -194,33 +199,40 @@ def draw_img(imgs_in: torch.Tensor,
     """ Draw the reconstructed image and input image with the bounding box on top.
         It works for any number of leading dimensions """
 
-    # Draw the input imga witht eh bounding box on top
-    bb_all = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                                 width=imgs_in.shape[-2],
-                                 height=imgs_in.shape[-1],
-                                 prob=torch.ones_like(inference.sample_prob_k),
-                                 color="red")
+    bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                      width=imgs_in.shape[-2],
+                                      height=imgs_in.shape[-1],
+                                      c=inference.sample_prob_k >= 0.5,
+                                      color="red")
+
+    bb_almost_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                             width=imgs_in.shape[-2],
+                                             height=imgs_in.shape[-1],
+                                             c=inference.sample_prob_k < 0.5,
+                                             color="blue")
+
+    bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
+                                   width=imgs_in.shape[-2],
+                                   height=imgs_in.shape[-1],
+                                   c=torch.ones_like(inference.sample_prob_k).bool(),
+                                   color="green")
+
+    # Draw inferred and almost_inferred bb on top of the input image.
+    # This is helpful to debug the recognition network
+    bb_all = bb_inferred + bb_almost_inferred
     mask_no_bb_all = (torch.sum(bb_all, dim=-3, keepdim=True) == 0)
     imgs_in_with_all_bb = mask_no_bb_all * imgs_in + ~mask_no_bb_all * bb_all
 
-    # Draw the reconstructed image
+    # Draw inferred and ideal bb on top of reconstructed image
     rec_imgs_no_bb = (inference.mixing_k1wh * inference.foreground_kcwh).sum(dim=-4)  # sum over boxes
     fg_mask = inference.mixing_k1wh.sum(dim=-4)  # sum over boxes
-    background = (1 - fg_mask) * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
+    bg_mask = torch.ones_like(fg_mask) - fg_mask
 
-    bb_inferred = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
-                                      width=rec_imgs_no_bb.shape[-2],
-                                      height=rec_imgs_no_bb.shape[-1],
-                                      prob=inference.sample_prob_k,
-                                      color="red") if draw_boxes else torch.zeros_like(fg_mask)
-
-    bb_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
-                                   width=rec_imgs_no_bb.shape[-2],
-                                   height=rec_imgs_no_bb.shape[-1],
-                                   prob=inference.sample_prob_k,
-                                   color="green") if draw_ideal_boxes else torch.zeros_like(fg_mask)
-
-    bb = bb_inferred + bb_ideal
+    background = bg_mask * inference.background_cwh if draw_bg else torch.zeros_like(rec_imgs_no_bb)
+    bb1 = bb_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb2 = bb_almost_inferred if draw_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb3 = bb_ideal if draw_ideal_boxes else torch.zeros_like(rec_imgs_no_bb)
+    bb = bb1 + bb2 + bb3
     mask_no_bb = (torch.sum(bb, dim=-3, keepdim=True) == 0)
     imgs_rec_with_bb = mask_no_bb * (rec_imgs_no_bb + background) + ~mask_no_bb * bb
 
@@ -230,7 +242,7 @@ def draw_img(imgs_in: torch.Tensor,
 def draw_bounding_boxes(bounding_box: BB,
                         width: int,
                         height: int,
-                        prob: torch.Tensor,
+                        c: torch.Tensor,
                         color: str = 'red') -> torch.Tensor:
     """
     Draw the bounding boxes.
@@ -239,7 +251,7 @@ def draw_bounding_boxes(bounding_box: BB,
         bounding_box: BB of shape (*,K)
         width: width in pixel of the canvas
         height: height in pixel of the canvas
-        prob: probability that box contains a foreground object of shape (*,K)
+        c: boolean indicator of shape (*,K). Only the BB corrisponding to c=True are drawn
         color: color to use to draw the bounding box
 
     Returns:
@@ -248,8 +260,8 @@ def draw_bounding_boxes(bounding_box: BB,
     Note:
         Works for any number of leading dimensions. Each leading dimension will be processed independently
     """
-
-    p_n, bx_n, by_n, bw_n, bh_n = broadcast_all(prob,
+    assert c.dtype == torch.bool
+    c_n, bx_n, by_n, bw_n, bh_n = broadcast_all(c,
                                                 bounding_box.bx, bounding_box.by,
                                                 bounding_box.bw, bounding_box.bh)
 
@@ -262,19 +274,19 @@ def draw_bounding_boxes(bounding_box: BB,
     bxby = torch.stack((bx_n, by_n), dim=-1)
 
     # Reshape
-    independet_dim = list(p_n.shape[:-1])
+    independet_dim = list(c_n.shape[:-1])
     canvas_numpy = torch.zeros(independet_dim + [height, width, 3]).flatten(end_dim=-4).numpy()  # shape (*,w,h,3)
     bxby = bxby.flatten(end_dim=-3)          # (b,k,2) -> (*,k,2)
     x1y1x3y3 = x1y1x3y3.flatten(end_dim=-3)  # (b,k,4) -> (*,k,2)
-    p_n = p_n.flatten(end_dim=-2)            # (b,k)   -> (*,k)
+    c_n = c_n.flatten(end_dim=-2)            # (b,k)   -> (*,k)
 
     # draw the bounding boxes
-    for n in range(p_n.shape[0]):
+    for n in range(c_n.shape[0]):
         # Draw on PIL
         img = PIL.Image.new(mode='RGB', size=(width, height), color=0)  # black canvas
         draw = PIL.ImageDraw.Draw(img)
-        for k in range(p_n.shape[1]):
-            if p_n[n, k] > 0.5:
+        for k in range(c_n.shape[1]):
+            if c_n[n, k]:
                 draw.rectangle(x1y1x3y3[n, k, :].cpu().numpy(), outline=color, fill=None)
                 draw.point(bxby[n, k, :].cpu().numpy(), fill=color)
         canvas_numpy[n, ...] = numpy.array(img.getdata(), numpy.uint8).reshape((height, width, 3))
@@ -286,7 +298,7 @@ def draw_bounding_boxes(bounding_box: BB,
 
 def plot_grid(img,
               figsize: Optional[Tuple[float, float]] = None,
-              experiment: Optional[neptune.experiments.Experiment] = None,
+              experiment: Optional[neptune.run.Run] = None,
               neptune_name: Optional[str] = None):
 
     assert len(img.shape) == 3
@@ -306,8 +318,11 @@ def plot_grid(img,
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
+        # experiment[neptune_name].log(fig)
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig
 
@@ -315,7 +330,7 @@ def plot_grid(img,
 def plot_img_and_seg(img: torch.Tensor,
                      seg: torch.Tensor,
                      figsize: Optional[Tuple[float, float]] = None,
-                     experiment: Optional[neptune.experiments.Experiment] = None,
+                     experiment: Optional[neptune.run.Run] = None,
                      neptune_name: Optional[str] = None):
 
     assert len(img.shape) == len(seg.shape) == 4
@@ -337,52 +352,11 @@ def plot_img_and_seg(img: torch.Tensor,
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
-    plt.close(fig)
-    return fig
-
-
-def show_batch(images: torch.Tensor,
-               n_col: int = 4,
-               n_padding: int = 10,
-               n_mc_samples: Optional[int] = None,
-               title: Optional[str] = None,
-               pad_value: int = 1,
-               normalize: bool = False,
-               normalize_range: Optional[tuple] = None,
-               figsize: Optional[Tuple[float, float]] = None,
-               experiment: Optional[neptune.experiments.Experiment] = None,
-               neptune_name: Optional[str] = None):
-    """
-    Visualize a torch tensor of shape: (*,  ch, width, height)
-    It works for any number of leading dimensions
-    """
-    assert len(images.shape) >= 4  # *, ch, width, height
-
-    if n_mc_samples is not None and len(images.shape) == 5:
-        images = images[:n_mc_samples].flatten(end_dim=-4)
-    else:
-        images = images.flatten(end_dim=-4)  # -1, ch, width, height
-
-    if images.device != "cpu":
-        images = images.cpu()
-
-    # Always normalize the image in (0,1) either using min_max of tensor or normalize_range
-    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, range=normalize_range,
-                           scale_each=False, pad_value=pad_value)
-        
-    fig = plt.figure(figsize=figsize)
-    plt.imshow(grid.detach().permute(1, 2, 0).squeeze(-1).numpy())
-    # plt.axis("off")
-    if isinstance(title, str):
-        plt.title(title)
-    fig.tight_layout()
-
-    if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
-
+        # experiment[neptune_name].log(fig)
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig
 
@@ -390,7 +364,7 @@ def show_batch(images: torch.Tensor,
 def plot_tiling(tiling,
                 figsize: tuple = (12, 12),
                 window: Optional[tuple] = None,
-                experiment: Optional[neptune.experiments.Experiment] = None,
+                experiment: Optional[neptune.run.Run] = None,
                 neptune_name: Optional[str] = None):
 
     if window is None:
@@ -427,8 +401,80 @@ def plot_tiling(tiling,
     fig.tight_layout()
 
     if (neptune_name is not None) and (experiment is not None):
-        # log_img_and_chart(name=neptune_name, fig=fig, experiment=experiment)
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
+        # experiment[neptune_name].log(fig)
+        # fig.savefig(neptune_name + ".png")
+        # experiment[neptune_name].log(File(neptune_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+    return fig
+
+
+def plot_concordance(concordance,
+                     figsize: tuple = (12, 12),
+                     experiment: Optional[neptune.run.Run] = None,
+                     neptune_name: Optional[str] = None):
+    fig, axes = plt.subplots(figsize=figsize)
+    axes.imshow(concordance.intersection_mask.cpu(), cmap='gray')
+    axes.set_title("intersection mask, iou=" + str(concordance.iou))
+
+    fig.tight_layout()
+    if (neptune_name is not None) and (experiment is not None):
+        # experiment[neptune_name].log(fig)
+        # tmp_file_name = neptune_name.replace("/", "_")
+        # fig.savefig(tmp_file_name + ".png")
+        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+
+    plt.close(fig)
+    return fig
+
+
+# ---------------------- show_batch and derivative
+
+
+def show_batch(images: torch.Tensor,
+               n_col: int = 4,
+               n_padding: int = 10,
+               n_mc_samples: int = 1,
+               title: Optional[str] = None,
+               pad_value: float = 1,
+               normalize: bool = False,
+               normalize_range: Optional[tuple] = None,
+               figsize: Optional[Tuple[float, float]] = None,
+               experiment: Optional[neptune.run.Run] = None,
+               neptune_name: Optional[str] = None):
+    """
+    Visualize a torch tensor of shape: (*,  ch, width, height)
+    It works for any number of leading dimensions
+    """
+    assert len(images.shape) >= 4  # *, ch, width, height
+
+    if len(images.shape) > 4:
+        images = images[:n_mc_samples].flatten(end_dim=-4)
+    else:
+        images = images.flatten(end_dim=-4)  # -1, ch, width, height
+
+    if images.device != "cpu":
+        images = images.cpu()
+
+    # Always normalize the image in (0,1) either using min_max of tensor or normalize_range
+    grid = utils.make_grid(images, n_col, n_padding, normalize=normalize, value_range=normalize_range,
+                           scale_each=False, pad_value=pad_value)
+
+    fig = plt.figure(figsize=figsize)
+    plt.imshow(grid.detach().permute(1, 2, 0).squeeze(-1).numpy())
+    # plt.axis("off")
+    if isinstance(title, str):
+        plt.title(title)
+    fig.tight_layout()
+
+    if (neptune_name is not None) and (experiment is not None):
+        # experiment[neptune_name].log(fig)
+        #tmp_file_name = neptune_name.replace("/", "_")
+        #fig.savefig(tmp_file_name + ".png")
+        #experiment[neptune_name].log(File(tmp_file_name + ".png"))
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+
     plt.close(fig)
     return fig
 
@@ -436,177 +482,238 @@ def plot_tiling(tiling,
 def plot_generation(output: Output,
                     epoch: int,
                     prefix: str = "",
-                    postfix: str = "",
-                    experiment: Optional[neptune.experiments.Experiment] = None,
+                    experiment: Optional[neptune.run.Run] = None,
                     verbose: bool = False):
 
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='imgs, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix + "imgs" + postfix)
-    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix + "c_grid_before_nms" + postfix)
-    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix + "c_grid_after_nms" + postfix)
-    fig_d = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       normalize=False,
-                       title='background, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix + "bg" + postfix)
+    _ = show_batch(output.imgs.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='imgs, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/imgs")
+    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_before_nms")
+    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_after_nms")
+    _ = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='foreground, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg")
+    _ = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='background, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg")
 
-    fig_e = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='fg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"fg_mask"+postfix)
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
+    _ = show_batch(mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='fg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg_mask")
 
-    fig_f = show_batch(output.bb_imgs,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"bb_selection"+postfix)
+    mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+    _ = show_batch(mixing_bg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg_mask")
+
+    _ = show_batch(output.bb_imgs,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bb_selection")
 
     if verbose:
         print("leaving plot_generation")
-
-    return fig_a, fig_b, fig_c, fig_d, fig_e
 
 
 def plot_reconstruction_and_inference(output: Output,
                                       epoch: int,
                                       prefix: str = "",
-                                      postfix: str = "",
-                                      experiment: Optional[neptune.experiments.Experiment] = None,
+                                      experiment: Optional[neptune.run.Run] = None,
                                       verbose: bool = False):
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    # mc_samples = output.inference.sample_c_grid_before_nms.shape[-5]
-    # batch_size = output.inference.sample_c_grid_before_nms.shape[-4]
+    _ = show_batch(output.imgs.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='imgs, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/imgs")
 
-    fig_a = show_batch(output.imgs.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='imgs, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"imgs"+postfix)
-    fig_b = show_batch(output.inference.sample_c_grid_before_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"c_grid_before_nms"+postfix)
-    fig_c = show_batch(output.inference.sample_c_grid_after_nms.float(),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"c_grid_after_nms"+postfix)
+    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   n_mc_samples=2,
+                   normalize=False,
+                   title='c_grid_before_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_before_nms")
 
-    fig_d = show_batch(output.inference.logit_grid,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=True,
-                       normalize_range=(-3, 3),
-                       title='logit_unet, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"logit_unet"+postfix)
-    fig_d = show_batch(torch.sigmoid(output.inference.logit_grid),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='prob_unet, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"prob_unet"+postfix)
-    fig_e = show_batch(output.inference.prob_from_ranking_grid,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='prob_ranking, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"prob_ranking"+postfix)
+    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
+                   n_col=5,
+                   n_padding=4,
+                   n_mc_samples=2,
+                   normalize=False,
+                   title='c_grid_after_nms, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/c_grid_after_nms")
 
-    fig_f = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='background, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"bg"+postfix)
-    fig_g = show_batch(output.inference.mask_overlap_1wh,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=True,
-                       normalize_range=(0.0, 2.0),
-                       title='overlap, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"overlap"+postfix)
+    _ = show_batch(output.inference.logit_grid,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   normalize_range=(-3, 3),
+                   title='logit_unet, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/logit_unet")
 
-    fig_h = show_batch(output.inference.mixing_k1wh.sum(dim=-4),
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=True,
-                       normalize_range=(0.0, 2.0),
-                       title='fg_mask, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"fg_mask"+postfix)
+    _ = show_batch(torch.sigmoid(output.inference.logit_grid),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='prob_unet, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/prob_unet")
 
-    fig_i = show_batch(output.bb_imgs,
-                       n_col=5,
-                       n_padding=4,
-                       n_mc_samples=2,
-                       normalize=False,
-                       title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
-                       experiment=experiment,
-                       neptune_name=prefix+"bb_selection"+postfix)
+    _ = show_batch(output.inference.prob_from_ranking_grid,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='prob_ranking, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/prob_ranking")
+
+    _ = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='foreground, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg")
+
+    _ = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='background, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg")
+
+    _ = show_batch(output.inference.mask_overlap_1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   normalize_range=(0.0, 2.0),
+                   title='overlap, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/overlap")
+
+    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
+    _ = show_batch(mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='fg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/fg_mask")
+
+    _ = show_batch(torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bg_mask, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bg_mask")
+
+    _ = show_batch(output.bb_imgs,
+                   n_col=5,
+                   n_padding=4,
+                   normalize=False,
+                   title='bounding_box_selection, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/bb_selection")
+
+    # print(output.inference.feature_map.shape) --> batch_size, ch, w, h
+    _ = show_batch(output.inference.feature_map[0].unsqueeze(-3),
+                   n_col=5,
+                   n_padding=4,
+                   normalize=True,
+                   title='feature map, epoch= {0:6d}'.format(epoch),
+                   experiment=experiment,
+                   neptune_name=prefix+"/f_map")
+
+###    _ = show_batch(output.inference.delta_msefg_msebg[:,0].unsqueeze(-3),
+###                   n_col=5,
+###                   n_padding=4,
+###                   pad_value=0.5,
+###                   normalize=True,
+###                   normalize_range=(-1.0, 1.0),
+###                   title='delta_msefg_msebg, epoch= {0:6d}'.format(epoch),
+###                   experiment=experiment,
+###                   neptune_name=prefix+"/delta_mse")
+###
+###    fig = plt.figure(figsize=(12,12))
+###    mask = (output.inference.delta_msefg_msebg != 0)
+###    plt.hist(output.inference.delta_msefg_msebg[mask].cpu().detach().numpy(), density=True, bins=20)
+###    plt.title("epoch="+str(epoch))
+###    fig.tight_layout()
+###    if (prefix is not None) and (experiment is not None):
+###        experiment[prefix+"/delta_mse_hist"].log(neptune.types.File.as_image(fig))
+###    plt.close(fig)
+
+
+
+
+####    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
+####    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h
+####    tmp = torch.cat((output.inference.small_imgs_in[0], output.inference.small_imgs_out[0]), dim=0)
+####    _ = show_batch(tmp,
+####                   n_col=tmp.shape[0]//2,
+####                   n_padding=4,
+####                   normalize=True,
+####                   normalize_range=(-0.5, 1.5),
+####                   title='small patches, epoch= {0:6d}'.format(epoch),
+####                   experiment=experiment,
+####                   neptune_name=prefix+"/small_patch")
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")
-
-    return fig_a, fig_b, fig_c, fig_d, fig_e, fig_f, fig_g, fig_h, fig_i
 
 
 def plot_segmentation(segmentation: Segmentation,
                       epoch: Union[int, str] = "",
                       prefix: str = "",
-                      postfix: str = "",
-                      experiment: Optional[neptune.experiments.Experiment] = None,
+                      experiment: Optional[neptune.run.Run] = None,
                       verbose: bool = False) -> tuple:
     if verbose:
         print("in plot_segmentation")
@@ -625,14 +732,14 @@ def plot_segmentation(segmentation: Segmentation,
                        figsize=(12, 12),
                        title='integer_mask, '+title_postfix,
                        experiment=experiment,
-                       neptune_name=prefix+"integer_mask"+postfix)
+                       neptune_name=prefix+"/integer_mask")
     fig_b = show_batch(segmentation.fg_prob.clamp(min=0.0, max=1.0),
                        n_padding=4,
                        normalize=False,
                        figsize=(12, 12),
                        title='fg_prob, '+title_postfix,
                        experiment=experiment,
-                       neptune_name=prefix+"fg_prob"+postfix)
+                       neptune_name=prefix+"/fg_prob")
 
     if verbose:
         print("leaving plot_segmentation")
@@ -640,16 +747,3 @@ def plot_segmentation(segmentation: Segmentation,
     return fig_a, fig_b
 
 
-def plot_concordance(concordance,
-                     figsize: tuple = (12, 12),
-                     experiment: Optional[neptune.experiments.Experiment] = None,
-                     neptune_name: Optional[str] = None):
-    fig, axes = plt.subplots(figsize=figsize)
-    axes.imshow(concordance.intersection_mask.cpu(), cmap='gray')
-    axes.set_title("intersection mask, iou=" + str(concordance.iou))
-
-    fig.tight_layout()
-    if (neptune_name is not None) and (experiment is not None):
-        log_img_only(name=neptune_name, fig=fig, experiment=experiment)
-    plt.close(fig)
-    return fig

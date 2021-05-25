@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-import neptune
+import neptune.new as neptune
 from genus.util_logging import log_object_as_artifact, log_model_summary, log_many_metrics
 from genus.model import *
 from genus.util_vis import show_batch, plot_reconstruction_and_inference, plot_generation, plot_segmentation
 from genus.util_data import DatasetInMemory
-from genus.util import load_yaml_as_dict, flatten_dict, load_obj, file2ckpt, linear_interpolation, append_to_dict
+from genus.util import load_yaml_as_dict, load_obj, file2ckpt, append_to_dict, linear_interpolation
 
 # Check versions
 import torch
@@ -19,15 +19,15 @@ print("torch.__version__ --> ", torch.__version__)
 torch.manual_seed(0)
 numpy.random.seed(0)
 
-
 config = load_yaml_as_dict("./config.yaml")
+exp: neptune.run.Run = neptune.init(project=config["neptune_project"],
+                                    source_files=["main*.py", "*/*.py", "config.yaml"],
+                                    mode="async",
+                                    capture_stdout=True,
+                                    capture_stderr=True,
+                                    capture_hardware_metrics=True)
+exp['config'] = config
 
-neptune.set_project(config["neptune_project"])
-exp: neptune.experiments.Experiment = \
-    neptune.create_experiment(params=flatten_dict(config),
-                              upload_source_files=["./main_mnist.py", "./config.yaml"],
-                              upload_stdout=True,
-                              upload_stderr=True)
 
 # Get the training and test data
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
@@ -62,7 +62,7 @@ reference_imgs_fig = show_batch(reference_imgs, n_col=5, title="reference imgs",
 
 # Instantiate model, optimizer and checks
 vae = CompositionalVae(config)
-log_model_summary(vae)
+log_model_summary(vae, experiment=exp)
 optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 
 if torch.cuda.is_available():
@@ -131,15 +131,10 @@ torch.cuda.empty_cache()
 for delta_epoch in range(1, NUM_EPOCHS+1):
     epoch = delta_epoch+epoch_restart    
 
-    vae.annealing_factor = linear_interpolation(epoch,
-                                                values=(1.0, 0.0),
-                                                times=config["loss"]["annealing_times"])
-    exp.log_metric("annealing_factor", vae.annealing_factor)
-
     with torch.autograd.set_detect_anomaly(False):
         with torch.enable_grad():
+
             vae.train()
-            # print("process one epoch train")
             train_metrics = process_one_epoch(model=vae,
                                               dataloader=train_loader,
                                               optimizer=optimizer,
@@ -154,7 +149,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                               prefix_exclude="wrong_examples",
                                               prefix_to_add="train_")
                 log_many_metrics(metrics=train_metrics,
-                                 prefix_for_neptune="train_",
+                                 prefix_for_neptune="train",
                                  experiment=exp,
                                  keys_exclude=["wrong_examples"],
                                  verbose=False)
@@ -169,65 +164,81 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                      iom_threshold=config["architecture"]["nms_threshold_test"],
                                                      verbose=(epoch == 0))
                     print("Test  "+test_metrics.pretty_print(epoch))
-
                     history_dict = append_to_dict(source=test_metrics,
                                                   destination=history_dict,
                                                   prefix_exclude="wrong_examples",
                                                   prefix_to_add="test_")
-
                     log_many_metrics(metrics=test_metrics,
-                                     prefix_for_neptune="test_",
+                                     prefix_for_neptune="test",
                                      experiment=exp,
                                      keys_exclude=["wrong_examples"],
                                      verbose=False)
 
                     if len(test_metrics.wrong_examples) > 0:
-                        error_index = torch.tensor(test_metrics.wrong_examples[:5], dtype=torch.long)
+                        error_index = torch.tensor(test_metrics.wrong_examples[:10], dtype=torch.long)
                     else:
-                        error_index = torch.arange(5, dtype=torch.long)
+                        error_index = torch.arange(10, dtype=torch.long)
                     error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
 
-                    error_output: Output = vae.forward(error_test_img,
-                                                       iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                       noisy_sampling=True,
-                                                       draw_image=True,
-                                                       draw_boxes=True,
-                                                       draw_boxes_ideal=True,
-                                                       draw_bg=True)
+                    error_output_noisy: Output = vae.forward(error_test_img,
+                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                             noisy_sampling=True,
+                                                             draw_image=True,
+                                                             draw_boxes=True,
+                                                             draw_boxes_ideal=True,
+                                                             draw_bg=True)
+                    plot_reconstruction_and_inference(error_output_noisy,
+                                                      epoch=epoch,
+                                                      prefix="error_noisy",
+                                                      experiment=exp)
 
-                    in_out = torch.cat((error_output.imgs, error_test_img.expand_as(error_output.imgs)), dim=0)
-                    _ = show_batch(in_out, n_col=in_out.shape[0]//2, title="error epoch="+str(epoch),
-                                   experiment=exp, neptune_name="test_errors")
+                    error_output_clean: Output = vae.forward(error_test_img,
+                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                             noisy_sampling=False,
+                                                             draw_image=True,
+                                                             draw_boxes=True,
+                                                             draw_boxes_ideal=True,
+                                                             draw_bg=True)
+                    plot_reconstruction_and_inference(error_output_clean,
+                                                      epoch=epoch,
+                                                      prefix="error_clean",
+                                                      experiment=exp)
 
-                    output: Output = vae.forward(reference_imgs,
-                                                 iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                 noisy_sampling=False,
-                                                 draw_image=True,
-                                                 draw_boxes=True,
-                                                 draw_boxes_ideal=True,
-                                                 draw_bg=True)
+                    ref_output_noisy: Output = vae.forward(reference_imgs,
+                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                           noisy_sampling=True,
+                                                           draw_image=True,
+                                                           draw_boxes=True,
+                                                           draw_boxes_ideal=True,
+                                                           draw_bg=True)
+                    plot_reconstruction_and_inference(ref_output_noisy,
+                                                      epoch=epoch,
+                                                      prefix="ref_noisy",
+                                                      experiment=exp)
 
-                    plot_reconstruction_and_inference(output, epoch=epoch, prefix="rec_", experiment=exp)
-                    reference_n_objs_inferred = (output.inference.sample_prob_k > 0.5).sum().item()
-                    reference_n_objs_truth = reference_count.sum().item()
-                    delta_n_objs = reference_n_objs_inferred - reference_n_objs_truth
-                    tmp_dict = {"reference_n_objs_inferred": reference_n_objs_inferred,
-                                "reference_delta_n_objs": delta_n_objs}
-                    log_many_metrics(tmp_dict, prefix_for_neptune="test_", experiment=exp)
-                    history_dict = append_to_dict(source=tmp_dict,
-                                                  destination=history_dict)
+                    ref_output_clean: Output = vae.forward(reference_imgs,
+                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                           noisy_sampling=False,
+                                                           draw_image=True,
+                                                           draw_boxes=True,
+                                                           draw_boxes_ideal=True,
+                                                           draw_bg=True)
+                    plot_reconstruction_and_inference(ref_output_clean,
+                                                      epoch=epoch,
+                                                      prefix="ref_clean",
+                                                      experiment=exp)
 
                     print("segmentation")
                     segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,
                                                              noisy_sampling=True,
                                                              iom_threshold=config["architecture"]["nms_threshold_test"])
-                    plot_segmentation(segmentation, epoch=epoch, prefix="seg_", experiment=exp)
+                    plot_segmentation(segmentation, epoch=epoch, prefix="seg", experiment=exp)
 
                     print("generation test")
                     generated: Output = vae.generate(imgs_in=reference_imgs,
                                                      draw_boxes=True,
                                                      draw_bg=True)
-                    plot_generation(generated, epoch=epoch, prefix="gen_", experiment=exp)
+                    plot_generation(generated, epoch=epoch, prefix="gen", experiment=exp)
 
                     test_loss = test_metrics.loss
                     min_test_loss = min(min_test_loss, test_loss)
@@ -238,4 +249,6 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                history_dict=history_dict)
                         log_object_as_artifact(name="last_ckpt", obj=ckpt, experiment=exp)  # log file into neptune
                     print("Done epoch")
-exp.stop()
+
+if exp is not None:
+    exp.stop()

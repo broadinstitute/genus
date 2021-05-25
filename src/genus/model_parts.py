@@ -1,23 +1,24 @@
 import torch
-from typing import Union
+from typing import Union, Tuple
 import numpy
-
+import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
-from .unet import UNet
-from .encoders_decoders import EncoderConv, DecoderConv, Decoder1by1Linear, DecoderBackground
+from .unet import UNet, UNetNew
+from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import sample_and_kl_diagonal_normal, compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP
-from .namedtuple import Inference, NmsOutput, BB, UNEToutput, ZZ, DIST, MetricMiniBatch
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
+from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
+from collections.abc import Iterable
 
 
-def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
-                                         bounding_boxes_k: BB,
-                                         pad_size: int,
-                                         min_box_size: float,
-                                         max_box_size: float) -> (BB, torch.Tensor):
-    """ Given the mixing probabilities and the predicted bounding_boxes it computes the optimal bounding_boxes and
-        the L2 cost between the predicted bounding_boxes and ideal bounding_boxes.
+@torch.no_grad()
+def optimal_bb(mixing_k1wh: torch.Tensor,
+               bounding_boxes_k: BB,
+               pad_size: int,
+               min_box_size: float,
+               max_box_size: float) -> BB:
+    """ Given the mixing probabilities it computes the optimal bounding_boxes
 
         Args:
             mixing_k1wh: torch.Tensor of shape :math:`(*, K, 1, W, H)`
@@ -27,11 +28,10 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
             max_box_size: maximum allowed size for the bounding box
 
         Returns:
-            The optimal bounding boxes in :class:`BB` of shape :math:`(*, K)` and
-            the regression_penalty of shape :math:`(*, K)`
+            The optimal bounding boxes in :class:`BB` of shape :math:`(*, K)`
 
         Note:
-            The optimal bounding_box  is body-fitted around :math:`mask=(mixing > 0.5)`
+            The optimal bounding_box is body-fitted around :math:`mask=(mixing > 0.5)`
             with a padding of size `attr:pad_size` pixels. If the mask is small (or completely empty)
             the optimal bounding_box is a box of the minimum_allowed size.
 
@@ -39,87 +39,140 @@ def optimal_bb_and_bb_regression_penalty(mixing_k1wh: torch.Tensor,
             It works with any number of leading dimensions. Each leading dimension is treated independently.
     """
 
-    with torch.no_grad():
 
-        # Compute the ideal Bounding boxes
-        mask_kwh = (mixing_k1wh.squeeze(-3) > 0.5).int()
-        mask_kh = torch.max(mask_kwh, dim=-2)[0]
-        mask_kw = torch.max(mask_kwh, dim=-1)[0]
-        mask_k = torch.max(mask_kw, dim=-1)[0]  # 0 if empty, 1 if non-empty
+    # Compute the ideal Bounding boxes
+    mask_kwh = (mixing_k1wh.squeeze(-3) > 0.5).int()
+    mask_kh = torch.max(mask_kwh, dim=-2)[0]
+    mask_kw = torch.max(mask_kwh, dim=-1)[0]
+    mask_k = torch.max(mask_kw, dim=-1)[0]  # 0 if empty, 1 if non-empty
 
-        plus_h = torch.arange(start=0, end=mask_kh.shape[-1], step=1,
-                              dtype=torch.float, device=mixing_k1wh.device) + 1
-        plus_w = torch.arange(start=0, end=mask_kw.shape[-1], step=1,
-                              dtype=torch.float, device=mixing_k1wh.device) + 1
-        minus_h = plus_h[-1] - plus_h + 1
-        minus_w = plus_w[-1] - plus_w + 1
+    plus_h = torch.arange(start=0, end=mask_kh.shape[-1], step=1,
+                          dtype=torch.float, device=mixing_k1wh.device) + 1
+    plus_w = torch.arange(start=0, end=mask_kw.shape[-1], step=1,
+                          dtype=torch.float, device=mixing_k1wh.device) + 1
+    minus_h = plus_h[-1] - plus_h + 1
+    minus_w = plus_w[-1] - plus_w + 1
 
-        # Find the coordinates of the full bounding boxes
-        full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0, max=mask_kw.shape[-1]).float()
-        full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
-        full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0, max=mask_kh.shape[-1]).float()
+    # Find the coordinates of the full bounding boxes
+    full_x1_k = (torch.argmax(mask_kw * minus_w, dim=-1) - pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
+    full_x3_k = (torch.argmax(mask_kw * plus_w,  dim=-1) + pad_size).clamp(min=0.0, max=mask_kw.shape[-1]).float()
+    full_y1_k = (torch.argmax(mask_kh * minus_h, dim=-1) - pad_size).clamp(min=0.0, max=mask_kh.shape[-1]).float()
+    full_y3_k = (torch.argmax(mask_kh * plus_h,  dim=-1) + pad_size).clamp(min=0.0, max=mask_kh.shape[-1]).float()
 
-        # Find the coordinates of the empty bounding boxes
-        # TODO: empty bounding box should be centered
-        empty_x1_k = bounding_boxes_k.bx - 0.5 * min_box_size
-        empty_x3_k = bounding_boxes_k.bx + 0.5 * min_box_size
-        empty_y1_k = bounding_boxes_k.by - 0.5 * min_box_size
-        empty_y3_k = bounding_boxes_k.by + 0.5 * min_box_size
+    # Find the coordinates of the empty bounding boxes
+    # TODO: empty bounding box should be centered
+    empty_x1_k = (bounding_boxes_k.bx - 0.5 * min_box_size).clamp(min=0.0, max=mask_kw.shape[-1])
+    empty_x3_k = (bounding_boxes_k.bx + 0.5 * min_box_size).clamp(min=0.0, max=mask_kw.shape[-1])
+    empty_y1_k = (bounding_boxes_k.by - 0.5 * min_box_size).clamp(min=0.0, max=mask_kh.shape[-1])
+    empty_y3_k = (bounding_boxes_k.by + 0.5 * min_box_size).clamp(min=0.0, max=mask_kh.shape[-1])
 
-        # Ideal_bb depends whether box is full or empty
-        empty_k = (mask_k == 0)
-        ideal_x1_k = torch.where(empty_k, empty_x1_k, full_x1_k)
-        ideal_x3_k = torch.where(empty_k, empty_x3_k, full_x3_k)
-        ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
-        ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
+    # Ideal_bb depends whether box is full or empty
+    empty_k = (mask_k == 0)
+    ideal_x1_k = torch.where(empty_k, empty_x1_k, full_x1_k)
+    ideal_x3_k = torch.where(empty_k, empty_x3_k, full_x3_k)
+    ideal_y1_k = torch.where(empty_k, empty_y1_k, full_y1_k)
+    ideal_y3_k = torch.where(empty_k, empty_y3_k, full_y3_k)
 
-        # Compute the box coordinates (note the clamping of bw and bh)
-        ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
-        ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
-        ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
-        ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
+    # From the 4 corners to the center and size of bb
+    ideal_bw_k = (ideal_x3_k - ideal_x1_k).clamp(min=min_box_size, max=max_box_size)
+    ideal_bh_k = (ideal_y3_k - ideal_y1_k).clamp(min=min_box_size, max=max_box_size)
+    ideal_bx_k = 0.5 * (ideal_x3_k + ideal_x1_k)
+    ideal_by_k = 0.5 * (ideal_y3_k + ideal_y1_k)
 
-    # Outside the torch.no_grad() compute the regression cost
-    cost_bb_regression = torch.abs(ideal_bx_k - bounding_boxes_k.bx) + \
-                         torch.abs(ideal_by_k - bounding_boxes_k.by) + \
-                         torch.abs(ideal_bw_k - bounding_boxes_k.bw) + \
-                         torch.abs(ideal_bh_k - bounding_boxes_k.bh)
-
-    return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k), cost_bb_regression
+    return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k)
 
 
-def tgrid_to_bb(t_grid, width_input_image: int, height_input_image: int, min_box_size: float, max_box_size: float):
-    """ 
+def tgrid_to_bb(t_grid,
+                rawimage_size: Tuple[int, int],
+                min_box_size: float,
+                max_box_size: float,
+                convert_to_box: bool=True) -> BB:
+    """
     Convert the output of the zwhere decoder to a list of bounding boxes
-    
+
     Args:
         t_grid: tensor of shape :math:`(B,4,w_grid,h_grid)` with values in (0,1)
-        width_input_image: width of the input image
-        height_input_image: height of the input image
+        rawimage_size: width and height of the raw image
         min_box_size: minimum allowed size for the bounding boxes
         max_box_size: maximum allowed size for the bounding boxes
-        
+        convert_to_box: boo, if False keep the same shape, it true convert to list of boxes
+
     Returns:
         A container of type :class:`BB` with the bounding boxes of shape :math:`(B,N)`
-        where :math:`N = w_grid * h_grid`. 
+        where :math:`N = w_grid * h_grid`.
     """
-    grid_width, grid_height = t_grid.shape[-2:]
-    ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
-                           device=t_grid.device).unsqueeze(-1)  # shape: grid_width, 1
-    iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
-                           device=t_grid.device).unsqueeze(-2)  # shape: 1, grid_height
+    tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, split_size_or_sections=1, dim=-3)
+    with torch.no_grad():
+        grid_width, grid_height = t_grid.shape[-2:]
+        ix_grid = torch.arange(start=0, end=grid_width, dtype=t_grid.dtype,
+                               device=t_grid.device).unsqueeze(-1).expand_as(tx_grid)
+        iy_grid = torch.arange(start=0, end=grid_height, dtype=t_grid.dtype,
+                               device=t_grid.device).unsqueeze(-2).expand_as(tx_grid)
 
-    tx_grid, ty_grid, tw_grid, th_grid = torch.split(t_grid, 1, dim=-3)  # shapes: (b,1,grid_width,grid_height)
+    if convert_to_box:
+        tt = TT(tx=convert_to_box_list(tx_grid).squeeze(-1),
+                ty=convert_to_box_list(ty_grid).squeeze(-1),
+                tw=convert_to_box_list(tw_grid).squeeze(-1),
+                th=convert_to_box_list(th_grid).squeeze(-1),
+                ix=convert_to_box_list(ix_grid).squeeze(-1),
+                iy=convert_to_box_list(iy_grid).squeeze(-1))
+    else:
+        tt = TT(tx=tx_grid,
+                ty=ty_grid,
+                tw=tw_grid,
+                th=th_grid,
+                ix=ix_grid,
+                iy=iy_grid)
 
-    bx_grid = width_input_image * (ix_grid + tx_grid) / grid_width    # values in (0,width_input_image)
-    by_grid = height_input_image * (iy_grid + ty_grid) / grid_height  # values in (0,height_input_image)
-    bw_grid = min_box_size + (max_box_size - min_box_size) * tw_grid  # values in (min_box_size, max_box_size)
-    bh_grid = min_box_size + (max_box_size - min_box_size) * th_grid  # values in (min_box_size, max_box_size)
-    return BB(bx=convert_to_box_list(bx_grid).squeeze(-1),
-              by=convert_to_box_list(by_grid).squeeze(-1),
-              bw=convert_to_box_list(bw_grid).squeeze(-1),
-              bh=convert_to_box_list(bh_grid).squeeze(-1))
+    return tt_to_bb(tt=tt,
+                    rawimage_size=rawimage_size,
+                    tgrid_size=t_grid.shape[-2:],
+                    min_box_size=min_box_size,
+                    max_box_size=max_box_size)
+
+
+def tt_to_bb(tt: TT,
+             rawimage_size: Tuple[int, int],
+             tgrid_size: Tuple[int, int],
+             min_box_size: float,
+             max_box_size: float) -> BB:
+    """ Transformation from :class:`TT` to :class:`BB` """
+
+    # Logic:
+    # 1) ix + 0.5 is the center of the voxel
+    # 2) dx is the displacement from the center of the voxel
+    # 3) finally I convert to the large image size
+
+    MAX_DISPLACEMENT = 1.5
+    dx = MAX_DISPLACEMENT * 2.0 * (tt.tx - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
+    dy = MAX_DISPLACEMENT * 2.0 * (tt.ty - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
+
+    # values in (0.5 - MAX_DISPLACEMENT, rawimage_size - 0.5 + MAX_DISPLACEMENT)
+    bx = (tt.ix + 0.5 + dx) * float(rawimage_size[0]) / tgrid_size[0]
+    by = (tt.iy + 0.5 + dy) * float(rawimage_size[1]) / tgrid_size[1]
+
+    # Bounding boxes in the range (min_box_size, max_box_size)
+    bw = min_box_size + (max_box_size - min_box_size) * tt.tw
+    bh = min_box_size + (max_box_size - min_box_size) * tt.th
+    return BB(bx=bx, by=by, bw=bw, bh=bh)
+
+
+# def bb_to_tt(bb: BB,
+#              rawimage_size: Tuple[int, int],
+#              tgrid_size: Tuple[int, int],
+#              min_box_size: float,
+#              max_box_size: float) -> TT:
+#     """ Transformation from :class:`BB` to :class:`TT` """
+#     tw = ((bb.bw - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+#     th = ((bb.bh - min_box_size) / (max_box_size - min_box_size)).clamp(min=0.0, max=1.0)
+#     ix_plus_tx = (bb.bx * float(tgrid_size[0]) / rawimage_size[0]).clamp(min=0, max=tgrid_size[0])
+#     iy_plus_ty = (bb.by * float(tgrid_size[1]) / rawimage_size[1]).clamp(min=0, max=tgrid_size[1])
+#
+#     ix = ix_plus_tx.clamp(min=0, max=tgrid_size[0]-1).long()
+#     iy = iy_plus_ty.clamp(min=0, max=tgrid_size[1]-1).long()
+#     tx = ix_plus_tx - ix
+#     ty = iy_plus_ty - iy
+#     return TT(tx=tx, ty=ty, tw=tw, th=th, ix=ix, iy=iy)
 
 
 def linear_exp_activation(x: Union[float, torch.Tensor]) -> Union[float, torch.Tensor]:
@@ -148,15 +201,88 @@ def inverse_linear_exp_activation(y: Union[float, torch.Tensor]) -> Union[float,
     return x
 
 
+class GecoParameter(torch.nn.Module):
+    """ Dynamical parameter with value in [min_value, max_value].
+        Note:
+            if constraint < 0, parameter will be decreased
+            if constraint > 0, parameter will be increased
+    """
+    def __init__(self, initial_value: float,
+                 min_value: Union[float, None]=None,
+                 max_value: Union[float, None]=None,
+                 linear_exp: bool=False):
+        super().__init__()
+
+        self.linear_exp = linear_exp
+        assert initial_value >= 0
+        assert (min_value is None) or (min_value >= 0)
+        assert (max_value is None) or (max_value >= 0)
+        if min_value is not None and max_value is not None:
+            assert max_value >= min_value, "max_value {0} should be >= min_value {1}".format(max_value, min_value)
+
+        if linear_exp:
+            self.geco_raw_lambda = torch.nn.Parameter(torch.tensor(inverse_linear_exp_activation(float(initial_value)),
+                                                                        dtype=torch.float), requires_grad=True)
+            self.raw_min_value = None if min_value is None else inverse_linear_exp_activation(float(min_value))
+            self.raw_max_value = None if max_value is None else inverse_linear_exp_activation(float(max_value))
+        else:
+            self.geco_raw_lambda = torch.nn.Parameter(data=torch.tensor(initial_value, dtype=torch.float),
+                                                      requires_grad=True)
+            self.raw_min_value = min_value
+            self.raw_max_value = max_value
+
+        self.first_iter = True
+
+    @torch.no_grad()
+    def set(self, value: float):
+        raw_value = inverse_linear_exp_activation(value) if self.linear_exp else value
+        self.geco_raw_lambda.data.fill_(raw_value)
+        self.geco_raw_lambda.clamp_(min=self.raw_min_value, max=self.raw_max_value)
+
+    @torch.no_grad()
+    def get(self):
+        self.geco_raw_lambda.data.clamp_(min=self.raw_min_value, max=self.raw_max_value)
+        if self.linear_exp:
+            transformed_lambda = linear_exp_activation(self.geco_raw_lambda.data)
+        else:
+            transformed_lambda = self.geco_raw_lambda.data
+        return transformed_lambda.detach()
+
+    def forward(self, constraint):
+        # This is first since it clamps lambda in the allowed range
+        transformed_lambda = self.get()
+
+        # Minimization of the loss function leads to:
+        # Constraint satisfied -----> constraint < 0 ---> reduce the parameter
+        # Constraint is violated ---> constraint > 0 ---> increase the parameter
+        loss_geco = - self.geco_raw_lambda * constraint.detach()
+
+        self.first_iter = False
+
+        return GECO(loss=loss_geco, hyperparam=transformed_lambda)
+
+
 class InferenceAndGeneration(torch.nn.Module):
 
     def __init__(self, config):
         super().__init__()
 
+        self.n_mc_samples = config["loss"]["n_mc_samples"]
+        self.is_zero_background = config["input_image"]["is_zero_background"]
+
         # variables
+        self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
+        self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
+
+        self.target_mse_min = config["input_image"]["target_mse_min_max"][0]
+        self.target_mse_max = config["input_image"]["target_mse_min_max"][1]
+
+        self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
+        self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
+
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
-        self.n_mc_samples = config["loss"]["n_mc_samples"]
+        self.box_overlap_strength = config["loss"]["box_overlap_penalty_strength"]
 
         self.min_box_size = config["input_image"]["range_object_size"][0]
         self.max_box_size = config["input_image"]["range_object_size"][1]
@@ -166,76 +292,79 @@ class InferenceAndGeneration(torch.nn.Module):
         # modules
         self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
                                  weight=config["input_image"]["DPP_weight"],
-                                 learnable_params=False)
+                                 learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
-        self.unet: UNet = UNet(n_max_pool=config["architecture"]["unet_n_max_pool"],
-                               level_zwhere_and_logit_output=config["architecture"]["unet_level_boundingboxes"],
-                               level_background_output=config["architecture"]["unet_n_max_pool"],
-                               n_ch_output_features=config["architecture"]["unet_ch_feature_map"],
-                               ch_after_preprocessing=config["architecture"]["unet_ch_before_first_max_pool"],
-                               downsampling_factor_preprocessing=config["architecture"]["unet_spatial_downsampling_before_first_max_pool"],
-                               dim_zbg=config["architecture"]["dim_zbg"],
-                               dim_zwhere=config["architecture"]["dim_zwhere"],
-                               dim_logit=1,
-                               ch_raw_image=config["input_image"]["ch_in"],
-                               concatenate_raw_image_to_fmap=True,
-                               grad_logit_max=config["loss"]["grad_logit_max"])
+        self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
+                               scale_factor_background=config["architecture"]["unet_scale_factor_background"],
+                               scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+                               ch_in=config["input_image"]["ch_in"],
+                               ch_out=config["architecture"]["unet_ch_feature_map"],
+                               ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
+                               dim_zbg=config["architecture"]["zbg_dim"],
+                               dim_zwhere=config["architecture"]["zwhere_dim"],
+                               dim_logit=1)
+
+###        self.unet: UNetNew = UNetNew(pre_processor=None,
+###                                     scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+###                                     ch_in=config["input_image"]["ch_in"],
+###                                     ch_out=config["architecture"]["unet_ch_feature_map"],
+###                                     dim_zbg=config["architecture"]["zbg_dim"],
+###                                     dim_zwhere=config["architecture"]["zwhere_dim"],
+###                                     dim_logit=1,
+###                                     pretrained=True)
 
         # Encoder-Decoders
-        self.decoder_zbg: DecoderBackground = DecoderBackground(dim_z=config["architecture"]["dim_zbg"],
-                                                                ch_out=config["input_image"]["ch_in"],
-                                                                n_up_conv=config["architecture"]["unet_n_max_pool"])
+        self.decoder_zbg: DecoderConv = DecoderConv(ch_in=config["architecture"]["zbg_dim"],
+                                                    ch_out=config["input_image"]["ch_in"],
+                                                    scale_factor=config["architecture"]["unet_scale_factor_background"])
 
-        self.decoder_zwhere: Decoder1by1Linear = Decoder1by1Linear(dim_z=config["architecture"]["dim_zwhere"],
-                                                                   ch_out=4,
-                                                                   groups=4)
+        self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
+                                                               out_channels=4,
+                                                               kernel_size=1,
+                                                               groups=4)
 
-        self.decoder_zinstance: DecoderConv = DecoderConv(size=config["architecture"]["glimpse_size"],
-                                                          dim_z=config["architecture"]["dim_zinstance"],
-                                                          ch_out=config["input_image"]["ch_in"] + 1)
+        self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                  dim_z=config["architecture"]["zinstance_dim"],
+                                                                  ch_out=config["input_image"]["ch_in"] + 1)
 
-        self.encoder_zinstance: EncoderConv = EncoderConv(size=config["architecture"]["glimpse_size"],
-                                                          ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                          dim_z=config["architecture"]["dim_zinstance"])
+        self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                  ch_in=config["architecture"]["unet_ch_feature_map"],
+                                                                  dim_z=config["architecture"]["zinstance_dim"])
 
-        # Geco values
-        self.sigma_fg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
+        # Observation model
+        self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
-        self.sigma_bg = torch.nn.Parameter(data=torch.tensor(config["input_image"]["target_mse_max"],
-                                                             dtype=torch.float)[..., None, None], requires_grad=False)
-        # Geco MSE
-        self.geco_target_mse_min = 0.0
-        self.geco_target_mse_max = 1.0
-        lambda_mse_min = abs(float(config["loss"]["lambda_mse_min_max"][0]))
-        lambda_mse_max = abs(float(config["loss"]["lambda_mse_min_max"][1]))
-        self.geco_rawlambda_mse_min = inverse_linear_exp_activation(lambda_mse_min)
-        self.geco_rawlambda_mse_max = inverse_linear_exp_activation(lambda_mse_max)
-        self.geco_rawlambda_mse = torch.nn.Parameter(data=torch.tensor(self.geco_rawlambda_mse_max, dtype=torch.float),
-                                                     requires_grad=True)
 
-##         # Geco ncell
-##         self.geco_target_ncell_min = abs(float(config["input_image"]["target_ncell_min_max"][0]))
-##         self.geco_target_ncell_max = abs(float(config["input_image"]["target_ncell_min_max"][1]))
-##         lambda_ncell_min = abs(float(config["loss"]["lambda_ncell_min_max"][0]))
-##         lambda_ncell_max = abs(float(config["loss"]["lambda_ncell_min_max"][1]))
-##         self.geco_rawlambda_ncell_min = inverse_linear_exp_activation(lambda_ncell_min)
-##         self.geco_rawlambda_ncell_max = inverse_linear_exp_activation(lambda_ncell_max)
-##         self.geco_rawlambda_ncell = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
-##                                                                         dtype=torch.float), requires_grad=True)
+        # Dynamical parameter controlled by GECO
+        self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
+                                                 min_value=0.0,
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
+                                                 linear_exp=True)
+        self.geco_fgfraction_max = GecoParameter(initial_value=1.0,
+                                                 min_value=0.0,
+                                                 max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
+                                                 linear_exp=True)
 
-        # Geco fg_fraction
-        self.geco_target_fgfraction_min = abs(float(config["input_image"]["target_fgfraction_min_max"][0]))
-        self.geco_target_fgfraction_max = abs(float(config["input_image"]["target_fgfraction_min_max"][1]))
-        lambda_fgfraction_min = float(config["loss"]["lambda_fgfraction_min_max"][0])
-        lambda_fgfraction_max = float(config["loss"]["lambda_fgfraction_min_max"][1])
-        self.geco_rawlambda_fgfraction_min = inverse_linear_exp_activation(lambda_fgfraction_min)
-        self.geco_rawlambda_fgfraction_max = inverse_linear_exp_activation(lambda_fgfraction_max)
-        self.geco_rawlambda_fgfraction = torch.nn.Parameter(data=torch.tensor(inverse_linear_exp_activation(1.0),
-                                                                              dtype=torch.float), requires_grad=True)
+        self.geco_nobj_min = GecoParameter(initial_value=1.0,
+                                           min_value=0.0,
+                                           max_value=config["input_image"]["lambda_nobj_min_max"][1],
+                                           linear_exp=True)
+        self.geco_nobj_max = GecoParameter(initial_value=1.0,
+                                           min_value=0.0,
+                                           max_value=config["input_image"]["lambda_nobj_min_max"][1],
+                                           linear_exp=True)
+
+        self.geco_kl_learnz = GecoParameter(initial_value=0.01,
+                                            min_value=config["input_image"]["lambda_kl_min_max"][0],
+                                            max_value=config["input_image"]["lambda_kl_min_max"][1])
+        self.geco_kl_learnc = GecoParameter(initial_value=0.01,
+                                            min_value=config["input_image"]["lambda_kl_min_max"][0],
+                                            max_value=config["input_image"]["lambda_kl_min_max"][1])
+        self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
+
 
     def forward(self, imgs_bcwh: torch.Tensor,
                 generate_synthetic_data: bool,
-                annealing_factor: float,
                 iom_threshold: float,
                 k_objects_max: int,
                 topk_only: bool,
@@ -244,61 +373,56 @@ class InferenceAndGeneration(torch.nn.Module):
         # 0. preparation
         batch_size, ch_raw_image, width_raw_image, height_raw_image = imgs_bcwh.shape
 
-        # ---------------------------#
         # 1. UNET
-        # ---------------------------#
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
-        # TODO: Replace the background block with a VQ-VAE
-        # Compute the background
-        zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zbg.mu,
-                                                  posterior_std=unet_output.zbg.std,
-                                                  prior_mu=torch.zeros_like(unet_output.zbg.mu),
-                                                  prior_std=torch.ones_like(unet_output.zbg.std),
+        # 2. Background decoder
+        zbg_mu, zbg_std = torch.split(unet_output.zbg,
+                                      split_size_or_sections=unet_output.zbg.shape[-3]//2,
+                                      dim=-3)
+        zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
+                                                  posterior_std=F.softplus(zbg_std)+1E-3,
                                                   noisy_sampling=noisy_sampling,
-                                                  sample_from_prior=generate_synthetic_data,
-                                                  mc_samples=1,
-                                                  squeeze_mc=True)
-        zbg_kl = zbg.kl.sum(dim=(-1, -2)).mean()  # sum over spatial coordinates, mean over channel dimension and batch
-        out_background_bcwh = self.decoder_zbg(z=zbg.sample)
+                                                  sample_from_prior=generate_synthetic_data)
+        out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else self.decoder_zbg(zbg.value)
 
-        # Compute the bounding boxes
-        zwhere_grid: DIST = sample_and_kl_diagonal_normal(posterior_mu=unet_output.zwhere.mu,
-                                                          posterior_std=unet_output.zwhere.std,
-                                                          prior_mu=torch.zeros_like(unet_output.zwhere.mu),
-                                                          prior_std=torch.ones_like(unet_output.zwhere.std),
-                                                          noisy_sampling=noisy_sampling,
-                                                          sample_from_prior=generate_synthetic_data,
-                                                          mc_samples=1,
-                                                          squeeze_mc=True)
-
-        bounding_box_bn: BB = tgrid_to_bb(t_grid=torch.sigmoid(self.decoder_zwhere(zwhere_grid.sample)),
-                                          width_input_image=width_raw_image,
-                                          height_input_image=height_raw_image,
+        # 3. Bounding-Box decoding
+        zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
+                                            split_size_or_sections=unet_output.zwhere.shape[-3]//2,
+                                            dim=-3)
+        zwhere: DIST = sample_and_kl_diagonal_normal(posterior_mu=zwhere_mu,
+                                                     posterior_std=F.softplus(zwhere_std)+1E-3,
+                                                     noisy_sampling=noisy_sampling,
+                                                     sample_from_prior=generate_synthetic_data)
+        t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
+        bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
+                                          rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
-                                          max_box_size=self.max_box_size)
+                                          max_box_size=self.max_box_size,
+                                          convert_to_box=True)
 
-        # NMS + top-K operation
         with torch.no_grad():
 
+            # 4. From logit to binarized configuration of having an object at a certain location
             if generate_synthetic_data:
                 # sample from dpp prior
-                c_grid_before_nms_mcsamples = self.grid_dpp.sample(size=unet_prob_b1wh.size()).unsqueeze(dim=0)
+                c_grid_before_nms = self.grid_dpp.sample(size=unet_prob_b1wh.size())
             else:
                 # sample from posterior
-                prob_expanded = unet_prob_b1wh.expand([self.n_mc_samples] + list(unet_prob_b1wh.shape))
-                c_grid_before_nms_mcsamples = (torch.rand_like(prob_expanded) < prob_expanded)
-                if not noisy_sampling:
-                    c_grid_before_nms_mcsamples[0] = (prob_expanded[0] > 0.5)
+                c_grid_before_nms = (torch.rand_like(unet_prob_b1wh) < unet_prob_b1wh) if noisy_sampling \
+                    else (unet_prob_b1wh > 0.5)
 
-            # only one mcsamples is used downstream (note that this is the sample which can be noisy or not)
-            c_grid_before_nms = c_grid_before_nms_mcsamples[0]
-
-            # During pretraining I select the boxes according to: score = (1-a) * (c+p) + a * ranking
+            # 5. NMS + top-K operation
+            # During pretraining, annealing factor is annealed 1-> 0
+            # The boxes are selected according to:
+            # score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
+            annealing_factor = self.geco_annealing.get()
             if annealing_factor == 0:
+                # does not need to compute the ranking
                 prob_from_ranking_grid = torch.zeros_like(unet_prob_b1wh)
             else:
+                # compute the ranking
                 av_intensity_in_box_bn = compute_average_in_box(delta_imgs=(imgs_bcwh-out_background_bcwh).abs(),
                                                                 bounding_box=bounding_box_bn)
                 ranking_bn = compute_ranking(av_intensity_in_box_bn)
@@ -307,29 +431,33 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                     original_width=unet_prob_b1wh.shape[-2],
                                                                     original_height=unet_prob_b1wh.shape[-1])
 
-            score_grid = (1 - annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
-                         annealing_factor * 2 * prob_from_ranking_grid
+            # compute: score = (1 - annealing) * (unet_c + unet_prob) + annealing * ranking
+            score_grid = (1.0 - annealing_factor) * (c_grid_before_nms.float() + unet_prob_b1wh) + \
+                         annealing_factor * prob_from_ranking_grid
+
             combined_topk_only = topk_only or generate_synthetic_data  # if generating from DPP do not do NMS
             nms_output: NmsOutput = NonMaxSuppression.compute_mask_and_index(score=convert_to_box_list(score_grid).squeeze(dim=-1),
                                                                              bounding_box=bounding_box_bn,
                                                                              iom_threshold=iom_threshold,
                                                                              k_objects_max=k_objects_max,
                                                                              topk_only=combined_topk_only)
-            k_mask_grid = invert_convert_to_box_list(nms_output.k_mask_n.unsqueeze(dim=-1),
-                                                     original_width=score_grid.shape[-2],
-                                                     original_height=score_grid.shape[-1])
-            c_grid_after_nms = c_grid_before_nms * k_mask_grid
+            nms_mask = invert_convert_to_box_list(nms_output.chosen_mask.unsqueeze(dim=-1),
+                                                  original_width=score_grid.shape[-2],
+                                                  original_height=score_grid.shape[-1])
+            assert nms_mask.shape == c_grid_before_nms.shape
+            c_grid_after_nms = c_grid_before_nms * nms_mask
 
-        # Gather all relevant quantities from the selected boxes
+        # 6. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
         bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
                                  by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
+        assert unet_prob_b1wh.shape == c_grid_after_nms.shape
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere_grid.kl).mean(dim=-1),
-                                    dim=-1, index=nms_output.indices_k)
+        c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
-        # Crop the unet_features according to the selected boxes
+        # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape
         unet_features_expanded = unet_output.features.unsqueeze(-4).expand(batch_size, k_boxes, -1, -1, -1)
         cropped_feature_map = Cropper.crop(bounding_box=bounding_box_bk,
@@ -337,180 +465,350 @@ class InferenceAndGeneration(torch.nn.Module):
                                            width_small=self.glimpse_size,
                                            height_small=self.glimpse_size)
 
-        # 6. Encode, sample z and decode to big images and big weights
-        # Note that here mc_samples is always 1 and the dimension is squeezed
-        zinstance_posterior: ZZ = self.encoder_zinstance.forward(cropped_feature_map)
-        zinstance_few: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_posterior.mu,
-                                                            posterior_std=zinstance_posterior.std,
-                                                            prior_mu=torch.zeros_like(zinstance_posterior.mu),
-                                                            prior_std=torch.ones_like(zinstance_posterior.std),
-                                                            noisy_sampling=noisy_sampling,
-                                                            sample_from_prior=generate_synthetic_data,
-                                                            mc_samples=1,
-                                                            squeeze_mc=True)
-        zinstance_kl_bk = zinstance_few.kl.mean(dim=-1)  # mean over latent dimension
+        # 8. Encode, Sample, Decode zinstance
+        zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
+        zinstance_mu, zinstance_std = torch.split(zinstance_tmp, split_size_or_sections=zinstance_tmp.shape[-1]//2, dim=-1)
+        zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
+                                                        posterior_std=F.softplus(zinstance_std)+1E-3,
+                                                        noisy_sampling=noisy_sampling,
+                                                        sample_from_prior=generate_synthetic_data)
+        zinstance_kl_bk = zinstance.kl.mean(dim=-1)  # average over the latent dimension
+        small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
+                                                        split_size_or_sections=(ch_raw_image, 1),
+                                                        dim=-3)
 
-        # Note that the last channel is a mask (i.e. there is a sigmoid non-linearity applied)
-        # It is important that the sigmoid is applied before uncropping on a zero-canvas so that mask is zero everywhere
-        # except inside the bounding boxes
-        small_stuff_tmp = self.decoder_zinstance.forward(zinstance_few.sample)
-        small_img, small_weight = torch.split(small_stuff_tmp,
-                                              split_size_or_sections=(small_stuff_tmp.shape[-3] - 1, 1),
-                                              dim=-3)
+        # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                     small_stuff=torch.cat((small_img, torch.sigmoid(small_weight)), dim=-3),
+                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out),
+                                                            torch.ones_like(small_weights_out)), dim=-3),
                                      width_big=width_raw_image,
                                      height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
-        out_img_bkcwh, out_mask_bk1wh = torch.split(big_stuff,
-                                                    split_size_or_sections=(big_stuff.shape[-3] - 1, 1),
-                                                    dim=-3)
+        out_img_bkcwh,  out_mask_bk1wh, out_square_bk1wh = torch.split(big_stuff,
+                                                                       split_size_or_sections=(ch_raw_image, 1, 1),
+                                                                       dim=-3)
 
-        # Compute the mixing (using a softmax-like function)
-        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh
+        # 10. Compute the mixing (using a softmax-like function).
+        # Note that I add a small value to both foreground and background so that they can learn
+        p_times_mask_bk1wh = prob_bk[..., None, None, None] * out_mask_bk1wh + 1E-3 * out_square_bk1wh
         mixing_bk1wh = p_times_mask_bk1wh / torch.sum(p_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)  # sum over k_boxes
-        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
 
-        # Compute mse
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_fg).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_bg).pow(2)
-        mse_av = torch.mean((mixing_bk1wh * mse_fg_bkcwh).sum(dim=-4) + mixing_bg_b1wh * mse_bg_bcwh)
+        # Mask overlap . Note that only active masks contribute (b/c c_detahced_bk)
+        tmp_bk1wh = c_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
+        tmp_mixing_bk1wh = tmp_bk1wh / torch.sum(tmp_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        mask_overlap_b1wh = tmp_mixing_bk1wh.sum(dim=-4).pow(2) - tmp_mixing_bk1wh.pow(2).sum(dim=-4)
+        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
+        # Bounding box overlap. Note that only active boxes contribute (b/c d_detached_bk)
+        box_bk1wh = c_detached_bk[..., None, None, None].detach() * out_square_bk1wh
+        box_overlap = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
+        box_overlap_cost = self.box_overlap_strength * box_overlap.mean()
+
+        # 12. Observation model
+        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
+        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
+        mse_bcwh = (1.0+1E-3) * mse_bg_bcwh + \
+                   torch.sum(mixing_bk1wh * (mse_fg_bkcwh - mse_bg_bcwh.unsqueeze(dim=-4)), dim=-4)
+        mse_av = mse_bcwh.mean()
+
+        # 13. Cost for bounding boxes not being properly fitted around the object
+        bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
+                                     bounding_boxes_k=bounding_box_bk,
+                                     pad_size=self.pad_size_bb,
+                                     min_box_size=self.min_box_size,
+                                     max_box_size=self.max_box_size)
+
+        bb_regression_L2_bk = (bb_ideal_bk.bx - bounding_box_bk.bx).pow(2) + \
+                              (bb_ideal_bk.by - bounding_box_bk.by).pow(2) + \
+                              (bb_ideal_bk.bw - bounding_box_bk.bw).pow(2) + \
+                              (bb_ideal_bk.bh - bounding_box_bk.bh).pow(2)
+
+        # Note that all boxes (both active and inactive) need to be fitted to the mask they contain
+        bb_regression_cost = self.bb_regression_strength * bb_regression_L2_bk.sum() / batch_size
+
+        # 13. Compute the KL divergence between berboulli posterior and DPP prior
         # Compute KL divergence between the DPP prior and the posterior:
-        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ]
-        #           = - H_q(a) - \sum_c q(c|a) * log_p(c|DPP)
-        # The first term is the negative entropy of the Bernoulli distribution. It can be computed analytically and its
-        # minimization w.r.t. a lead to high entropy posteriors.
-        # The derivative of the second term w.r.t. DPP can be estimated by simple MONTE CARLO samples and makes
-        # DPP prior parameters adjust to the seen configurations.
-        # The derivative of the second term w.r.t. a can be estimated by simple REINFORCE ESTIMATOR and makes
+        # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
+        # The first term is the negative entropy of the Bernoulli distribution.
+        # It can be computed analytically and its minimization w.r.t. "a" leads to high entropy posteriors.
+        # The second term can be estimated by REINFORCE ESTIMATOR and makes
         # the posterior have more weight on configuration which are likely under the prior
-        entropy_b = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        logp_ber_before_nms_mb = compute_logp_bernoulli(c=c_grid_before_nms_mcsamples.detach(),
-                                                        logit=unet_output.logit).sum(dim=(-1, -2, -3))
-        with torch.no_grad():
-            logp_dpp_before_nms_mb = self.grid_dpp.log_prob(value=c_grid_before_nms_mcsamples.squeeze(-3).detach())
-            baseline_b = logp_dpp_before_nms_mb.mean(dim=-2)
-            d_mb = (logp_dpp_before_nms_mb - baseline_b)
-            distance_from_reinforce_baseline = d_mb.abs().mean()  # for debug
-        reinforce_mb = logp_ber_before_nms_mb * d_mb
 
+        # A. Analytical expression for entropy
+        entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
+
+        # B. Reinforce estimator
+        prob_expanded_nb1wh = unet_prob_b1wh.expand([self.n_mc_samples, -1, -1, -1, -1])  # keep: batch,ch,w,h
+        c_mcsamples_nb1wh = (torch.rand_like(prob_expanded_nb1wh) < prob_expanded_nb1wh)
+        logp_ber_nb = compute_logp_bernoulli(c=c_mcsamples_nb1wh.detach(),
+                                             logit=unet_output.logit).sum(dim=(-1, -2, -3))
+        with torch.no_grad():
+            # These 3 lines are the reinforce estimator
+            logp_dpp_nb = self.grid_dpp.log_prob(value=c_mcsamples_nb1wh.squeeze(dim=-3).detach())
+            baseline_b = logp_dpp_nb.mean(dim=0)  # average of the different MC samples
+            d_nb = (logp_dpp_nb - baseline_b)
+        reinforce_ber = (logp_ber_nb * d_nb.detach()).mean()
+
+        # C. Make the DPP adjust to the configuration after NMS
         if self.grid_dpp.learnable_params:
-            logp_dpp_after_nms_mb = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach())
+            # DPP is trainable
+            log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
         else:
-            logp_dpp_after_nms_mb = torch.zeros_like(entropy_b)
+            # DPP is not trainable
+            log_dpp_after_nms = torch.zeros_like(entropy_ber)
 
-        logit_kl = - (entropy_b + logp_dpp_after_nms_mb + reinforce_mb).mean()
+        # D> Put everything together
+        logit_kl_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
 
-        # KL is at full strength if the object is certain and lower strength otherwise.
-        # I clamp indicator_bk to 0.1 to avoid numerical instabilities.
-        indicator_bk = prob_bk.clamp(min=0.1).detach()
-        zwhere_kl = (zwhere_kl_bk * indicator_bk).sum(dim=-1).mean()
-        zinstance_kl = (zinstance_kl_bk * indicator_bk).sum(dim=-1).mean()
 
-        # Loss for non-overlapping masks
-        # TODO: I observe that this loss makes the mask shrink and the fg_fraction go down.
-        #   The intended behavior is to avoid the overlaps not to drive down the fg_fraction.
-        #   Maybe I should write this loss function in terms of mixing.
-        mask_overlap_b1wh = mixing_bk1wh.sum(dim=-4).pow(2) - mixing_bk1wh.pow(2).sum(dim=-4)
-        loss_mask_overlap = self.mask_overlap_strength * torch.sum(mask_overlap_b1wh, dim=(-1, -2, -3)).mean()
+        # I want the KL to be multiplied by one_attached so that:
+        # 1. I am always trying to minimize KL
+        # 2. There is incentive to shut-off some objects
 
-        # Loss to ideal bounding boxes
+        # TODO: which indicator should I use? p or c or 1
+        indicator_detached_bk = torch.ones_like(prob_bk).detach()  # or c_detached?
+        indicator_attached_bk = (indicator_detached_bk - prob_bk).detach() + prob_bk
+
+        zbg_kl_av = zbg.kl.mean()
+        area_bk = (bounding_box_bk.bw * bounding_box_bk.bh).detach()
+        zinstance_kl_av_learnz = (area_bk * zinstance_kl_bk * indicator_detached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
+        zwhere_kl_av_learnz = (zwhere_kl_bk * indicator_detached_bk).sum() / batch_size
+        zinstance_kl_av_learnc = (area_bk * zinstance_kl_bk.detach() * indicator_attached_bk).sum() / (batch_size * width_raw_image * height_raw_image)
+        zwhere_kl_av_learnc = (zwhere_kl_bk.detach() * indicator_attached_bk).sum() / batch_size
+
+        kl_learnc = logit_kl_av + zinstance_kl_av_learnc + zwhere_kl_av_learnc
+        kl_learnz = zbg_kl_av + zinstance_kl_av_learnz + zwhere_kl_av_learnz
+
+        # GECO (i.e. make the hyper-parameters dynamical)
         with torch.no_grad():
-            # This is a trick to identify active boxes, i.e boxes which are turned on and whose mask is not stupid
-            # (like a featureless box)
-            area_mask_bk = (mixing_bk1wh > 0.5).sum(dim=(-1, -2, -3)).float()
-            area_bb_bk = bounding_box_bk.bw * bounding_box_bk.bh
-            ratio_bk = area_mask_bk / area_bb_bk
-            is_active_bk = (ratio_bk < 0.8) * (prob_bk > 0.5)
-            area_mask_over_area_bb_av = (is_active_bk * ratio_bk).sum() / is_active_bk.sum().clamp(min=1.0)
-            similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
-        bb_ideal_bk, bb_regression_bk = optimal_bb_and_bb_regression_penalty(mixing_k1wh=mixing_bk1wh,
-                                                                             bounding_boxes_k=bounding_box_bk,
-                                                                             pad_size=self.pad_size_bb,
-                                                                             min_box_size=self.min_box_size,
-                                                                             max_box_size=self.max_box_size)
-        loss_bb_regression = self.bb_regression_strength * (is_active_bk * bb_regression_bk).sum(dim=-1).mean()
 
-        # GECO
-        with torch.no_grad():
-            # MSE
-            self.geco_rawlambda_mse.data.clamp_(min=self.geco_rawlambda_mse_min,
-                                                max=self.geco_rawlambda_mse_max)
-            lambda_mse = linear_exp_activation(self.geco_rawlambda_mse.data) * \
-                         torch.sign(mse_av - self.geco_target_mse_min)
-            mse_in_range = (mse_av > self.geco_target_mse_min) & \
-                           (mse_av < self.geco_target_mse_max)
-            g_mse = 2.0 * mse_in_range - 1.0
+            # Preliminaries
+            # nobj_av = prob_bk.sum(dim=-1).mean()
+            nobj_av = c_detached_bk.sum(dim=-1).float().mean()
+            nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * (nobj_av > self.target_nobj_av_per_patch_min)
+
+            mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
+                                  dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
+            mse_fg_av = torch.mean(mse_fg_bk)
+
+            fgfraction_smooth_av = mixing_fg_b1wh.mean()
+            fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
+            fgfraction_av = torch.min(fgfraction_hard_av, fgfraction_smooth_av)
+            fgfraction_in_range = (fgfraction_av < self.target_fgfraction_max) * (fgfraction_av > self.target_fgfraction_min)
+
+            # Design the logic:
+            # if constraint < 0, parameter will be decreased
+            # if constraint > 0, parameter will be increased
+            # if constraint = 0, parameter will stay the same
+
+            # ANNEALING
+            decrease_annealing = (mse_av < self.target_mse_max) * nobj_in_range * fgfraction_in_range
+            constraint_annealing = - 1.0 * decrease_annealing
+
+            # NOBJ
+            constraint_nobj_min = 1.0 - (nobj_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
+            constraint_nobj_max = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
 
             # FG_FRACTION
-            self.geco_rawlambda_fgfraction.data.clamp_(min=self.geco_rawlambda_fgfraction_min,
-                                                       max=self.geco_rawlambda_fgfraction_max)
-            fgfraction_av = mixing_fg_b1wh.mean()
-            lambda_fgfraction = linear_exp_activation(self.geco_rawlambda_fgfraction.data) * \
-                                torch.sign(fgfraction_av - self.geco_target_fgfraction_min)
-            fgfraction_in_range = (fgfraction_av > self.geco_target_fgfraction_min) & \
-                                  (fgfraction_av < self.geco_target_fgfraction_max)
-            g_fgfraction = 2.0 * fgfraction_in_range - 1.0
+            constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
+            constraint_fgfraction_max = (fgfraction_av / self.target_fgfraction_max) - 1.0  # positive if fgfraction > target_max
 
-            # NCELL_AV
-            lambda_ncell = torch.tensor(0.0)
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data)
-            # self.geco_rawlambda_ncell.data.clamp_(min=self.geco_rawlambda_ncell_min,
-            #                                       max=self.geco_rawlambda_ncell_max)
-            # ncell_av = (prob_bk > 0.5).float().sum(dim=-1).mean()
-            # lambda_ncell = linear_exp_activation(self.geco_rawlambda_ncell.data) * \
-            #                torch.sign(ncell_av - self.geco_target_ncell_min)
-            # ncell_in_range = (ncell_av > self.geco_target_ncell_min) & \
-            #                  (ncell_av < self.geco_target_ncell_max)
-            # g_ncell = 2.0 * ncell_in_range - 1.0
+            # KL_learn_z
+            constraint_kl_learnz = 1.0 - (mse_fg_av / self.target_mse_min)  # positive if mse_fg_av < target_min
 
-        # Outside torch.no_grad()
-        # TODO: insert loss_geco_ncell back
-        loss_geco_mse = self.geco_rawlambda_mse * g_mse + lambda_mse.detach() * mse_av
-        loss_geco_fgfraction = self.geco_rawlambda_fgfraction * g_fgfraction + \
-                               lambda_fgfraction.detach() * mixing_fg_b1wh.sum(dim=(-1, -2, -3)).mean()
-        # loss_geco_ncell = self.geco_rawlambda_ncell * g_ncell + \
-        #                   lambda_ncell.detach() * unet_prob_b1wh.sum(dim=(-1, -2, -3)).mean()
+            # KL_learn_c
+            constraint_kl_learnc = (self.target_mse_min - mse_av).clamp(min=0) - \
+                                   (mse_av - self.target_mse_max).clamp(min=0)
 
-        # Add all the losses together
-        # TODO: additional losses should be multiplied by geco_lambda_mse
-        loss = loss_mask_overlap + loss_bb_regression + \
-               logit_kl + zbg_kl + zwhere_kl + zinstance_kl + \
-               loss_geco_mse + loss_geco_fgfraction  # + loss_geco_ncell
+            #print("DEBUG")
+            #print("constraint_annealing", constraint_annealing)
+            #print("constraint_nobj_min", constraint_nobj_min)
+            #print("constraint_nobj_max", constraint_nobj_max)
+            #print("constraint_fgfraction_min", constraint_fgfraction_min)
+            #print("constraint_fgfraction_max", constraint_fgfraction_max)
+            #print("constraint_kl_learnz", constraint_kl_learnz)
+            #print("constraint_kl_learnc", constraint_kl_learnc)
 
-        inference = Inference(logit_grid=unet_output.logit,
-                              prob_from_ranking_grid=prob_from_ranking_grid,
-                              background_cwh=out_background_bcwh,
-                              foreground_kcwh=out_img_bkcwh,
-                              mask_overlap_1wh=mask_overlap_b1wh,
-                              mixing_k1wh=mixing_bk1wh,
-                              sample_c_grid_before_nms=c_grid_before_nms,
-                              sample_c_grid_after_nms=c_grid_after_nms,
-                              sample_prob_k=prob_bk,
+
+            # decrease_nobj_min = nobj_grid_av > self.target_nobj_av_per_patch_min
+            # increase_nobj_min = nobj_grid_av < self.target_nobj_av_per_patch_min
+            # constraint_nobj_min = 1.0 * increase_nobj_min - 1.0 * decrease_nobj_min
+            # decrease_nobj_max = nobj_grid_av < self.target_nobj_av_per_patch_max
+            # increase_nobj_max = nobj_grid_av > self.target_nobj_av_per_patch_max
+            # constraint_nobj_max = 1.0 * increase_nobj_max - 1.0 * decrease_nobj_max
+            # decrease_fgfraction_min = fgfraction_av > self.target_fgfraction_min
+            # increase_fgfraction_min = fgfraction_av < self.target_fgfraction_min
+            # decrease_fgfraction_max = fgfraction_av < self.target_fgfraction_max
+            # increase_fgfraction_max = fgfraction_av > self.target_fgfraction_max
+            # constraint_fgfraction_max = 1.0 * increase_fgfraction_max - 1.0 * decrease_fgfraction_max
+            # increase_kl_learnz = (mse_fg_av < self.target_mse_min)
+            # decrease_kl_learnz = (mse_fg_av > self.target_mse_min)
+
+        # Produce both the loss and the hyperparameter (I can raise constraint to some odd power to preserve the sign)
+        geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
+        geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
+        geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
+        geco_kl_learnz: GECO = self.geco_kl_learnz.forward(constraint=constraint_kl_learnz)
+        geco_kl_learnc: GECO = self.geco_kl_learnc.forward(constraint=constraint_kl_learnc)
+
+        # Put all the losses together
+        loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+                    geco_nobj_max.loss + geco_nobj_min.loss + geco_kl_learnc.loss + geco_kl_learnz.loss
+
+        # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
+        lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) / self.sigma_mse
+        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
+
+        # Make sure that logit can not become too large or too small
+        logit_min = -8.0
+        logit_max = 8.0
+        all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                         (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
+        logit_target_small = -6.0
+        logit_target_large = 6.0
+
+        loss_vae = mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost + \
+                   geco_kl_learnz.hyperparam * (kl_learnz + bb_regression_cost) + \
+                   geco_kl_learnc.hyperparam * kl_learnc + \
+                   geco_nobj_max.hyperparam * (unet_output.logit - logit_target_small).abs().mean() + \
+                   geco_nobj_min.hyperparam * (unet_output.logit - logit_target_large).abs().mean() + \
+                   all_logit_in_range
+
+        loss_tot = loss_vae + loss_geco
+
+        inference = Inference(logit_grid=unet_output.logit.detach(),
+                              prob_from_ranking_grid=prob_from_ranking_grid.detach(),
+                              background_cwh=out_background_bcwh.detach(),
+                              foreground_kcwh=out_img_bkcwh.detach(),
+                              mask_overlap_1wh=mask_overlap_b1wh.detach(),
+                              mixing_k1wh=mixing_bk1wh.detach(),
+                              sample_c_grid_before_nms=c_grid_before_nms.detach(),
+                              sample_c_grid_after_nms=c_grid_after_nms.detach(),
+                              sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
-                              sample_bb_ideal_k=bb_ideal_bk)
+                              sample_bb_ideal_k=bb_ideal_bk,
+                              feature_map=unet_output.features.detach())
 
-        metric = MetricMiniBatch(loss=loss,
+        similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
+
+
+        metric = MetricMiniBatch(loss=loss_tot,
+                                 # monitoring
                                  mse_av=mse_av.detach().item(),
-                                 kl_logit=logit_kl.detach().item(),
-                                 kl_zinstance=zinstance_kl.detach().item(),
-                                 kl_zbg=zbg_kl.detach().item(),
-                                 kl_zwhere=zwhere_kl.detach().item(),
-                                 cost_mask_overlap_av=loss_mask_overlap.detach().item(),
-                                 cost_bb_regression_av=loss_bb_regression.detach().item(),
-                                 ncell_av=(prob_bk > 0.5).float().sum(dim=-1).mean().detach().item(),
-                                 prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
-                                 distance_from_reinforce_baseline=distance_from_reinforce_baseline.detach().item(),
-                                 fgfraction_av=fgfraction_av.detach().item(),
-                                 area_mask_over_area_bb_av=area_mask_over_area_bb_av.detach().item(),
-                                 lambda_mse=lambda_mse.detach().item(),
-                                 lambda_ncell=lambda_ncell.detach().item(),
-                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
+                                 mse_fg_av=mse_fg_av.detach().item(),
+                                 # number of objects
+                                 mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
+                                 fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
+                                 fgfraction_hard_av=fgfraction_hard_av.detach().item(),
+                                 nobj_hard_av=c_detached_bk.sum(dim=-1).float().mean().detach().item(),
+                                 nobj_soft_av=prob_bk.sum(dim=-1).mean().detach().item(),
+                                 prob_grid_av=unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean().detach().item(),
+                                 # terms in the loss function
+                                 cost_mse=mse_av.detach().item(),
+                                 cost_mask_overlap_av=mask_overlap_cost.detach().item(),
+                                 cost_box_overlap_av=box_overlap_cost.detach().item(),
+                                 cost_fgfraction=fgfraction_coupling.detach().item(),
+                                 cost_bb_regression_av=bb_regression_cost.detach().item(),
+                                 kl_zinstance=zinstance_kl_av_learnc.detach().item(),
+                                 kl_zbg=zbg_kl_av.detach().item(),
+                                 kl_zwhere=zwhere_kl_av_learnc.detach().item(),
+                                 kl_logit=logit_kl_av.detach().item(),
+                                 # debug
+                                 logit_min=unet_output.logit.min().detach().item(),
+                                 logit_mean=unet_output.logit.mean().detach().item(),
+                                 logit_max=unet_output.logit.max().detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
+                                 lambda_annealing=geco_annealing.hyperparam.detach().item(),
+                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
+                                 lambda_kl_learnz=geco_kl_learnz.hyperparam.detach().item(),
+                                 lambda_kl_learnc=geco_kl_learnc.hyperparam.detach().item(),
+                                 lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
+                                 lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
+                                 entropy_ber=entropy_ber.detach().item(),
+                                 reinforce_ber=reinforce_ber.detach().item(),
+                                 # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
                                  accuracy=-1.0)
 
         return inference, metric
+
+
+#########      with torch.no_grad():
+#########            # Convert bounding_boxes to the t_variable in [0,1]
+#########            tt_ideal_bk = bb_to_tt(bb=bb_ideal_bk,
+#########                                   rawimage_size=imgs_bcwh.shape[-2:],
+#########                                   tgrid_size=t_grid.shape[-2:],
+#########                                   min_box_size=self.min_box_size,
+#########                                   max_box_size=self.max_box_size)
+#########
+#########            # I now know the K ideal values of t_variable.
+#########            # I fill now a grid with the default and ideal value of t_variable
+#########            bb_mask_grid = torch.zeros_like(t_grid)
+#########            tgrid_ideal = torch.zeros_like(t_grid)
+#########            tgrid_ideal[:2] = 0.5  # i.e. default center of the box is in the middle of cell
+#########            tgrid_ideal[-2:] = 0.5  # i.e. default size of bounding boxes is average
+#########            # tgrid_ideal[-2:] = 0.0 # i.e. default size of bounding boxes is minimal
+#########            # tgrid_ideal[-2:] = 1.0 # i.e. default size of bounding boxes is maximal
+#########
+#########            # TODO: double check this
+#########            assert (tt_ideal_bk.ix >= 0).all() and (tt_ideal_bk.ix < tgrid_ideal.shape[-2]).all()
+#########            assert (tt_ideal_bk.iy >= 0).all() and (tt_ideal_bk.iy < tgrid_ideal.shape[-1]).all()
+#########            assert torch.isfinite(tt_ideal_bk.tx).all()
+#########            assert torch.isfinite(tt_ideal_bk.ty).all()
+#########            assert torch.isfinite(tt_ideal_bk.tw).all()
+#########            assert torch.isfinite(tt_ideal_bk.th).all()
+#########
+#########            b_index = torch.arange(tt_ideal_bk.ix.shape[0]).unsqueeze(-1).expand_as(tt_ideal_bk.ix)
+#########            bb_mask_grid[b_index, :, tt_ideal_bk.ix, tt_ideal_bk.iy] = 1.0
+#########            tgrid_ideal[b_index, 0, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tx
+#########            tgrid_ideal[b_index, 1, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.ty
+#########            tgrid_ideal[b_index, 2, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.tw
+#########            tgrid_ideal[b_index, 3, tt_ideal_bk.ix, tt_ideal_bk.iy] = tt_ideal_bk.th
+#######
+######## Outside torch.no_grad() compute the bb_regression_cost
+######## TODO: Compute regression for all or only some of the boxes?
+######## bb_regression_cost = torch.mean(bb_mask_grid * (t_grid - tgrid_ideal.detach()).pow(2))
+######## bb_regression_cost = (t_grid - tgrid_ideal.detach()).pow(2).mean()
+
+
+#######        # Note that this dynamical parameter can be BOTH POSITIVE AND NEGATIVE
+#######        fgfrac_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
+#######        fgfraction_in_range = (fgfrac_hard_av > self.target_fgfraction_min) * (fgfrac_hard_av < self.target_fgfraction_max)
+#######        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=1.0-2.0*(fgfrac_hard_av > self.target_fgfraction_min))
+#######        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=1.0-2.0*(fgfrac_hard_av < self.target_fgfraction_max))
+#######        geco_fgfrac_hyperparam = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
+#######
+#######        # REINFORCE
+#######        # Reinforce starts at ONE and becomes ZERO at the end of the annealing procedure
+#######        # Reducing geco_reinforce.hyperparam leads to fewer objects
+#######        nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
+#######        nobj_grid_in_range = (nobj_grid_av > target_nobj_min) * (nobj_grid_av < target_nobj_max)
+#######        nobj_grid_not_too_small = (nobj_grid_av > target_nobj_min)
+#######        nobj_grid_too_small = (nobj_grid_av < target_nobj_min)
+#######
+#######        nobj_av = (prob_bk > 0.5).sum(dim=-1).float().mean()
+#######        nobj_too_large = (nobj_av > target_nobj_max)
+#######        nobj_too_small = (nobj_av < target_nobj_min)
+#######
+#######        decrease_reinforce = (nobj_grid_not_too_small * fgfraction_in_range * mse_in_range) or nobj_too_large
+#######        increase_reinforce = nobj_grid_too_small or nobj_too_small
+#######        geco_reinforce: GECO = self.geco_reinforce.forward(constraint=1.0*increase_reinforce - 1.0*decrease_reinforce)
+#######
+#######        # ANNEALING
+#######        # Annealing starts at ONE and becomes ZERO at the end of the annealing procedure
+#######        # Reducing geco_annealing_factor.hyperparam force the model to learn to localize
+#######        # Note that annealing can never be increased. It decrease monotonically
+#######        decrease_annealing = mse_in_range * nobj_grid_in_range * fgfraction_in_range
+#######        geco_annealing: GECO = self.geco_annealing_factor.forward(constraint=-1.0*decrease_annealing)
+#######
+#######        # MSE
+#######        decrease_lambda_mse = (mse_in_range * nobj_grid_in_range * fgfraction_in_range) or \
+#######                              mse_too_small or \
+#######                              (nobj_too_large * (geco_reinforce.hyperparam == 0))
+#######        increase_lambda_mse = mse_too_large
+#######        geco_mse: GECO = self.geco_mse_max.forward(constraint=1.0*increase_lambda_mse-1.0*decrease_lambda_mse)
+#######

@@ -143,16 +143,15 @@ class Partition(NamedTuple):
 #  ------- Stuff Related to Processing (i.e. CompositionalVAE) ----  #
 #  ----------------------------------------------------------------  #
 
+class GECO(NamedTuple):
+    loss: torch.Tensor
+    hyperparam: torch.Tensor
+
 
 class DIST(NamedTuple):
     """ Container for distribution sample and KL """
-    sample: torch.Tensor
+    value: torch.Tensor
     kl: torch.Tensor
-
-
-class ZZ(NamedTuple):
-    mu: torch.Tensor
-    std: torch.Tensor
 
 
 class BB(NamedTuple):
@@ -162,9 +161,19 @@ class BB(NamedTuple):
     bh: torch.Tensor
 
 
+class TT(NamedTuple):
+    tx: torch.Tensor
+    ty: torch.Tensor
+    tw: torch.Tensor
+    th: torch.Tensor
+    ix: torch.Tensor
+    iy: torch.Tensor
+
+
 class NmsOutput(NamedTuple):
-    k_mask_n: torch.Tensor  # mask with exactly k ones
+    chosen_mask: torch.Tensor  # mask with exactly k ones
     indices_k: torch.Tensor
+    score_k: torch.Tensor # score of the chosen object
 
 
 class SparseSimilarity(NamedTuple):
@@ -183,8 +192,8 @@ class Segmentation(NamedTuple):
 
 
 class UNEToutput(NamedTuple):
-    zwhere: ZZ
-    zbg: ZZ
+    zwhere: torch.Tensor
+    zbg: torch.Tensor
     logit: torch.Tensor
     features: torch.Tensor
 
@@ -202,6 +211,8 @@ class Inference(NamedTuple):
     sample_prob_k: torch.Tensor
     sample_bb_k: BB
     sample_bb_ideal_k: BB
+    # Debug
+    feature_map: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):
@@ -218,27 +229,41 @@ class MetricMiniBatch(NamedTuple):
     Note:
         All entries should be scalars obtained by averaging over minibatch
     """
-
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
+    # monitoring
     mse_av: float
-    kl_logit: float
+    mse_fg_av: float
+    mixing_fg_av: float
+    fgfraction_smooth_av: float
+    fgfraction_hard_av: float
+    nobj_hard_av: float
+    nobj_soft_av: float
+    prob_grid_av: float
+    # term in the loss function
+    cost_mse: float
+    cost_mask_overlap_av: float
+    cost_box_overlap_av: float
+    cost_fgfraction: float
+    # cost_nobj: float
+    cost_bb_regression_av: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
-    cost_mask_overlap_av: float
-    cost_bb_regression_av: float
-    ncell_av: float
-    prob_av: float
-    distance_from_reinforce_baseline: float
-    fgfraction_av: float
-    area_mask_over_area_bb_av: float
-    # geco
-    lambda_mse: float
-    lambda_ncell: float
-    lambda_fgfraction: float
-    # I am learning the right things?
+    kl_logit: float
+    # debug
+    logit_min: float
+    logit_mean: float
+    logit_max: float
     similarity_l: float
     similarity_w: float
+    lambda_annealing: float
+    lambda_fgfraction: float
+    lambda_kl_learnz: float
+    lambda_kl_learnc: float
+    lambda_nobj_max: float
+    lambda_nobj_min: float
+    entropy_ber: float
+    reinforce_ber: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray
@@ -246,28 +271,25 @@ class MetricMiniBatch(NamedTuple):
 
     def pretty_print(self, epoch: int = 0) -> str:
         s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
-             bb_regression={4:.3f}, fg_fraction_av={5:.3f}, n_cell_av={6:.3f}, lambda_mse={7:.3f}, \
-             lambda_ncell={8:.3f}, lambda_fgfraction={9:.3f}".format(epoch,
-                                                                     self.loss,
-                                                                     self.mse_av,
-                                                                     self.cost_mask_overlap_av,
-                                                                     self.cost_bb_regression_av,
-                                                                     self.fgfraction_av,
-                                                                     self.ncell_av,
-                                                                     self.lambda_mse,
-                                                                     self.lambda_ncell,
-                                                                     self.lambda_fgfraction)
+             bb_regression={4:.3f}, fgfraction_hard_av={5:.3f}, n_cell_av={6:.3f}".format(epoch,
+                                                                                          self.loss,
+                                                                                          self.mse_av,
+                                                                                          self.cost_mask_overlap_av,
+                                                                                          self.cost_bb_regression_av,
+                                                                                          self.fgfraction_hard_av,
+                                                                                          self.nobj_hard_av)
         return s
 
 
 class Output(NamedTuple):
     """
-    Container for the results of the call to `process_batch_imgs`.
+    Container with the output of the :method:`process_batch_imgs`.
 
-    Attributes:
+    Args:
         metrics: element of :class:`MetricMiniBatch` with all quantities worth measuring during training of the model
-        inference: element of :class:`Inference`
+        inference: element of :class:`Inference` with many latent variable (not necessarely scalar quantities)
         imgs: reconstructed images. If the reconstruction was not computed this is set to None
+        bb_imgs: input images with overimposed the bounding box (both the inferreed ones and the optimal one)
     """
     metrics: MetricMiniBatch
     inference: Inference

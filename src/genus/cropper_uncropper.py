@@ -37,7 +37,7 @@ class Cropper(object):
                                      device=big_stuff.device).reshape([-1] + small_dependent_dim)
 
         grid = F.affine_grid(affine, list(cropped_images.shape), align_corners=True)
-        cropped_images = F.grid_sample(big_stuff, grid, mode='bilinear', padding_mode='reflection', align_corners=True)
+        cropped_images = F.grid_sample(big_stuff, grid, mode='bilinear', padding_mode='zeros', align_corners=True)
         return cropped_images.reshape(independent_dim + small_dependent_dim)
 
     @staticmethod

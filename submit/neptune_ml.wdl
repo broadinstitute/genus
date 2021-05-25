@@ -18,20 +18,28 @@ task train {
 
 
     command <<<
+ 
         exec_dir=$(pwd)
         echo "--> $exec_dir"
         echo "START --> Content of exectution dir"
         echo $(ls)
         
-        # 1. checkout the repo in the checkout_dir
-        set -e
+        
+        # 2. clone the repository in the checkout_dir
+        # for public repository use:
         git clone ~{git_repo} ./checkout_dir
+        # for private repository use:
+        # github_token=$(cat ~{credentials_json} | grep -o '"GITHUB_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$' | sed 's/"//g')
+        # git_repo_with_token=$(echo ~{git_repo} | sed "s/github/$github_token@github/")
+        # git clone $git_repo_with_token ./checkout_dir 
+
+        # 3. checkout the branch
         cd ./checkout_dir
         git checkout ~{git_branch_or_commit}
         echo "AFTER GIT --> Content of checkout dir"
         echo $(ls)
         
-        # 2. link the file which have been localized to checkout_dir/src
+        # 4. link the file which have been localized to checkout_dir/src
         # and give them the name the main.py expects
         ln -s ~{ML_config} ./src/config.yaml
         ln -s ~{data_train} ./src/data_train.pt
@@ -41,11 +49,10 @@ task train {
         echo "AFTER CHANGING NAMES --> Content of checkout dir"
         echo $(ls)
 
-        # 3. run python code only if NEPTUNE credentials are found
-        # extract neptune_token from json file using regexpression
-        token=$(cat ~{credentials_json} | grep -o '"NEPTUNE_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$')
-        if [ ! -z $token ]; then
-           export NEPTUNE_API_TOKEN=$token
+        # 5. run python code only if NEPTUNE credentials are found
+        neptune_token=$(cat ~{credentials_json} | grep -o '"NEPTUNE_API_TOKEN"\s*:\s*"[^"]*"' | grep -o '"[^"]*"$')
+        if [ ! -z $neptune_token ]; then
+           export NEPTUNE_API_TOKEN=$neptune_token
            cd ./src 
            python ~{main_file_name}
         fi
@@ -58,7 +65,7 @@ task train {
 #    }
     
     runtime {
-         docker: "us.gcr.io/broad-dsde-methods/genus:latest"
+         docker: "us.gcr.io/broad-dsde-methods/genus:0.0.2"
          bootDiskSizeGb: 100
          memory: "26G"
          cpu: 4
