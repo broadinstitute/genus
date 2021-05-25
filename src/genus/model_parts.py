@@ -584,6 +584,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # Preliminaries
             # nobj_av = prob_bk.sum(dim=-1).mean()
+            nobj_grid_before_nms = c_grid_before_nms.sum(dim=(-1,-2,-3)).float().mean()
             nobj_av = c_detached_bk.sum(dim=-1).float().mean()
             nobj_in_range = (nobj_av < self.target_nobj_av_per_patch_max) * (nobj_av > self.target_nobj_av_per_patch_min)
 
@@ -606,8 +607,10 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_annealing = - 1.0 * decrease_annealing
 
             # NOBJ
+            constraint_nobj_max_v1 = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
+            constraint_nobj_max_v2 = (0.5 * nobj_grid_before_nms / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
+            constraint_nobj_max = max(constraint_nobj_max_v1, constraint_nobj_max_v2)
             constraint_nobj_min = 1.0 - (nobj_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
-            constraint_nobj_max = (nobj_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
 
             # FG_FRACTION
             constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
