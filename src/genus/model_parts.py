@@ -618,6 +618,15 @@ class InferenceAndGeneration(torch.nn.Module):
             decrease_kl_learnc = (mse_av > self.target_mse_max)
             constraint_kl_learnc = 1.0 * increase_kl_learnc - 1.0 * decrease_kl_learnc
 
+            print("DEBUG")
+            print("constraint_annealing", constraint_annealing)
+            print("constraint_nobj_min", constraint_nobj_min)
+            print("constraint_nobj_max", constraint_nobj_max)
+            print("constraint_fgfraction_min", constraint_fgfraction_min)
+            print("constraint_fgfraction_max", constraint_fgfraction_max)
+            print("constraint_kl_learnz", constraint_kl_learnz)
+            print("constraint_kl_learnc", constraint_kl_learnc)
+
 
             # decrease_nobj_min = nobj_grid_av > self.target_nobj_av_per_patch_min
             # increase_nobj_min = nobj_grid_av < self.target_nobj_av_per_patch_min
@@ -644,7 +653,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Put all the losses together
         loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                    geco_kl_learnc.loss + geco_kl_learnz.loss
+                    geco_nobj_max.loss + geco_nobj_min.loss + geco_kl_learnc.loss + geco_kl_learnz.loss
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
         lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) / self.sigma_mse
@@ -691,7 +700,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
                                  fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
                                  fgfraction_hard_av=fgfraction_hard_av.detach().item(),
-                                 nobj_grid_av=c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean().detach().item(),
+                                 nobj_grid_av=nobj_grid_av.detach().item(),
                                  nobj_av=(prob_bk > 0.5).sum(dim=-1).float().mean().detach().item(),
                                  prob_av=prob_bk.sum(dim=-1).mean().detach().item(),
                                  prob_grid_av=unet_prob_b1wh.sum(dim=(-1,-2,-3)).mean().detach().item(),
