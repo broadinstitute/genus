@@ -653,8 +653,8 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_vae = mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost + \
                    geco_kl_learnz.hyperparam * (kl_learnz + bb_regression_cost) + \
                    geco_kl_learnc.hyperparam * kl_learnc + \
-                   geco_nobj_max.hyperparam * (unet_output.logit - logit_target_small).abs().mean() + \
-                   geco_nobj_min.hyperparam * (logit_bk - logit_target_large).abs().mean() + \
+                   geco_nobj_max.hyperparam * ((unet_output.logit - logit_target_small)*nms_mask).pow(2).mean() + \
+                   geco_nobj_min.hyperparam * (logit_bk - logit_target_large).pow(2).mean() + \
                    all_logit_in_range
 
         loss_tot = loss_vae + loss_geco
