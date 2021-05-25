@@ -133,9 +133,8 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
 
     with torch.autograd.set_detect_anomaly(False):
         with torch.enable_grad():
-            vae.train()
 
-            # print("process one epoch train")
+            vae.train()
             train_metrics = process_one_epoch(model=vae,
                                               dataloader=train_loader,
                                               optimizer=optimizer,

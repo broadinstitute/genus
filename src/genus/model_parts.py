@@ -271,12 +271,15 @@ class InferenceAndGeneration(torch.nn.Module):
         self.is_zero_background = config["input_image"]["is_zero_background"]
 
         # variables
-        #self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
-        #self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
+        self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
+        self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
+
         self.target_mse_min = config["input_image"]["target_mse_min_max"][0]
         self.target_mse_max = config["input_image"]["target_mse_min_max"][1]
+
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
+
         self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
         self.box_overlap_strength = config["loss"]["box_overlap_penalty_strength"]
@@ -288,7 +291,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # modules
         self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
-                                 weight=config["input_image"]["DPP_weight_initial_final"],
+                                 weight=config["input_image"]["DPP_weight"],
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
         self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
@@ -342,6 +345,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  max_value=config["input_image"]["lambda_fgfraction_min_max"][1],
                                                  linear_exp=True)
 
+        self.geco_nobj_min = GecoParameter(initial_value=1.0,
+                                           min_value=0.0,
+                                           max_value=config["input_image"]["lambda_nobj_min_max"][1],
+                                           linear_exp=True)
+        self.geco_nobj_max = GecoParameter(initial_value=1.0,
+                                           min_value=0.0,
+                                           max_value=config["input_image"]["lambda_nobj_min_max"][1],
+                                           linear_exp=True)
+
         self.geco_kl_learnz = GecoParameter(initial_value=0.01,
                                             min_value=config["input_image"]["lambda_kl_min_max"][0],
                                             max_value=config["input_image"]["lambda_kl_min_max"][1])
@@ -384,9 +396,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                                      noisy_sampling=noisy_sampling,
                                                      sample_from_prior=generate_synthetic_data)
         t_grid = torch.sigmoid(self.decoder_zwhere(zwhere.value))  # shape B, 4, small_w, small_h
-        # TODO; Remove but add clamp
-        assert (t_grid >= 0.0).all() and (t_grid <=1.0).all(), "problem min={0}, max={1}".format(t_grid.max().item(),
-                                                                                                 t_grid.min().item())
         bounding_box_bn: BB = tgrid_to_bb(t_grid=t_grid,
                                           rawimage_size=imgs_bcwh.shape[-2:],
                                           min_box_size=self.min_box_size,
@@ -469,9 +478,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         dim=-3)
 
         # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
-        # TODO: Remove the squares
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out), torch.ones_like(small_weights_out)), dim=-3),
+                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out),
+                                                            torch.ones_like(small_weights_out)), dim=-3),
                                      width_big=width_raw_image,
                                      height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
         out_img_bkcwh,  out_mask_bk1wh, out_square_bk1wh = torch.split(big_stuff,
@@ -535,7 +544,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                              logit=unet_output.logit).sum(dim=(-1, -2, -3))
         with torch.no_grad():
             # These 3 lines are the reinforce estimator
-            logp_dpp_nb = self.grid_dpp.log_prob(value=c_mcsamples_nb1wh.squeeze(-3).detach())
+            logp_dpp_nb = self.grid_dpp.log_prob(value=c_mcsamples_nb1wh.squeeze(dim=-3).detach())
             baseline_b = logp_dpp_nb.mean(dim=0)  # average of the different MC samples
             d_nb = (logp_dpp_nb - baseline_b)
         reinforce_ber = (logp_ber_nb * d_nb.detach()).mean()
@@ -557,7 +566,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # 2. There is incentive to shut-off some objects
 
         # TODO: which indicator should I use? p or c or 1
-        indicator_detached_bk = torch.ones_like(prob_bk).detach()
+        indicator_detached_bk = torch.ones_like(prob_bk).detach()  # or c_detached?
         indicator_attached_bk = (indicator_detached_bk - prob_bk).detach() + prob_bk
 
         zbg_kl_av = zbg.kl.mean()
@@ -573,22 +582,16 @@ class InferenceAndGeneration(torch.nn.Module):
         # GECO (i.e. make the hyper-parameters dynamical)
         with torch.no_grad():
 
-            # total reconstruction
-            mse_tot_too_large = mse_av > self.target_mse_max
-            mse_tot_in_range = (mse_av > self.target_mse_min) * (mse_av < self.target_mse_max)
+            # Preliminaries
+            nobj_grid_av = c_grid_after_nms.sum(dim=(-1,-2,-3)).float().mean()
 
-            # foreground reconstruction
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
             mse_fg_av = torch.mean(mse_fg_bk)
 
-            # foreground fraction
             fgfraction_smooth_av = mixing_fg_b1wh.mean()
             fgfraction_hard_av = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av = torch.min(fgfraction_hard_av, fgfraction_smooth_av)
-
-            fgfraction_too_small = (fgfraction_av < self.target_fgfraction_min)
-            fgfraction_in_range = (fgfraction_av > self.target_fgfraction_min) * (fgfraction_av < self.target_fgfraction_max)
 
             # Design the logic:
             # if constraint < 0, parameter will be decreased
@@ -596,32 +599,46 @@ class InferenceAndGeneration(torch.nn.Module):
             # if constraint = 0, parameter will stay the same
 
             # ANNEALING
-            decrease_annealing = ~mse_tot_too_large
+            decrease_annealing = (mse_av < self.target_mse_max)
             constraint_annealing = - 1.0 * decrease_annealing
 
+            # NOBJ
+            constraint_nobj_min = 1.0 - (nobj_grid_av / self.target_nobj_av_per_patch_min)  # positive if nobj < target_min
+            constraint_nobj_max = (nobj_grid_av / self.target_nobj_av_per_patch_max) - 1.0  # positive if nobj > target_min
+
             # FG_FRACTION
-            decrease_fgfraction_min = fgfraction_av > self.target_fgfraction_min
-            increase_fgfraction_min = fgfraction_av < self.target_fgfraction_min
-            constraint_fgfraction_min = 1.0 * increase_fgfraction_min - 1.0 * decrease_fgfraction_min
+            constraint_fgfraction_min = 1.0 - (fgfraction_av / self.target_fgfraction_min)  # positive if fgfraction < target_min
+            constraint_fgfraction_max = (fgfraction_av / self.target_fgfraction_max) - 1.0  # positive if fgfraction > target_max
 
-            decrease_fgfraction_max = fgfraction_av < self.target_fgfraction_max
-            increase_fgfraction_max = fgfraction_av > self.target_fgfraction_max
-            constraint_fgfraction_max = 1.0 * increase_fgfraction_max - 1.0 * decrease_fgfraction_max
+            # KL_learn_z
+            constraint_kl_learnz = 1.0 - (mse_fg_av / self.target_mse_min)  # positive if mse_fg_av < target_min
 
-            # KL_learn_z (I use target_mse_min in both so that each pieces is nicely reconstructed)
-            increase_kl_learnz = (mse_fg_av < self.target_mse_min)
-            decrease_kl_learnz = (mse_fg_av > self.target_mse_min)
-            constraint_kl_learnz = 1.0 * increase_kl_learnz - 1.0 * decrease_kl_learnz
-
-            # KL_learn_c (I use target_mse_min and target_mse_mac b/c the background has lower accuracy)
+            # KL_learn_c
             increase_kl_learnc = (mse_av < self.target_mse_min)
             decrease_kl_learnc = (mse_av > self.target_mse_max)
             constraint_kl_learnc = 1.0 * increase_kl_learnc - 1.0 * decrease_kl_learnc
 
-        # Produce both the loss and the hyperparameter
+
+            # decrease_nobj_min = nobj_grid_av > self.target_nobj_av_per_patch_min
+            # increase_nobj_min = nobj_grid_av < self.target_nobj_av_per_patch_min
+            # constraint_nobj_min = 1.0 * increase_nobj_min - 1.0 * decrease_nobj_min
+            # decrease_nobj_max = nobj_grid_av < self.target_nobj_av_per_patch_max
+            # increase_nobj_max = nobj_grid_av > self.target_nobj_av_per_patch_max
+            # constraint_nobj_max = 1.0 * increase_nobj_max - 1.0 * decrease_nobj_max
+            # decrease_fgfraction_min = fgfraction_av > self.target_fgfraction_min
+            # increase_fgfraction_min = fgfraction_av < self.target_fgfraction_min
+            # decrease_fgfraction_max = fgfraction_av < self.target_fgfraction_max
+            # increase_fgfraction_max = fgfraction_av > self.target_fgfraction_max
+            # constraint_fgfraction_max = 1.0 * increase_fgfraction_max - 1.0 * decrease_fgfraction_max
+            # increase_kl_learnz = (mse_fg_av < self.target_mse_min)
+            # decrease_kl_learnz = (mse_fg_av > self.target_mse_min)
+
+        # Produce both the loss and the hyperparameter (I can raise constraint to some odd power to preserve the sign)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
+        geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
+        geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
         geco_kl_learnz: GECO = self.geco_kl_learnz.forward(constraint=constraint_kl_learnz)
         geco_kl_learnc: GECO = self.geco_kl_learnc.forward(constraint=constraint_kl_learnc)
 
@@ -634,14 +651,19 @@ class InferenceAndGeneration(torch.nn.Module):
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
         # Make sure that logit can not become too large or too small
-        logit_min = -6.0
-        logit_max = 6.0
+        logit_min = -8.0
+        logit_max = 8.0
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
                                          (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
+        logit_target_small = -6.0
+        logit_target_large = 6.0
 
         loss_vae = mse_av + fgfraction_coupling + mask_overlap_cost + box_overlap_cost + \
                    geco_kl_learnz.hyperparam * (kl_learnz + bb_regression_cost) + \
-                   geco_kl_learnc.hyperparam * (kl_learnc + all_logit_in_range)
+                   geco_kl_learnc.hyperparam * kl_learnc + \
+                   geco_nobj_max.hyperparam * (unet_output.logit - logit_target_small).abs().mean() + \
+                   geco_nobj_min.hyperparam * (unet_output.logit - logit_target_large).abs().mean() + \
+                   all_logit_in_range
 
         loss_tot = loss_vae + loss_geco
 
@@ -660,9 +682,11 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
+
         metric = MetricMiniBatch(loss=loss_tot,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
+                                 mse_fg_av=mse_fg_av.detach().item(),
                                  # number of objects
                                  mixing_fg_av=mixing_fg_b1wh.mean().detach().item(),
                                  fgfraction_smooth_av=fgfraction_smooth_av.detach().item(),
@@ -691,6 +715,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  lambda_kl_learnz=geco_kl_learnz.hyperparam.detach().item(),
                                  lambda_kl_learnc=geco_kl_learnc.hyperparam.detach().item(),
+                                 lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
+                                 lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # count accuracy

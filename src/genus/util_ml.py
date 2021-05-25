@@ -187,8 +187,7 @@ class SimilarityKernel(torch.nn.Module):
         """
         l, w = self._clamp_and_get_l_w()
         d2, diag = self._compute_d2_diag(n_width=n_width, n_height=n_height)
-        return diag + w * torch.exp(-0.5*d2/(l*l))
-
+        return diag +  w * (-0.5*d2/(l*l)).exp()
 
 class FiniteDPP(Distribution):
     """
@@ -458,6 +457,7 @@ class Grid_DPP(torch.nn.Module):
             raise Exception("You need to draw a random sample first to fix the size of the grid")
         return self.finite_dpp.n_stddev
 
+    @torch.no_grad()
     def sample(self, size: torch.Size):
         """
         Draw a random sample of size torch.Size according to the current values of length_scale, weight.
@@ -467,40 +467,31 @@ class Grid_DPP(torch.nn.Module):
         """
         assert len(size) >= 2, "the spatial dimension must be at least 2. Instead I found {0}".format(len(size))
 
-        current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
-                              self.similiraty_kernel.weight_value.data.item(),
-                              size[-2], size[-1])
+        length, weight = self.similiraty_kernel.get_l_w()
+        current_figerprint = (length, weight, size[-2], size[-1])
 
-        with torch.no_grad():
-            if current_figerprint != self.fingerprint:
-                similarity = self.similiraty_kernel.forward(n_width=size[-2], n_height=size[-1])
-                self.finite_dpp = FiniteDPP(L=similarity)
-                self.fingerprint = current_figerprint
+        if current_figerprint != self.fingerprint:
+            similarity = self.similiraty_kernel.forward(n_width=size[-2], n_height=size[-1])
+            self.finite_dpp = FiniteDPP(L=similarity)
+            self.fingerprint = current_figerprint
 
-            c_all = self.finite_dpp.sample(sample_shape=size[:-2]).view(size)
-            return c_all
+        c_all = self.finite_dpp.sample(sample_shape=size[:-2]).view(size)
+        return c_all
 
     def log_prob(self, value: torch.Tensor):
         """ Compute the log_prob of a configuration. Note that value need to be at least 2D.
             The log_prob is differentiable w.r.t. the parameters of the similarity kernel but not :attr:`value`.
         """
         assert len(value.shape) >= 2
-        current_figerprint = (self.similiraty_kernel.length_scale_value.data.item(),
-                              self.similiraty_kernel.weight_value.data.item(),
-                              value.shape[-2], value.shape[-1])
+        length, weight = self.similiraty_kernel.get_l_w()
+        current_figerprint = (length, weight, value.shape[-2], value.shape[-1])
 
-        if current_figerprint != self.fingerprint:
-            if self.learnable_params:
-                similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
-                self.finite_dpp = FiniteDPP(L=similarity)
-                self.fingerprint = current_figerprint
-            else:
-                with torch.no_grad():
-                    similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
-                    self.finite_dpp = FiniteDPP(L=similarity)
-                    self.fingerprint = current_figerprint
+        if (current_figerprint != self.fingerprint) or self.learnable_params:
+            # Need to create connections between similarity parameters and logp_DPP
+            similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
+            self.finite_dpp = FiniteDPP(L=similarity)
+            self.fingerprint = current_figerprint
 
-        # Identical can immediately draw a sample
         logp = self.finite_dpp.log_prob(value=value.flatten(start_dim=-2))
         return logp
 

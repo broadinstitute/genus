@@ -7,7 +7,7 @@ simulation:
   type: "scratch"
   BATCH_SIZE: 256
   MAX_EPOCHS: 4501
-  TEST_FREQUENCY: 50
+  TEST_FREQUENCY: 10
   CHECKPOINT_FREQUENCY: 50
 
 # architecture parameters
@@ -84,7 +84,9 @@ input_image:
   # be used as initial values
   DPP_learnable_parameters: True
   DPP_length: 5.0
-  DPP_weight_initial_final: 0.3
+  DPP_weight: 0.3
+  target_nobj_av_per_patch_min_max: [3.0, 5.0]
+  lambda_nobj_min_max: [0.1, 15.0]    # let it be
 
 
 # parameter related to the loss function
@@ -106,8 +108,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 5E-4
-  lr: 0.001
-  lr_geco: 0.001
+  lr: 0.0003
+  lr_geco: 0.0001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -121,7 +123,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: True
+  is_active: False
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"

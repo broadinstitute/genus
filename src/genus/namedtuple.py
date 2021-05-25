@@ -232,6 +232,7 @@ class MetricMiniBatch(NamedTuple):
     loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
     # monitoring
     mse_av: float
+    mse_fg_av: float
     mixing_fg_av: float
     fgfraction_smooth_av: float
     fgfraction_hard_av: float
@@ -260,6 +261,8 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction: float
     lambda_kl_learnz: float
     lambda_kl_learnc: float
+    lambda_nobj_max: float
+    lambda_nobj_min: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy
