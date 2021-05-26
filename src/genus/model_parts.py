@@ -575,6 +575,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # so each contribute approximately 1 to the loss function.
         # Note that even off boxes have a KL divergence. That's ok, model can easily put the KL of non-used boxes to zero.
         # I am using one_attached so that there is some pressure to shut unusual objects off.
+        # Note that: LOSS =  exp(-lambda) * A + lambda
+        # the minimization of LOSS w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
         kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
                  torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
                  torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
@@ -700,6 +702,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
+                                 moving_average_logit=self.running_avarage_kl_logit.detach().item(),
+                                 moving_average_bg=self.running_avarage_kl_bg.detach().item(),
+                                 moving_average_instance=self.running_avarage_kl_instance.detach().item(),
+                                 moving_average_where=self.running_avarage_kl_where.detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),

@@ -262,6 +262,10 @@ class MetricMiniBatch(NamedTuple):
     lambda_nobj_min: float
     entropy_ber: float
     reinforce_ber: float
+    moving_average_logit: float
+    moving_average_bg: float
+    moving_average_instance: float
+    moving_average_where: float
     # conting accuracy
     count_prediction: numpy.ndarray
     wrong_examples: numpy.ndarray
