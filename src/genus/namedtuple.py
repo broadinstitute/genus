@@ -233,17 +233,16 @@ class MetricMiniBatch(NamedTuple):
     # monitoring
     mse_av: float
     mse_fg_av: float
-    mixing_fg_av: float
     fgfraction_smooth_av: float
     fgfraction_hard_av: float
-    nobj_av: float
+    nobj_smooth_av: float
+    nobj_hard_av: float
     prob_grid_av: float
     # term in the loss function
     cost_mse: float
     cost_mask_overlap_av: float
     cost_box_overlap_av: float
     cost_fgfraction: float
-    # cost_nobj: float
     cost_bb_regression_av: float
     kl_zinstance: float
     kl_zbg: float
@@ -255,11 +254,10 @@ class MetricMiniBatch(NamedTuple):
     logit_max: float
     similarity_l: float
     similarity_w: float
+    lambda_mse: float
     lambda_annealing: float
     lambda_fgfraction_max: float
     lambda_fgfraction_min: float
-    lambda_kl_learnz: float
-    lambda_kl_learnc: float
     lambda_nobj_max: float
     lambda_nobj_min: float
     entropy_ber: float
