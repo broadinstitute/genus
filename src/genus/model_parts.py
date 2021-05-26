@@ -565,11 +565,16 @@ class InferenceAndGeneration(torch.nn.Module):
             log_dpp_after_nms = torch.zeros_like(entropy_ber)
 
         # D> Put everything together
-        one_attached_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
-        logit_kl_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
+        logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
+        logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
+        logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
         zbg_kl_av = zbg.kl.mean()
-        zinstance_kl_av = (zinstance_kl_bk * one_attached_bk).mean()
-        zwhere_kl_av = (zwhere_kl_bk * one_attached_bk).mean()
+        zinstance_kl_av = zinstance_kl_bk.mean()
+        zwhere_kl_av = zwhere_kl_bk.mean()
+        # TODO: Use one attached instead ?
+        # one_attached_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
+        # zinstance_kl_av = (zinstance_kl_bk * one_attached_bk).mean()
+        # zwhere_kl_av = (zwhere_kl_bk * one_attached_bk).mean()
 
         # Sum the four KL divergences and normalize them by their running average separately
         # so each contribute approximately 1 to the loss function.
@@ -635,10 +640,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
         lambda_fgfraction = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
-        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.sum() / batch_size
+        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
         lambda_nobj = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
-        nobj_coupling = lambda_nobj * unet_prob_b1wh.sum() / batch_size
+        nobj_coupling = lambda_nobj * unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
 
         # Make sure that logit can not become too large or too small.
         # In this way theere is always some small gradient passing thorguh probability
