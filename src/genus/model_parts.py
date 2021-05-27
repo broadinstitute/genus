@@ -203,9 +203,7 @@ def inverse_linear_exp_activation(y: Union[float, torch.Tensor]) -> Union[float,
 
 class GecoParameter(torch.nn.Module):
     """ Dynamical parameter with value in [min_value, max_value].
-        Note:
-            if constraint < 0, parameter will be decreased
-            if constraint > 0, parameter will be increased
+
     """
     def __init__(self, initial_value: float,
                  min_value: Union[float, None]=None,
@@ -231,16 +229,18 @@ class GecoParameter(torch.nn.Module):
             self.raw_min_value = min_value
             self.raw_max_value = max_value
 
-        self.first_iter = True
-
     @torch.no_grad()
     def set(self, value: float):
+        """ Helper function used to manually update the value of the hyperparamter. This should not be used.
+            The hyperparameter should be updates by the optimizer via minimization of the associated loss function.
+        """
         raw_value = inverse_linear_exp_activation(value) if self.linear_exp else value
         self.geco_raw_lambda.data.fill_(raw_value)
         self.geco_raw_lambda.clamp_(min=self.raw_min_value, max=self.raw_max_value)
 
     @torch.no_grad()
     def get(self):
+        """ Helper function. Clamp the hyperparameter in the allowed range and returns a detached copy of it"""
         self.geco_raw_lambda.data.clamp_(min=self.raw_min_value, max=self.raw_max_value)
         if self.linear_exp:
             transformed_lambda = linear_exp_activation(self.geco_raw_lambda.data)
@@ -248,7 +248,24 @@ class GecoParameter(torch.nn.Module):
             transformed_lambda = self.geco_raw_lambda.data
         return transformed_lambda.detach()
 
-    def forward(self, constraint):
+    def forward(self, constraint) -> GECO:
+        """
+        Given a constraint it returns the current value of the hyperparameter and the loss term which when minimized
+        leads to the desired change in the value of the hyperparameter
+
+        Args:
+            constraint: torch.Tensor with the value of the constraint.
+
+        Returns:
+            A container of type :class:'GECO'
+
+        Note:
+            If constraint < 0 (i.e. constraint is satisfied) the minimization of the returned loss leads to a
+            decrease of the hyperparameter will be decreased
+            If constraint > 0 (i.e. constraint is violated) the opposite is true
+            If constraint == 0, the hyperparameter will not be changed
+        """
+
         # This is first since it clamps lambda in the allowed range
         transformed_lambda = self.get()
 
@@ -256,8 +273,6 @@ class GecoParameter(torch.nn.Module):
         # Constraint satisfied -----> constraint < 0 ---> reduce the parameter
         # Constraint is violated ---> constraint > 0 ---> increase the parameter
         loss_geco = - self.geco_raw_lambda * constraint.detach()
-
-        self.first_iter = False
 
         return GECO(loss=loss_geco, hyperparam=transformed_lambda)
 
@@ -611,7 +626,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # if constraint = 0, parameter will stay the same
         with torch.no_grad():
 
-            # NOBJ: Count object using c_detached and couple to unet_prob_b1wh
+            # NOBJ: Count object using c_detached and couple to unet_prob_b1wh (force n_obj in range)
             nav_selected_smooth = prob_bk.sum(dim=-1).mean()
             nav_selected_hard = c_detached_bk.sum(dim=-1).float().mean()
             nav_selected = torch.max(nav_selected_hard, nav_selected_smooth)
@@ -620,7 +635,7 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_max = nav_selected - self.target_nobj_av_per_patch_max  # positive if nobj > target_max
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
-            # FGFRACTION: Count and couple based on mixing
+            # FGFRACTION: Count and couple based on mixing (force fg_fraction in range)
             fgfraction_av_smooth = mixing_fg_b1wh.mean()
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av = torch.min(fgfraction_av_hard, fgfraction_av_smooth)
@@ -629,22 +644,19 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
-            # MSE: Count and couple to mse_av
-            # Positive if mse > self.target_mse_max
-            # Negative if mse < self.target_mse_min
-            # Zero if mse in [self.target_mse_min, self.target_mse_max]
-            constraint_mse = (mse_av - self.target_mse_max).clamp(min=0.0) + (mse_av - self.target_mse_min).clamp(max=0)
+            # MSE: Count and couple to mse_av (force mse_av approx self.target_mse_min)
+            constraint_mse = (mse_av - self.target_mse_min)
 
             # These two quantities are for debug only
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
             mse_fg_av = torch.mean(mse_fg_bk)
 
-            # ANNEALING: Reduce if mse_av < self.target_mse_max
+            # ANNEALING: Reduce if mse_av < self.target_mse_max and other condition are satisfied
             decrease_annealing = (mse_av < self.target_mse_max) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
 
-        # Produce both the loss and the hyperparameter (I can raise constraint to some odd power to preserve the sign)
+        # Produce both the loss and the hyperparameters
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
@@ -656,22 +668,24 @@ class InferenceAndGeneration(torch.nn.Module):
         loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
                     geco_nobj_max.loss + geco_nobj_min.loss + geco_mse.loss
 
-        # Note that the sign of lambda_fgfraction changes when I get values below the acceptable minimum
+        # Note that the lambda_fgfraction can be both positive or negative
         lambda_fgfraction = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
         fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
 
+        # Note that the lambda_fgfraction can be both positive or negative
         lambda_nobj = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
         nobj_coupling = lambda_nobj * unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
 
-        # Make sure that logit can not become too large or too small.
+        # Make sure that logit never become too large or too small.
         # In this way there is always some small gradient passing through the probability
         # (b/c the sigmoid is not in the flat region)
+        # This is a quadratic confining potential with a flat bottom.
         logit_min = -8.0
         logit_max = 8.0
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
                                          (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
 
-        loss_vae = (-geco_mse.hyperparam + 1.0) * kl_tot + geco_mse.hyperparam * mse_av + \
+        loss_vae = -(geco_mse.hyperparam-1.0) * kl_tot + geco_mse.hyperparam * mse_av + \
                    mask_overlap_cost + box_overlap_cost + all_logit_in_range + \
                    fgfraction_coupling + nobj_coupling
 
