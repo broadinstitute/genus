@@ -337,11 +337,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # # Quantities to compute the moving averages
-        self.moving_average_calculator = MovingAverageCalculator(beta=0.999, n_features=4)
-        #self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(4.0, dtype=torch.float), requires_grad=True)
-        #self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        #self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        #self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+#        self.moving_average_calculator = MovingAverageCalculator(beta=0.99999, n_features=4)
+        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
         # Dynamical parameter controlled by GECO
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
@@ -578,11 +578,11 @@ class InferenceAndGeneration(torch.nn.Module):
         if self.indicator_type == "one_detached":
             indicator_bk = torch.ones_like(prob_bk)
         elif self.indicator_type == "c_detached":
-            indicator_bk = c_detached_bk
+            indicator_bk = c_detached_bk.float()
         elif self.indicator_type == "one_attached":
             indicator_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
         elif self.indicator_type == "c_attached":
-            indicator_bk = (c_detached_bk - prob_bk).detach() + prob_bk
+            indicator_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
         else:
             raise Exception("indicator type is not recognized")
         zinstance_kl_av = (zinstance_kl_bk * indicator_bk).mean()
@@ -590,9 +590,12 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Sum the four KL divergences and normalize them by their running average separately
         # so each contribute approximately 1 to the loss function.
-        all_kl = torch.stack((logit_kl_av, zbg_kl_av, zwhere_kl_av, zinstance_kl_av), dim=0)
-        ma_all_kl = self.moving_average_calculator(all_kl)
-        kl_tot = (all_kl / ma_all_kl.detach()).sum()
+        # Note that: LOSS =  exp(-lambda) * A + lambda
+        # the minimization of LOSS w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
+        kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
+                 torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
+                 torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
+                 torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av + self.running_avarage_kl_where
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased

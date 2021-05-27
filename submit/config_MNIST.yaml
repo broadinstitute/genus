@@ -6,7 +6,7 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 256
-  MAX_EPOCHS: 4501
+  MAX_EPOCHS: 601
   TEST_FREQUENCY: 10
   CHECKPOINT_FREQUENCY: 50
 
@@ -92,7 +92,7 @@ input_image:
 # parameter related to the loss function
 loss:
   # Can be "one_detached", "c_detached", "one_attached", "c_attached":
-  indicator_type: "c_detached"
+  indicator_type: "one_attached"
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
