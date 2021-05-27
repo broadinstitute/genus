@@ -6,10 +6,10 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet, UNetNew
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal #, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
-from collections.abc import Iterable
+# from collections.abc import Iterable
 
 
 @torch.no_grad()
@@ -338,10 +338,10 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # # Quantities to compute the moving averages
 #        self.moving_average_calculator = MovingAverageCalculator(beta=0.99999, n_features=4)
-        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
 
         # Dynamical parameter controlled by GECO
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
@@ -590,8 +590,16 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Sum the four KL divergences and normalize them by their running average separately
         # so each contribute approximately 1 to the loss function.
-        # Note that: LOSS =  exp(-lambda) * A + lambda
-        # the minimization of LOSS w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
+        # I accomplish the normalization using the auxiliary loss function
+        # LOSS =  exp(-lambda) * A + lambda
+        # Note that minimization w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
+        #
+        # I also tried to use a simple hard-coded moving average. I discovered that:
+        # 1. The moving average need to be extremely long (otherwise you see oscillation)
+        # 2. The initial values of the quantity I want to average are very wrong therefore I do not want them to have
+        #    a long lasting effect on the moving average.
+        # Accomplish both points above with a hard coded solution is tricky therefore I used the auxiliary loss function
+        # trick.
         kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
                  torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
                  torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
@@ -718,10 +726,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
-                                 moving_average_logit=ma_all_kl[0].detach().item(),
-                                 moving_average_bg=all_kl[1].detach().item(),
-                                 moving_average_instance=all_kl[3].detach().item(),
-                                 moving_average_where=all_kl[2].detach().item(),
+                                 moving_average_logit=self.running_avarage_kl_logit.exp().detach().item(),
+                                 moving_average_bg=self.running_avarage_kl_bg.exp().detach().item(),
+                                 moving_average_instance=self.running_avarage_kl_instance.exp().detach().item(),
+                                 moving_average_where=self.running_avarage_kl_where.exp().detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
