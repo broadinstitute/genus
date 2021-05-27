@@ -76,7 +76,7 @@ input_image:
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.10]  # this depends on the dataset
-  lambda_fgfraction_min_max: [0.1, 5.0]    # let it be
+  lambda_fgfraction_min_max: [0.0, 5.0]    # let it be
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # See our example notebook to see how to choose these parameters.
@@ -86,11 +86,14 @@ input_image:
   DPP_length: 5.0
   DPP_weight: 0.3
   target_nobj_av_per_patch_min_max: [3.0, 5.0]
-  lambda_nobj_min_max: [0.1, 15.0]    # let it be
+  lambda_nobj_min_max: [0.0, 15.0]    # let it be
 
 
 # parameter related to the loss function
 loss:
+  # Can be "one_detached", "c_detached", "one_attached", "c_attached":
+  indicator_type: "c_detached"
+
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.001

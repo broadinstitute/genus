@@ -268,6 +268,7 @@ class InferenceAndGeneration(torch.nn.Module):
         super().__init__()
 
         self.n_mc_samples = config["loss"]["n_mc_samples"]
+        self.indicator_type = config["loss"]["indicator_type"]
         self.is_zero_background = config["input_image"]["is_zero_background"]
 
         # variables
@@ -573,12 +574,19 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # E. The other KL are between normal distributions and can be computed analytically
         zbg_kl_av = zbg.kl.mean()
-        # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached instead?
-        zinstance_kl_av = zinstance_kl_bk.mean()
-        zwhere_kl_av = zwhere_kl_bk.mean()
-        # one_attached_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
-        # zinstance_kl_av = (zinstance_kl_bk * one_attached_bk).mean()
-        # zwhere_kl_av = (zwhere_kl_bk * one_attached_bk).mean()
+        # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached or c_attached?
+        if self.indicator_type == "one_detached":
+            indicator_bk = torch.ones_like(prob_bk)
+        elif self.indicator_type == "c_detached":
+            indicator_bk = c_detached_bk
+        elif self.indicator_type == "one_attached":
+            indicator_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
+        elif self.indicator_type == "c_attached":
+            indicator_bk = (c_detached_bk - prob_bk).detach() + prob_bk
+        else:
+            raise Exception("indicator type is not recognized")
+        zinstance_kl_av = (zinstance_kl_bk * indicator_bk).mean()
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
 
         # Sum the four KL divergences and normalize them by their running average separately
         # so each contribute approximately 1 to the loss function.
