@@ -108,8 +108,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 5E-4
-  lr: 0.0003
-  lr_geco: 0.0001
+  lr: 0.001
+  lr_geco: 0.001
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -123,7 +123,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: False
+  is_active: True
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"
@@ -135,4 +135,4 @@ scheduler:
   step_size: 500
 
   # The "multistep_LR" scheduler decays the learning rate by gamma once the number of epoch reaches one of the milestones.
-  milestones: [100, 300]
+  milestones: [200, 400]

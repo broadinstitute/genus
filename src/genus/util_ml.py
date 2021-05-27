@@ -10,6 +10,46 @@ from .util import are_broadcastable
 from .namedtuple import DIST
 
 
+class MovingAverageCalculator(torch.nn.Module):
+    """ Compute the moving average of 1D tensor of shape: n_features
+        The moving averages are saved as module parameters and can be reloaded from checkpoint
+    """
+
+    def __init__(self, n_features: int, beta: float=0.99):
+        """
+        Args:
+            n_features: size of the tensor to measure the average of. Each element is averaged separately
+            beta: Size of the time-averaged window. Approximately we average the last 1/(1-beta) values.
+                The larger beta the longer the time average.
+        """
+        super().__init__()
+        assert isinstance(beta, float) and (beta > 0.0) and (beta < 1.0)
+        self._beta = beta
+        self._steps = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.long), requires_grad=False)
+        self._accumulated_tensor = torch.nn.Parameter(data=torch.zeros(n_features, dtype=torch.float), requires_grad=False)
+
+    @torch.no_grad()
+    def get_average(self):
+        bias = 1.0 - self._beta ** self._steps.data
+        return self._accumulated_tensor / bias
+
+    @torch.no_grad()
+    def forward(self, x):
+        """
+        Args:
+            x: tensor of shape (n_features) to average
+
+        Returns:
+            A tensor of the shape (n_features) with the time-average up to that point
+        """
+        if self.training:
+            self._steps += 1
+            tmp = self._beta * self._accumulated_tensor.data + (1 - self._beta) * x
+            self._accumulated_tensor.data = tmp
+
+        return self.get_average()
+
+
 class MetricsAccumulator(object):
     """
     Accumulate a tuple or dictionary into an OrderDictionary. The intended uses is to accumulate the metrics

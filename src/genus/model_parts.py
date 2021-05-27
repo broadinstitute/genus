@@ -6,7 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet, UNetNew
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
 from collections.abc import Iterable
@@ -336,10 +336,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # # Quantities to compute the moving averages
-        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(4.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.moving_average_calculator = MovingAverageCalculator(beta=0.999, n_features=4)
+        #self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(4.0, dtype=torch.float), requires_grad=True)
+        #self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        #self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        #self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
         # Dynamical parameter controlled by GECO
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
@@ -544,7 +545,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # A. Analytical expression for entropy
         entropy_ber = compute_entropy_bernoulli(logit=unet_output.logit).sum(dim=(-1, -2, -3)).mean()
 
-        # B. Reinforce estimator
+        # B. Reinforce estimator for gradients w.r.t. logit
         prob_expanded_nb1wh = unet_prob_b1wh.expand([self.n_mc_samples, -1, -1, -1, -1])  # keep: batch,ch,w,h
         c_mcsamples_nb1wh = (torch.rand_like(prob_expanded_nb1wh) < prob_expanded_nb1wh)
         logp_ber_nb = compute_logp_bernoulli(c=c_mcsamples_nb1wh.detach(),
@@ -556,7 +557,8 @@ class InferenceAndGeneration(torch.nn.Module):
             d_nb = (logp_dpp_nb - baseline_b)
         reinforce_ber = (logp_ber_nb * d_nb.detach()).mean()
 
-        # C. Make the DPP adjust to the configuration after NMS
+        # C. Simple MC estimator to make DPP adjust to the configuration after NMS.
+        # This has gradients w.r.t DPP parameters
         if self.grid_dpp.learnable_params:
             # DPP is trainable
             log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
@@ -564,28 +566,25 @@ class InferenceAndGeneration(torch.nn.Module):
             # DPP is not trainable
             log_dpp_after_nms = torch.zeros_like(entropy_ber)
 
-        # D> Put everything together
+        # D. Put together the expression for both the evaluation of the gradients and the evaluation of the value
         logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
+
+        # E. The other KL are between normal distributions and can be computed analytically
         zbg_kl_av = zbg.kl.mean()
+        # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached instead?
         zinstance_kl_av = zinstance_kl_bk.mean()
         zwhere_kl_av = zwhere_kl_bk.mean()
-        # TODO: Use one attached instead ?
         # one_attached_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
         # zinstance_kl_av = (zinstance_kl_bk * one_attached_bk).mean()
         # zwhere_kl_av = (zwhere_kl_bk * one_attached_bk).mean()
 
         # Sum the four KL divergences and normalize them by their running average separately
         # so each contribute approximately 1 to the loss function.
-        # Note that even off boxes have a KL divergence. That's ok, model can easily put the KL of non-used boxes to zero.
-        # I am using one_attached so that there is some pressure to shut unusual objects off.
-        # Note that: LOSS =  exp(-lambda) * A + lambda
-        # the minimization of LOSS w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
-        kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
-                 torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
-                 torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
-                 torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av + self.running_avarage_kl_where
+        all_kl = torch.stack((logit_kl_av, zbg_kl_av, zwhere_kl_av, zinstance_kl_av), dim=0)
+        ma_all_kl = self.moving_average_calculator(all_kl)
+        kl_tot = (all_kl / ma_all_kl.detach()).sum()
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
@@ -646,7 +645,8 @@ class InferenceAndGeneration(torch.nn.Module):
         nobj_coupling = lambda_nobj * unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
 
         # Make sure that logit can not become too large or too small.
-        # In this way theere is always some small gradient passing thorguh probability
+        # In this way there is always some small gradient passing through the probability
+        # (b/c the sigmoid is not in the flat region)
         logit_min = -8.0
         logit_max = 8.0
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
@@ -707,10 +707,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
-                                 moving_average_logit=self.running_avarage_kl_logit.detach().item(),
-                                 moving_average_bg=self.running_avarage_kl_bg.detach().item(),
-                                 moving_average_instance=self.running_avarage_kl_instance.detach().item(),
-                                 moving_average_where=self.running_avarage_kl_where.detach().item(),
+                                 moving_average_logit=ma_all_kl[0].detach().item(),
+                                 moving_average_bg=all_kl[1].detach().item(),
+                                 moving_average_instance=all_kl[3].detach().item(),
+                                 moving_average_where=all_kl[2].detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
