@@ -6,7 +6,7 @@ simulation:
   # can be scratch, resume, pretrained
   type: "scratch"
   BATCH_SIZE: 256
-  MAX_EPOCHS: 601
+  MAX_EPOCHS: 1601
   TEST_FREQUENCY: 10
   CHECKPOINT_FREQUENCY: 50
 
@@ -76,7 +76,7 @@ input_image:
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.10]  # this depends on the dataset
-  lambda_fgfraction_min_max: [0.0, 5.0]    # let it be
+  lambda_fgfraction_min_max: [0.1, 10.0]    # let it be
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # See our example notebook to see how to choose these parameters.
@@ -86,13 +86,13 @@ input_image:
   DPP_length: 5.0
   DPP_weight: 0.3
   target_nobj_av_per_patch_min_max: [3.0, 5.0]
-  lambda_nobj_min_max: [0.0, 15.0]    # let it be
+  lambda_nobj_min_max: [0.1, 25.0]    # let it be
 
 
 # parameter related to the loss function
 loss:
   # Can be "one_detached", "c_detached", "one_attached", "c_attached":
-  indicator_type: "c_attached"
+  indicator_type: "one_detached"
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
@@ -112,7 +112,7 @@ optimizer:
 
   # Learning rate. Use 5E-4
   lr: 0.001
-  lr_geco: 0.001
+  lr_geco: 0.0005
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
@@ -138,4 +138,4 @@ scheduler:
   step_size: 500
 
   # The "multistep_LR" scheduler decays the learning rate by gamma once the number of epoch reaches one of the milestones.
-  milestones: [200, 400]
+  milestones: [200]

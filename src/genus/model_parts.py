@@ -6,7 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet, UNetNew
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal #, MovingAverageCalculator
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
 # from collections.abc import Iterable
@@ -202,9 +202,7 @@ def inverse_linear_exp_activation(y: Union[float, torch.Tensor]) -> Union[float,
 
 
 class GecoParameter(torch.nn.Module):
-    """ Dynamical parameter with value in [min_value, max_value].
-
-    """
+    """ Dynamical parameter with value in [min_value, max_value]. """
     def __init__(self, initial_value: float,
                  min_value: Union[float, None]=None,
                  max_value: Union[float, None]=None,
@@ -351,12 +349,13 @@ class InferenceAndGeneration(torch.nn.Module):
         self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
-        # # Quantities to compute the moving averages
-#        self.moving_average_calculator = MovingAverageCalculator(beta=0.99999, n_features=4)
-        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.zeros(1, dtype=torch.float), requires_grad=True)
+        # Quantities to compute the moving averages
+        # Note that setting the initial value of self.running_avarage_kl_logit high means that I am going to neglect
+        # KL_logit for a while since that term is multiplied by exp(-self.running_avarage_kl_logit)
+        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(10.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
         # Dynamical parameter controlled by GECO
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
@@ -476,7 +475,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
-        logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
+        # logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
         c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
@@ -645,6 +644,7 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
             # MSE: Count and couple to mse_av (force mse_av approx self.target_mse_min)
+            # constraint_mse = (mse_av - self.target_mse_max).clamp(min=0.0) + (mse_av - self.target_mse_min).clamp(max=0)
             constraint_mse = (mse_av - self.target_mse_min)
 
             # These two quantities are for debug only
@@ -685,7 +685,7 @@ class InferenceAndGeneration(torch.nn.Module):
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
                                          (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
 
-        loss_vae = -(geco_mse.hyperparam-1.0) * kl_tot + geco_mse.hyperparam * mse_av + \
+        loss_vae = (-geco_mse.hyperparam + 1.0) * kl_tot + geco_mse.hyperparam * mse_av + \
                    mask_overlap_cost + box_overlap_cost + all_logit_in_range + \
                    fgfraction_coupling + nobj_coupling
 
