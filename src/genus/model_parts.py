@@ -6,7 +6,7 @@ from .cropper_uncropper import Uncropper, Cropper
 from .unet import UNet, UNetNew
 from .conv import DecoderConv, EncoderInstance, DecoderInstance
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
-from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal
+from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
 # from collections.abc import Iterable
@@ -351,9 +351,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Quantities to compute the moving averages
-        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        self.moving_average_calculator = MovingAverageCalculator(beta=0.999, n_features=3)
+        # self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        # self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
+        # self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
         # Dynamical parameter controlled by GECO
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
@@ -477,7 +478,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
-        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).mean(dim=-1), dim=-1, index=nms_output.indices_k)
+        zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).sum(dim=-1), dim=-1, index=nms_output.indices_k)
         # logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
         c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
@@ -497,7 +498,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                         posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
-        zinstance_kl_bk = zinstance.kl.mean(dim=-1)  # average over the latent dimension
+        zinstance_kl_bk = zinstance.kl.sum(dim=-1)  # average over the latent dimension
         small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
                                                         split_size_or_sections=(ch_raw_image, 1),
                                                         dim=-3)
@@ -610,17 +611,19 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
             raise Exception("indicator type is not recognized")
 
-        zinstance_kl_av_learnz = (zinstance_kl_bk * indicator_bk.detach()).mean()
-        zinstance_kl_av_learnc = (zinstance_kl_bk.detach() * indicator_bk).mean()
-        zwhere_kl_av_learnz = (zwhere_kl_bk * indicator_bk.detach()).mean()
-        zwhere_kl_av_learnc = (zwhere_kl_bk.detach() * indicator_bk).mean()
+        zinstance_kl_av_learnz = (zinstance_kl_bk * indicator_bk.detach()).sum() / batch_size
+        zinstance_kl_av_learnc = (zinstance_kl_bk.detach() * indicator_bk).sum() / batch_size
+        zwhere_kl_av_learnz = (zwhere_kl_bk * indicator_bk.detach()).sum() / batch_size
+        zwhere_kl_av_learnc = (zwhere_kl_bk.detach() * indicator_bk).sum() / batch_size
 
-        zbg_kl_av = zbg.kl.mean()
+        zbg_kl_av = zbg.kl.sum() / batch_size
 
         kl_learn_z = zbg_kl_av + zinstance_kl_av_learnz + zwhere_kl_av_learnz
-        kl_learn_c = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
-                     torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av_learnc + self.running_avarage_kl_instance + \
-                     torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av_learnc + self.running_avarage_kl_where
+
+        # Compute the moving average of all the logit used to learn c
+        all_kl_learn_c = torch.stack((logit_kl_av, zwhere_kl_av_learnc, zinstance_kl_av_learnc), dim=0)
+        ma_all_kl = self.moving_average_calculator(all_kl_learn_c)
+        kl_learn_c = (all_kl_learn_c / ma_all_kl.detach()).sum()
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
@@ -704,8 +707,8 @@ class InferenceAndGeneration(torch.nn.Module):
         #    at later time. They are a pretraining strategy to encourage the model to explore only configurations
         #    compatible with user-defined constraints
 
-        # Make the active boxes adjust to the object masks
-        box_regression_cost =  self.bb_regression_strength * (c_detached_bk * bb_regression_bk).sum() / batch_size
+        # Make boxes adjust to masks (all boxes, both active and inactive)
+        box_regression_cost =  self.bb_regression_strength * bb_regression_bk.sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
         fgfraction_coupling = mixing_fg_b1wh.mean()
@@ -785,9 +788,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages
-                                 moving_average_logit=self.running_avarage_kl_logit.exp().detach().item(),
-                                 moving_average_instance=self.running_avarage_kl_instance.exp().detach().item(),
-                                 moving_average_where=self.running_avarage_kl_where.exp().detach().item(),
+                                 # all_kl_learn_c = torch.stack((logit_kl_av, zwhere_kl_av_learnc, zinstance_kl_av_learnc), dim=0)
+                                 moving_average_logit=ma_all_kl[0].detach().item(),
+                                 moving_average_instance=ma_all_kl[2].detach().item(),
+                                 moving_average_where=ma_all_kl[1].detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),
