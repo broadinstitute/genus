@@ -4,7 +4,7 @@
   "neptune_ml.data_test":        "gs://ld-data-bucket/genus/mnist/mnist_test_80x80_n2_6_with_grid.pt",
   "neptune_ml.ground_truth":     "gs://ld-data-bucket/genus/dummy_2.pt",
   "neptune_ml.ckpt":             "gs://ld-results-bucket/cellarium_genus/ckpt_CELLARIUM_271.pt",
-"neptune_ml.git_branch_or_commit": "883400d1e62212fe98ed861ed814f6d460ee09ec",
+"neptune_ml.git_branch_or_commit": "de6ba8cb88139011f72c5b0803d9afa5d176720c", 
 "neptune_ml.git_repo": "https://github.com/broadinstitute/genus.git",
   "neptune_ml.main_file_name": "main_mnist.py"
 }

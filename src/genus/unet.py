@@ -1,5 +1,6 @@
 import torch
 from .conv import UnetUpBlock, UnetDownBlock, SameSpatialResolution
+from .conv import EncoderLogit, EncoderWhere, EncoderBg
 from collections import deque
 from .namedtuple import UNEToutput
 import numpy
@@ -100,24 +101,10 @@ class UNetNew(torch.nn.Module):
         else:
             raise Exception("level_logit_output is wrong!")
 
-        self.encode_logit = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_logit, out_channels=ch_in_logit // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_logit // 2, out_channels=self.dim_logit, kernel_size=1, padding=0)
-        )
-
         ch_in_zwhere = ch_in_logit
-        self.encode_zwhere = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_zwhere, out_channels=ch_in_zwhere // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_zwhere // 2, out_channels=2 * self.dim_zwhere, kernel_size=1, padding=0)
-        )
-
-        self.encode_background = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_bg, out_channels=ch_in_bg // 2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_bg // 2, out_channels=2 * self.dim_zbg, kernel_size=1, padding=0)
-        )
+        self.encode_logit = EncoderLogit(ch_in=ch_in_logit, ch_out=self.dim_logit)
+        self.encode_zwhere = EncoderWhere(ch_in=ch_in_zwhere, ch_out=2 * self.dim_zwhere)
+        self.encode_background = EncoderBg(ch_in=ch_in_bg, ch_out=2* self.dim_zbg)
 
     def forward(self, x, verbose: bool):
         fmap = self.backbone(x)
@@ -238,26 +225,11 @@ class UNet(torch.nn.Module):
         )
 
         ch_in_logit = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_logit = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_logit, out_channels=ch_in_logit//2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_logit//2, out_channels=self.dim_logit, kernel_size=1, padding=0)
-        )
-
-        # These two have a factor of 2 in the out_channels b/c I need to predict both mu,std
         ch_in_zwhere = self.ch_list[-self.level_zwhere_and_logit_output - 1]
-        self.encode_zwhere = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_zwhere, out_channels=ch_in_zwhere//2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_zwhere//2, out_channels=2*self.dim_zwhere, kernel_size=1, padding=0)
-        )
-
         ch_in_bg = self.ch_list[-self.level_background_output - 1]
-        self.encode_background = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=ch_in_bg, out_channels=ch_in_bg//2, kernel_size=3, padding=1),
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=ch_in_bg//2, out_channels=2*self.dim_zbg, kernel_size=1, padding=0)
-        )
+        self.encode_logit = EncoderLogit(ch_in=ch_in_logit, ch_out=self.dim_logit)
+        self.encode_zwhere = EncoderWhere(ch_in=ch_in_zwhere, ch_out=2 * self.dim_zwhere)
+        self.encode_background = EncoderBg(ch_in=ch_in_bg, ch_out=2 * self.dim_zbg)
 
     def forward(self, x: torch.Tensor, verbose: bool):
         # raw_image = x

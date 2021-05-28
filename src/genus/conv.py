@@ -5,6 +5,7 @@ import numpy
 
 class DoubleSpatialResolution(nn.Module):
     """
+    Helper Function:
     Tiny wrapper around ConvTranspose2D which doubles the spatial resolution of a tensor.
     """
     def __init__(self, ch_in: int, ch_out: int):
@@ -20,6 +21,7 @@ class DoubleSpatialResolution(nn.Module):
 
 class SameSpatialResolution(nn.Module):
     """
+    Helper Function:
     Implements [conv] or [conv + relu + conv]
     The output has the same spatial resolution of the input
     """
@@ -66,6 +68,7 @@ class SameSpatialResolution(nn.Module):
 
 class UnetDownBlock(nn.Module):
     """
+    Helper function:
     Performs the sequence max_pool(2x2) + SameSpatialResolution
     The spatial extension of the tensor is reduced in half.
     """
@@ -92,12 +95,15 @@ class UnetDownBlock(nn.Module):
 
 
 class UnetUpBlock(nn.Module):
-    """ Performs: up_conv + concatenation + SameSpatialResolution
-        During upconv the channels go from ch_in to ch_in/2
-        Since I am concatenating with something which has ch_in/2
-        During the SameSpatialResolution the channels go from ch_in,ch_out
-        Therefore during initialization only ch_in,ch_out of the SameSpatialResolution need to be specified.
-        The forward function takes two tensors: x_from_contracting_path , x_to_upconv
+    """
+    Helper function:
+
+    Performs: up_conv + concatenation + SameSpatialResolution
+    During upconv the channels go from ch_in to ch_in/2
+    Since I am concatenating with something which has ch_in/2
+    During the SameSpatialResolution the channels go from ch_in,ch_out
+    Therefore during initialization only ch_in,ch_out of the SameSpatialResolution need to be specified.
+    The forward function takes two tensors: x_from_contracting_path , x_to_upconv
     """
     def __init__(self, ch_in: int, ch_out: int):
         super().__init__()
@@ -121,6 +127,7 @@ class UnetUpBlock(nn.Module):
 
 
 class Mlp1by1(nn.Module):
+    """ Helper function """
 
     def __init__(self, ch_in: int, ch_out: int, ch_hidden: int):
         """
@@ -146,8 +153,95 @@ class Mlp1by1(nn.Module):
         y = self.mlp_1by1(x.flatten(end_dim=-4))
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
+#---- Logit
 
-class DecoderConv(nn.Module):
+class EncoderLogit(nn.Module):
+    def __init__(self, ch_in: int, ch_out: int):
+        super().__init__()
+        self.encode_logit = Mlp1by1(ch_in=ch_in, ch_out=ch_out, ch_hidden= ch_in // 2)
+
+    def forward(self, x, verbose=False):
+        return self.encode_logit(x)
+
+#----- Zwhere
+
+class EncoderWhere(nn.Module):
+    def __init__(self, ch_in: int, ch_out: int):
+        super().__init__()
+        self.encode_zwhere = Mlp1by1(ch_in=ch_in, ch_out=ch_out, ch_hidden=ch_in // 2)
+
+    def forward(self, x, verbose=False):
+        return self.encode_zwhere(x)
+
+class DecoderWhere(nn.Module):
+    def __init__(self, ch_in: int, ch_out: int):
+        super().__init__()
+        self.decode_zwhere = torch.nn.Conv2d(in_channels=ch_in, out_channels=ch_out, kernel_size=1, groups=4)
+
+    def forward(self, x):
+        return self.decode_zwhere(x)
+
+#--------- INSTANCE -------
+
+class EncoderInstance(nn.Module):
+    def __init__(self, glimpse_size: int, ch_in: int, dim_z: int):
+        super().__init__()
+        self.ch_in = ch_in
+        assert glimpse_size == 28
+        self.dim_z = dim_z
+
+        self.conv = nn.Sequential(
+            torch.nn.Conv2d(in_channels=self.ch_in, out_channels=32, kernel_size=4, stride=1, padding=2),  # 28,28
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1),  # 14,14
+            torch.nn.ReLU(inplace=True),
+            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1),  # 7,7
+        )
+        self.linear = nn.Linear(64 * 7 * 7, 2 * self.dim_z)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = self.conv(x.flatten(end_dim=-4)).view(-1, 64 * 7 * 7)  # flatten the dependent dimension
+        x2 = self.linear(x1).view(list(x.shape[:-3]) + [2*self.dim_z])
+        return x2
+
+class DecoderInstance(nn.Module):
+    def __init__(self, glimpse_size: int, dim_z: int, ch_out: int):
+        super().__init__()
+        self.glimpse_size = glimpse_size
+        assert self.glimpse_size == 28
+        self.dim_z = dim_z
+        self.ch_out = ch_out
+        self.upsample = nn.Linear(self.dim_z, 64 * 7 * 7)
+        self.decoder = nn.Sequential(
+            torch.nn.ConvTranspose2d(64, 32, 4, 2, 1),  # B,  64,  14,  14
+            torch.nn.ReLU(inplace=True),
+            torch.nn.ConvTranspose2d(32, 32, 4, 2, 1, 1),  # B,  32, 28, 28
+            torch.nn.ReLU(inplace=True),
+            torch.nn.ConvTranspose2d(32, self.ch_out, 4, 1, 2)  # B, ch, 28, 28
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        independent_dim = list(z.shape[:-1])
+        x1 = self.upsample(z.view(-1, self.dim_z)).view(-1, 64, 7, 7)
+        x2 = self.decoder(x1).view(independent_dim + [self.ch_out, self.glimpse_size, self.glimpse_size])
+        return x2
+
+#----- Zbg ------
+# TODO: Make zbg fully connected not on 2D grid
+# zbg can be either:
+# 1. batch, ch, small_w, small_height (if using convolutional encoder/decoder)
+# 2. batch, ch, 1, 1  (if using fully connected layer)
+
+class EncoderBg(nn.Module):
+    def __init__(self, ch_in: int, ch_out: int):
+        super().__init__()
+        self.encode_zwhere = Mlp1by1(ch_in=ch_in, ch_out=ch_out, ch_hidden=ch_in // 2)
+
+    def forward(self, x, verbose=False):
+        return self.encode_zwhere(x)
+
+
+class DecoderBg(nn.Module):
     """
     Decode a small patch into a larger patch.
 
@@ -191,46 +285,4 @@ class DecoderConv(nn.Module):
         return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
 
-class DecoderInstance(nn.Module):
-    def __init__(self, glimpse_size: int, dim_z: int, ch_out: int):
-        super().__init__()
-        self.glimpse_size = glimpse_size
-        assert self.glimpse_size == 28
-        self.dim_z = dim_z
-        self.ch_out = ch_out
-        self.upsample = nn.Linear(self.dim_z, 64 * 7 * 7)
-        self.decoder = nn.Sequential(
-            torch.nn.ConvTranspose2d(64, 32, 4, 2, 1),  # B,  64,  14,  14
-            torch.nn.ReLU(inplace=True),
-            torch.nn.ConvTranspose2d(32, 32, 4, 2, 1, 1),  # B,  32, 28, 28
-            torch.nn.ReLU(inplace=True),
-            torch.nn.ConvTranspose2d(32, self.ch_out, 4, 1, 2)  # B, ch, 28, 28
-        )
 
-    def forward(self, z: torch.Tensor) -> torch.Tensor:
-        independent_dim = list(z.shape[:-1])
-        x1 = self.upsample(z.view(-1, self.dim_z)).view(-1, 64, 7, 7)
-        x2 = self.decoder(x1).view(independent_dim + [self.ch_out, self.glimpse_size, self.glimpse_size])
-        return x2
-
-
-class EncoderInstance(nn.Module):
-    def __init__(self, glimpse_size: int, ch_in: int, dim_z: int):
-        super().__init__()
-        self.ch_in = ch_in
-        assert glimpse_size == 28
-        self.dim_z = dim_z
-
-        self.conv = nn.Sequential(
-            torch.nn.Conv2d(in_channels=self.ch_in, out_channels=32, kernel_size=4, stride=1, padding=2),  # 28,28
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=32, out_channels=32, kernel_size=4, stride=2, padding=1),  # 14,14
-            torch.nn.ReLU(inplace=True),
-            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1),  # 7,7
-        )
-        self.linear = nn.Linear(64 * 7 * 7, 2 * self.dim_z)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x1 = self.conv(x.flatten(end_dim=-4)).view(-1, 64 * 7 * 7)  # flatten the dependent dimension
-        x2 = self.linear(x1).view(list(x.shape[:-3]) + [2*self.dim_z])
-        return x2
