@@ -352,7 +352,7 @@ class InferenceAndGeneration(torch.nn.Module):
         # Quantities to compute the moving averages
         # Note that setting the initial value of self.running_avarage_kl_logit high means that I am going to neglect
         # KL_logit for a while since that term is multiplied by exp(-self.running_avarage_kl_logit)
-        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(10.0, dtype=torch.float), requires_grad=True)
+        self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
         self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
         self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
         self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
@@ -586,8 +586,9 @@ class InferenceAndGeneration(torch.nn.Module):
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
-        # E. The other KL are between normal distributions and can be computed analytically
         zbg_kl_av = zbg.kl.mean()
+
+        # E. The other KL are between normal distributions and can be computed analytically
         # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached or c_attached?
         if self.indicator_type == "one_detached":
             indicator_bk = torch.ones_like(prob_bk)
