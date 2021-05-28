@@ -615,9 +615,10 @@ class InferenceAndGeneration(torch.nn.Module):
         # Accomplish both points above with a hard coded solution is tricky therefore I used the auxiliary loss function
         # trick.
         kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
-                 torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
-                 torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
-                 torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av + self.running_avarage_kl_where
+                 zbg_kl_av + zinstance_kl_av + zwhere_kl_av
+                 #torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
+                 #torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
+                 #torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av + self.running_avarage_kl_where
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
