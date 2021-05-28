@@ -263,7 +263,6 @@ class MetricMiniBatch(NamedTuple):
     entropy_ber: float
     reinforce_ber: float
     moving_average_logit: float
-    moving_average_bg: float
     moving_average_instance: float
     moving_average_where: float
     # conting accuracy

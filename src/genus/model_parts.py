@@ -351,10 +351,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Quantities to compute the moving averages
-        # Note that setting the initial value of self.running_avarage_kl_logit high means that I am going to neglect
-        # KL_logit for a while since that term is multiplied by exp(-self.running_avarage_kl_logit)
         self.running_avarage_kl_logit = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
-        self.running_avarage_kl_bg = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
         self.running_avarage_kl_instance = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
         self.running_avarage_kl_where = torch.nn.Parameter(data=torch.tensor(1.0, dtype=torch.float), requires_grad=True)
 
@@ -377,15 +374,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                            max_value=config["input_image"]["lambda_nobj_min_max"][1],
                                            linear_exp=True)
 
-        self.geco_mse = GecoParameter(initial_value=config["input_image"]["lambda_mse_min_max"][1],
-                                      min_value=config["input_image"]["lambda_mse_min_max"][0],
-                                      max_value=config["input_image"]["lambda_mse_min_max"][1],
-                                      linear_exp=False)
+        #self.geco_mse = GecoParameter(initial_value=config["input_image"]["lambda_mse_min_max"][1],
+        #                              min_value=config["input_image"]["lambda_mse_min_max"][0],
+        #                              max_value=config["input_image"]["lambda_mse_min_max"][1],
+        #                              linear_exp=False)
 
         self.geco_learnc = GecoParameter(initial_value=config["input_image"]["lambda_learnc_min_max"][0],
                                          min_value=config["input_image"]["lambda_learnc_min_max"][0],
                                          max_value=config["input_image"]["lambda_learnc_min_max"][1],
-                                         linear_exp=False)
+                                         linear_exp=True)
 
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
@@ -649,13 +646,13 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
-            # MSE: Count and couple to mse_av (force mse_av approx self.target_mse_min)
-            # constraint_mse = (mse_av - self.target_mse_max).clamp(min=0.0) + (mse_av - self.target_mse_min).clamp(max=0)
-            constraint_mse = (mse_av - self.target_mse_min)
-
+            # Prefactor for KL_learn_c
             # If MSE < self.target_mse_min increase prefactor in front of learnc
             # If MSE > self.target_mse_min decrease prefactor in front of learnc
             constraint_learnc = (self.target_mse_min - mse_av)
+            # MSE: Count and couple to mse_av (force mse_av approx self.target_mse_min)
+            # constraint_mse = (mse_av - self.target_mse_max).clamp(min=0.0) + (mse_av - self.target_mse_min).clamp(max=0)
+            # constraint_mse = (mse_av - self.target_mse_min)
 
             # These two quantities are for debug only
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
@@ -672,12 +669,12 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
         geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
-        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
         geco_learnc: GECO = self.geco_learnc.forward(constraint=constraint_learnc)
+        # geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
 
         # This is the loss which makes geco parameter change
         loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                    geco_nobj_max.loss + geco_nobj_min.loss + geco_mse.loss + geco_learnc.loss
+                    geco_nobj_max.loss + geco_nobj_min.loss + geco_learnc.loss # + geco_mse.loss +
 
         # Explanation:
         # 1. mse_av is normalized to be roughly of order 1 and provides the scale the other terms are compared against
@@ -778,7 +775,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  logit_max=unet_output.logit.max().detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
-                                 lambda_mse=geco_mse.hyperparam.detach().item(),
+                                 # TODO: change name to geco_kl
+                                 lambda_mse=geco_learnc.hyperparam.detach().item(),
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
@@ -786,8 +784,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
+                                 # TODO: remove the running averages
                                  moving_average_logit=self.running_avarage_kl_logit.exp().detach().item(),
-                                 moving_average_bg=self.running_avarage_kl_bg.exp().detach().item(),
                                  moving_average_instance=self.running_avarage_kl_instance.exp().detach().item(),
                                  moving_average_where=self.running_avarage_kl_where.exp().detach().item(),
                                  # count accuracy
