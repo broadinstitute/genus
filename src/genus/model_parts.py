@@ -283,6 +283,7 @@ class InferenceAndGeneration(torch.nn.Module):
         self.n_mc_samples = config["loss"]["n_mc_samples"]
         self.indicator_type = config["loss"]["indicator_type"]
         self.is_zero_background = config["input_image"]["is_zero_background"]
+        self.kl_strength = config["input_image"]["kl_strength"]
 
         # variables
         self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
@@ -380,6 +381,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                       min_value=config["input_image"]["lambda_mse_min_max"][0],
                                       max_value=config["input_image"]["lambda_mse_min_max"][1],
                                       linear_exp=False)
+
+        self.geco_learnc = GecoParameter(initial_value=config["input_image"]["lambda_learnc_min_max"][0],
+                                         min_value=config["input_image"]["lambda_learnc_min_max"][0],
+                                         max_value=config["input_image"]["lambda_learnc_min_max"][1],
+                                         linear_exp=False)
 
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
@@ -517,15 +523,15 @@ class InferenceAndGeneration(torch.nn.Module):
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
 
         # Mask overlap . Note that only active masks contribute (b/c c_detahced_bk)
+        # Worst case scenario is when two masks are 0.5 for the same pixel -> cost = 0.5
+        # Best case scenario is when one mask is 1.0 and other are zeros -> cost = 0.0
         tmp_bk1wh = c_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
         tmp_mixing_bk1wh = tmp_bk1wh / torch.sum(tmp_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
         mask_overlap_b1wh = tmp_mixing_bk1wh.sum(dim=-4).pow(2) - tmp_mixing_bk1wh.pow(2).sum(dim=-4)
-        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
 
         # Bounding box overlap. Note that only active boxes contribute (b/c d_detached_bk)
         box_bk1wh = c_detached_bk[..., None, None, None].detach() * out_square_bk1wh
-        box_overlap = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
-        box_overlap_cost = self.box_overlap_strength * box_overlap.mean()
+        box_overlap_b1wh = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
 
         # 12. Observation model
         mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
@@ -535,6 +541,7 @@ class InferenceAndGeneration(torch.nn.Module):
         mse_av = mse_bcwh.mean()
 
         # 13. Cost for bounding boxes not being properly fitted around the object
+
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
                                      bounding_boxes_k=bounding_box_bk,
                                      pad_size=self.pad_size_bb,
@@ -542,14 +549,11 @@ class InferenceAndGeneration(torch.nn.Module):
                                      max_box_size=self.max_box_size)
 
         bb_regression_bk = (bb_ideal_bk.bx - bounding_box_bk.bx).pow(2) + \
-                              (bb_ideal_bk.by - bounding_box_bk.by).pow(2) + \
-                              (bb_ideal_bk.bw - bounding_box_bk.bw).pow(2) + \
-                              (bb_ideal_bk.bh - bounding_box_bk.bh).pow(2)
+                           (bb_ideal_bk.by - bounding_box_bk.by).pow(2) + \
+                           (bb_ideal_bk.bw - bounding_box_bk.bw).pow(2) + \
+                           (bb_ideal_bk.bh - bounding_box_bk.bh).pow(2)
 
-        # Only active boxes need to be fitted
-        bb_regression_cost = self.bb_regression_strength * (c_attached_bk * bb_regression_bk).sum() / batch_size
-
-        # 13. Compute the KL divergence between bernoulli posterior and DPP prior
+            # 13. Compute the KL divergence between bernoulli posterior and DPP prior
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
         # The first term is the negative entropy of the Bernoulli distribution.
@@ -586,40 +590,40 @@ class InferenceAndGeneration(torch.nn.Module):
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
-        zbg_kl_av = zbg.kl.mean()
 
         # E. The other KL are between normal distributions and can be computed analytically
         # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached or c_attached?
-        if self.indicator_type == "one_detached":
-            indicator_bk = torch.ones_like(prob_bk)
-        elif self.indicator_type == "c_detached":
-            indicator_bk = c_detached_bk.float()
-        elif self.indicator_type == "one_attached":
+#        if self.indicator_type == "one_detached":
+#            indicator_bk = torch.ones_like(prob_bk)
+#        elif self.indicator_type == "c_detached":
+#            indicator_bk = c_detached_bk.float()
+#        elif self.indicator_type == "one_attached":
+#            indicator_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
+#        elif self.indicator_type == "c_attached":
+#            indicator_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
+#        else:
+#            raise Exception("indicator type is not recognized")
+
+        if self.indicator_type == "one":
             indicator_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
-        elif self.indicator_type == "c_attached":
+        elif self.indicator_type == "c":
             indicator_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
+        elif self.indicator_type == "prob":
+            indicator_bk = prob_bk
         else:
             raise Exception("indicator type is not recognized")
-        zinstance_kl_av = (zinstance_kl_bk * indicator_bk).mean()
-        zwhere_kl_av = (zwhere_kl_bk * indicator_bk).mean()
 
-        # Sum the four KL divergences and normalize them by their running average separately
-        # so each contribute approximately 1 to the loss function.
-        # I accomplish the normalization using the auxiliary loss function
-        # LOSS =  exp(-lambda) * A + lambda
-        # Note that minimization w.r.t. lambda gives -> exp(lambda) = A therefore the first term is A/moving_average(A)
-        #
-        # I also tried to use a simple hard-coded moving average. I discovered that:
-        # 1. The moving average need to be extremely long (otherwise you see oscillation)
-        # 2. The initial values of the quantity I want to average are very wrong therefore I do not want them to have
-        #    a long lasting effect on the moving average.
-        # Accomplish both points above with a hard coded solution is tricky therefore I used the auxiliary loss function
-        # trick.
-        kl_tot = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
-                 zbg_kl_av + zinstance_kl_av + zwhere_kl_av
-                 #torch.exp(-self.running_avarage_kl_bg) * zbg_kl_av + self.running_avarage_kl_bg + \
-                 #torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av + self.running_avarage_kl_instance + \
-                 #torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av + self.running_avarage_kl_where
+        zinstance_kl_av_learnz = (zinstance_kl_bk * indicator_bk.detach()).mean()
+        zinstance_kl_av_learnc = (zinstance_kl_bk.detach() * indicator_bk).mean()
+        zwhere_kl_av_learnz = (zwhere_kl_bk * indicator_bk.detach()).mean()
+        zwhere_kl_av_learnc = (zwhere_kl_bk.detach() * indicator_bk).mean()
+
+        zbg_kl_av = zbg.kl.mean()
+
+        kl_learn_z = zbg_kl_av + zinstance_kl_av_learnz + zwhere_kl_av_learnz
+        kl_learn_c = torch.exp(-self.running_avarage_kl_logit) * logit_kl_av + self.running_avarage_kl_logit + \
+                     torch.exp(-self.running_avarage_kl_instance) * zinstance_kl_av_learnc + self.running_avarage_kl_instance + \
+                     torch.exp(-self.running_avarage_kl_where) * zwhere_kl_av_learnc + self.running_avarage_kl_where
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
@@ -649,6 +653,10 @@ class InferenceAndGeneration(torch.nn.Module):
             # constraint_mse = (mse_av - self.target_mse_max).clamp(min=0.0) + (mse_av - self.target_mse_min).clamp(max=0)
             constraint_mse = (mse_av - self.target_mse_min)
 
+            # If MSE < self.target_mse_min increase prefactor in front of learnc
+            # If MSE > self.target_mse_min decrease prefactor in front of learnc
+            constraint_learnc = (self.target_mse_min - mse_av)
+
             # These two quantities are for debug only
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
@@ -665,31 +673,67 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
         geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
         geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
+        geco_learnc: GECO = self.geco_learnc.forward(constraint=constraint_learnc)
 
-        # Put all the losses together
+        # This is the loss which makes geco parameter change
         loss_geco = geco_annealing.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                    geco_nobj_max.loss + geco_nobj_min.loss + geco_mse.loss
+                    geco_nobj_max.loss + geco_nobj_min.loss + geco_mse.loss + geco_learnc.loss
 
-        # Note that the lambda_fgfraction can be both positive or negative
-        lambda_fgfraction = geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam
-        fgfraction_coupling = lambda_fgfraction * mixing_fg_b1wh.mean()
+        # Explanation:
+        # 1. mse_av is normalized to be roughly of order 1 and provides the scale the other terms are compared against
+        # 2. box_regression_cost encourages boxes to be body-fitted around the objects masks
+        # 3. kl_learn_z is multiplied by a small factor so that initially the mse_av term is dominant and good z are learned
+        # 4. Due to the its parabolic nature, the kl terms acts as a confining potential preventing both zmu and zsigma
+        #    from escaping. The final value of zmu, zsigma are such that the confining force (i.e. minimization of kl)
+        #    and the escaping force (i.e. minimization of reconstruction) are balanced.
+        # 5. kl_learn_c is made of 3 pieces (DPP, zwhere, zinstance) each normalized by their separate running average.
+        #    Therefore this term is roughly equal to 3.
+        # 6. The decision to turn on/off some objects is based on the balance between improving reconstruction and decreasing
+        #    the kl cost. Objects with:
+        #    a. small kl and large mse gain will be preferentially "on"
+        #    b. large kl and small mse gain will be preferentially "off"
+        #    The overall balance between improving reconstruction and decreasing the kl cost
+        #    (i.e. a sort of chemical potential) is controlled by geco_learnc.hyperparam which is self tuned
+        #    to achieve mse_av = self.target_mse_min
+        # 7. all_logit_in_range is a quadratic confining potential with a flat bottom which prevents the logit from
+        #    becoming too large or too small thus allowing the model to keep learning. Its scale is not important since
+        #    being a quadratic function it always takes over at sufficiently large value of logit
+        # 8. mask_overlap_cost encourages non-overlapping mask.
+        #    This terms is in competition with mse_av and need to have a similar scale
+        # 9. mask_overlap_cost encourages non-overlapping bounding boxes (we are currently not using this term since
+        #    we believe that overlap of bounding boxes does not signal a problem in the model). It is left here for
+        #    future experimentation.
+        # 10. fgfraction_coupling and nobj_coupling are terms which are active during early training and become zero
+        #    at later time. They are a pretraining strategy to encourage the model to explore only configurations
+        #    compatible with user-defined constraints
 
-        # Note that the lambda_fgfraction can be both positive or negative
-        lambda_nobj = geco_nobj_max.hyperparam - geco_nobj_min.hyperparam
-        nobj_coupling = lambda_nobj * unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
+        # Make the active boxes adjust to the object masks
+        box_regression_cost =  self.bb_regression_strength * (c_detached_bk * bb_regression_bk).sum() / batch_size
+
+        # Couple to mixing to push the fgfraction up/down
+        fgfraction_coupling = mixing_fg_b1wh.mean()
+
+        # Couple to the probabilities to push number of objects up/down
+        nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
+
+        # Penalize overlapping masks
+        mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
+
+        # Penalize overlapping boxes
+        box_overlap_cost = self.box_overlap_strength * box_overlap_b1wh.mean()
 
         # Make sure that logit never become too large or too small.
-        # In this way there is always some small gradient passing through the probability
-        # (b/c the sigmoid is not in the flat region)
-        # This is a quadratic confining potential with a flat bottom.
-        logit_min = -8.0
         logit_max = 8.0
+        logit_min = -8.0
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
-                                         (-unet_output.logit + logit_min).clamp(min=0.0).pow(2) )
+                                         (logit_min - unet_output.logit).clamp(min=0.0).pow(2) )
 
-        loss_vae = (-geco_mse.hyperparam + 1.0) * kl_tot + geco_mse.hyperparam * mse_av + \
-                   mask_overlap_cost + box_overlap_cost + all_logit_in_range + \
-                   fgfraction_coupling + nobj_coupling
+        # Loss for the model for fixed geco parameters
+        loss_vae = mse_av + box_regression_cost  + \
+                   self.kl_strength * kl_learn_z + geco_learnc.hyperparam * kl_learn_c + \
+                   all_logit_in_range + mask_overlap_cost + box_overlap_cost + \
+                   (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
+                   (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling
 
         loss_tot = loss_vae + loss_geco
 
@@ -723,10 +767,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  cost_mask_overlap_av=mask_overlap_cost.detach().item(),
                                  cost_box_overlap_av=box_overlap_cost.detach().item(),
                                  cost_fgfraction=fgfraction_coupling.detach().item(),
-                                 cost_bb_regression_av=bb_regression_cost.detach().item(),
-                                 kl_zinstance=zinstance_kl_av.detach().item(),
+                                 cost_bb_regression_av=box_regression_cost.detach().item(),
+                                 kl_zinstance=zinstance_kl_av_learnc.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
-                                 kl_zwhere=zwhere_kl_av.detach().item(),
+                                 kl_zwhere=zwhere_kl_av_learnc.detach().item(),
                                  kl_logit=logit_kl_av.detach().item(),
                                  # debug
                                  logit_min=unet_output.logit.min().detach().item(),

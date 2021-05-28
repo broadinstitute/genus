@@ -71,6 +71,8 @@ input_image:
   sigma_mse: 0.1
   target_mse_min_max: [1.0, 3.0]  # let it be
   lambda_mse_min_max: [0.5, 0.9] # let it be
+  lambda_learnc_min_max: [0.01, 10.0]
+  kl_strength: 0.01
 
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
@@ -92,7 +94,8 @@ input_image:
 # parameter related to the loss function
 loss:
   # Can be "one_detached", "c_detached", "one_attached", "c_attached":
-  indicator_type: "one_detached"
+  # Newer version can be: "one", "c", "prob"
+  indicator_type: "one"
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
