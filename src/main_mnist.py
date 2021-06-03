@@ -175,24 +175,24 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                      keys_exclude=["wrong_examples"],
                                      verbose=False)
 
-                    if len(test_metrics.wrong_examples) > 0:
-                        error_index = torch.tensor(test_metrics.wrong_examples[:10], dtype=torch.long)
-                    else:
-                        error_index = torch.arange(10, dtype=torch.long)
-                    error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
-
-                    error_output_noisy: Output = vae.forward(error_test_img,
-                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                             noisy_sampling=True,
-                                                             draw_image=True,
-                                                             draw_boxes=True,
-                                                             draw_boxes_ideal=True,
-                                                             draw_bg=True)
-                    plot_reconstruction_and_inference(error_output_noisy,
-                                                      epoch=epoch,
-                                                      prefix="error_noisy",
-                                                      experiment=exp)
-
+###                    if len(test_metrics.wrong_examples) > 0:
+###                        error_index = torch.tensor(test_metrics.wrong_examples[:10], dtype=torch.long)
+###                    else:
+###                        error_index = torch.arange(10, dtype=torch.long)
+###                    error_test_img = test_loader.load(index=error_index)[0].to(reference_imgs.device)
+###
+###                    error_output_noisy: Output = vae.forward(error_test_img,
+###                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+###                                                             noisy_sampling=True,
+###                                                             draw_image=True,
+###                                                             draw_boxes=True,
+###                                                             draw_boxes_ideal=True,
+###                                                             draw_bg=True)
+###                    plot_reconstruction_and_inference(error_output_noisy,
+###                                                      epoch=epoch,
+###                                                      prefix="error_noisy",
+###                                                      experiment=exp)
+###
 ###                    error_output_clean: Output = vae.forward(error_test_img,
 ###                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
 ###                                                             noisy_sampling=False,
