@@ -631,6 +631,9 @@ class InferenceAndGeneration(torch.nn.Module):
         # D. Put together the expression for both the evaluation of the gradients and the evaluation of the value
         logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
         logit_kl_for_value_b = (logp_ber_nb - logp_dpp_nb).mean(dim=0).detach()
+        print("logp_ber_nb.shape, logp_dpp_nb.shape",logp_ber_nb.shape, logp_dpp_nb.shape)
+        print("logit_kl_for_value_b.shape",logit_kl_for_value_b.shape)
+
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 

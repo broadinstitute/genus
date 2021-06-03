@@ -33,6 +33,7 @@ exp['config'] = config
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
 img_test, seg_mask_test, count_test = load_obj("./data_test.pt")
 BATCH_SIZE = config["simulation"]["BATCH_SIZE"]
+print("BATCH_SIZE", BATCH_SIZE)
 
 train_dataset = DatasetInMemory(x=img_train,
                                 y=count_train,
@@ -55,9 +56,10 @@ show_batch(train_img_example, n_col=5, title="example train imgs",
            figsize=(12, 6), experiment=exp, neptune_name="example_train_imgs")
 
 # Make reference images
-index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
+#index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
+index_tmp = torch.arange(256, dtype=torch.long) + 25
 reference_imgs, reference_count, _ = test_loader.load(index=index_tmp)
-reference_imgs_fig = show_batch(reference_imgs, n_col=5, title="reference imgs",
+reference_imgs_fig = show_batch(reference_imgs[:10], n_col=5, title="reference imgs",
                                 normalize_range=(0.0, 1.0), neptune_name="reference_imgs", experiment=exp)
 
 # Instantiate model, optimizer and checks
@@ -67,7 +69,7 @@ optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"
 
 if torch.cuda.is_available():
     reference_imgs = reference_imgs.cuda()
-imgs_out = vae.inference_and_generator.unet.show_grid(reference_imgs)
+imgs_out = vae.inference_and_generator.unet.show_grid(reference_imgs[:10])
 unet_grid_fig = show_batch(imgs_out[:, 0], normalize_range=(0.0, 1.0), neptune_name="unet_grid", experiment=exp)
 
 # Check the constraint dictionary
@@ -192,17 +194,17 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                       prefix="error_noisy",
                                                       experiment=exp)
 
-                    error_output_clean: Output = vae.forward(error_test_img,
-                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                             noisy_sampling=False,
-                                                             draw_image=True,
-                                                             draw_boxes=True,
-                                                             draw_boxes_ideal=True,
-                                                             draw_bg=True)
-                    plot_reconstruction_and_inference(error_output_clean,
-                                                      epoch=epoch,
-                                                      prefix="error_clean",
-                                                      experiment=exp)
+###                    error_output_clean: Output = vae.forward(error_test_img,
+###                                                             iom_threshold=config["architecture"]["nms_threshold_test"],
+###                                                             noisy_sampling=False,
+###                                                             draw_image=True,
+###                                                             draw_boxes=True,
+###                                                             draw_boxes_ideal=True,
+###                                                             draw_bg=True)
+###                    plot_reconstruction_and_inference(error_output_clean,
+###                                                      epoch=epoch,
+###                                                      prefix="error_clean",
+###                                                      experiment=exp)
 
                     ref_output_noisy: Output = vae.forward(reference_imgs,
                                                            iom_threshold=config["architecture"]["nms_threshold_test"],
@@ -216,26 +218,26 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
                                                       prefix="ref_noisy",
                                                       experiment=exp)
 
-                    ref_output_clean: Output = vae.forward(reference_imgs,
-                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                           noisy_sampling=False,
-                                                           draw_image=True,
-                                                           draw_boxes=True,
-                                                           draw_boxes_ideal=True,
-                                                           draw_bg=True)
-                    plot_reconstruction_and_inference(ref_output_clean,
-                                                      epoch=epoch,
-                                                      prefix="ref_clean",
-                                                      experiment=exp)
+###                    ref_output_clean: Output = vae.forward(reference_imgs,
+###                                                           iom_threshold=config["architecture"]["nms_threshold_test"],
+###                                                           noisy_sampling=False,
+###                                                           draw_image=True,
+###                                                           draw_boxes=True,
+###                                                           draw_boxes_ideal=True,
+###                                                           draw_bg=True)
+###                    plot_reconstruction_and_inference(ref_output_clean,
+###                                                      epoch=epoch,
+###                                                      prefix="ref_clean",
+###                                                      experiment=exp)
 
-                    print("segmentation")
-                    segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,
-                                                             noisy_sampling=True,
-                                                             iom_threshold=config["architecture"]["nms_threshold_test"])
-                    plot_segmentation(segmentation, epoch=epoch, prefix="seg", experiment=exp)
+###                    print("segmentation")
+###                    segmentation: Segmentation = vae.segment(imgs_in=reference_imgs,
+###                                                             noisy_sampling=True,
+###                                                             iom_threshold=config["architecture"]["nms_threshold_test"])
+###                    plot_segmentation(segmentation, epoch=epoch, prefix="seg", experiment=exp)
 
                     print("generation test")
-                    generated: Output = vae.generate(imgs_in=reference_imgs,
+                    generated: Output = vae.generate(imgs_in=reference_imgs[:10],
                                                      draw_boxes=True,
                                                      draw_bg=True)
                     plot_generation(generated, epoch=epoch, prefix="gen", experiment=exp)

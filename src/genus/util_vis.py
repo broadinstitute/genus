@@ -622,7 +622,9 @@ def plot_reconstruction_and_inference(output: Output,
     if verbose:
         print("in plot_reconstruction_and_inference")
 
-    _ = show_batch(output.imgs.clamp(min=0.0, max=1.0),
+    NMAX=10
+
+    _ = show_batch(output.imgs[:NMAX].clamp(min=0.0, max=1.0),
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -630,7 +632,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/imgs")
 
-    _ = show_batch(output.inference.sample_c_grid_before_nms.float(),
+    _ = show_batch(output.inference.sample_c_grid_before_nms[:NMAX].float(),
                    n_col=5,
                    n_padding=4,
                    n_mc_samples=2,
@@ -639,7 +641,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/c_grid_before_nms")
 
-    _ = show_batch(output.inference.sample_c_grid_after_nms.float(),
+    _ = show_batch(output.inference.sample_c_grid_after_nms[:NMAX].float(),
                    n_col=5,
                    n_padding=4,
                    n_mc_samples=2,
@@ -648,7 +650,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/c_grid_after_nms")
 
-    _ = show_batch(output.inference.logit_grid,
+    _ = show_batch(output.inference.logit_grid[:NMAX],
                    n_col=5,
                    n_padding=4,
                    normalize=True,
@@ -657,7 +659,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/logit_unet")
 
-    _ = show_batch(torch.sigmoid(output.inference.logit_grid),
+    _ = show_batch(torch.sigmoid(output.inference.logit_grid[:NMAX]),
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -665,7 +667,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/prob_unet")
 
-    _ = show_batch(output.inference.prob_from_ranking_grid,
+    _ = show_batch(output.inference.prob_from_ranking_grid[:NMAX],
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -673,7 +675,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/prob_ranking")
 
-    _ = show_batch(output.inference.foreground_kcwh.sum(dim=-4).clamp(min=0.0, max=1.0),
+    _ = show_batch(output.inference.foreground_kcwh[:NMAX].sum(dim=-4).clamp(min=0.0, max=1.0),
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -681,7 +683,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/fg")
 
-    _ = show_batch(output.inference.background_cwh.clamp(min=0.0, max=1.0),
+    _ = show_batch(output.inference.background_cwh[:NMAX].clamp(min=0.0, max=1.0),
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -689,7 +691,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/bg")
 
-    _ = show_batch(output.inference.mask_overlap_1wh,
+    _ = show_batch(output.inference.mask_overlap_1wh[:NMAX],
                    n_col=5,
                    n_padding=4,
                    normalize=True,
@@ -698,7 +700,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/overlap")
 
-    mixing_fg_b1wh = output.inference.mixing_k1wh.sum(dim=-4).clamp(min=0.0, max=1.0)
+    mixing_fg_b1wh = output.inference.mixing_k1wh[:NMAX].sum(dim=-4).clamp(min=0.0, max=1.0)
     _ = show_batch(mixing_fg_b1wh,
                    n_col=5,
                    n_padding=4,
@@ -707,7 +709,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/fg_mask")
 
-    _ = show_batch(torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh,
+    _ = show_batch((torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh)[:NMAX],
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -715,7 +717,7 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/bg_mask")
 
-    _ = show_batch(output.bb_imgs,
+    _ = show_batch(output.bb_imgs[:NMAX],
                    n_col=5,
                    n_padding=4,
                    normalize=False,
@@ -800,8 +802,6 @@ def plot_reconstruction_and_inference(output: Output,
     if (prefix is not None) and (experiment is not None):
         experiment[prefix + "/kl_dpp_hist"].log(neptune.types.File.as_image(fig))
     plt.close(fig)
-
-
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")
