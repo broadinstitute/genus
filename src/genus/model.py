@@ -940,8 +940,6 @@ def process_one_epoch(model: CompositionalVae,
         # Start loop over minibatches
         for i, (imgs, labels, index) in enumerate(dataloader):
 
-            print("imgs.shape", imgs.shape)
-
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
