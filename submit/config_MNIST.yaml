@@ -132,24 +132,25 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 5E-4
-  lr: 0.001
-  lr_geco: 0.001
+  lr: 0.0003
+  lr_geco: 0.0003
+
+  # This parameter set the time-window for the mooving averages
+  beta_moving_averages: 0.999
 
   # Betas parameters for the Adam optimizer
   betas_adam: [0.9, 0.999]
   betas_geco_adam: [0.9, 0.999]
-  betas_moving_average_adam: [0.9, 0.999]
 
   # Alpha parameter for the RMSprop optimizer
   alpha_rmsprop: 0.99
   alpha_geco_rmsprop: 0.99
-  alpha_moving_average_rmsprop: 0.99
 
 
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: True
+  is_active: False
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"

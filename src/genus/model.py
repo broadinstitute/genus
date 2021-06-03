@@ -850,21 +850,15 @@ def instantiate_optimizer(model: CompositionalVae, config_optimizer: dict) -> to
     if config_optimizer["type"] == "adam":
         optimizer = torch.optim.Adam([{'params': geco_params, 'lr': config_optimizer["lr_geco"],
                                        'betas': config_optimizer["betas_geco_adam"]},
-                                      {'params': ma_params, 'lr': config_optimizer["lr_moving_average"],
-                                       'betas': config_optimizer["betas_moving_average_adam"]},
                                       {'params': other_params, 'lr': config_optimizer["lr"],
                                        'betas': config_optimizer["betas_adam"]}])
     elif config_optimizer["type"] == "SGD":
         optimizer = torch.optim.SGD([{'params': geco_params, 'lr': config_optimizer["lr_geco"]},
-                                     {'params': ma_params, 'lr': config_optimizer["lr_moving_average"]},
                                      {'params': other_params, 'lr': config_optimizer["lr"]}])
     elif config_optimizer["type"] == "RMSprop":
         optimizer = torch.optim.RMSprop([{'params': geco_params,
                                           'lr': config_optimizer["lr_geco"],
                                           'alpha': config_optimizer["alpha_geco_rmsprop"]},
-                                         {'params': ma_params,
-                                          'lr': config_optimizer["lr_moving_average"],
-                                          'alpha': config_optimizer["alpha_moving_average_rmsprop"]},
                                          {'params': other_params,
                                           'lr': config_optimizer["lr"],
                                           'alpha': config_optimizer["alpha_rmsprop"]}])

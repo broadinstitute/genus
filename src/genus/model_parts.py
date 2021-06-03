@@ -370,7 +370,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                          ch_out=4)
 
         # Quantities to compute the moving averages
-        self.moving_average_calculator = MovingAverageCalculator(beta=0.999, n_features=3)
+        self.moving_average_calculator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
+                                                                 n_features=3)
 
         # Observation model
         self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
