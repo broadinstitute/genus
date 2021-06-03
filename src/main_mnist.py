@@ -33,7 +33,6 @@ exp['config'] = config
 img_train, seg_mask_train, count_train = load_obj("./data_train.pt")
 img_test, seg_mask_test, count_test = load_obj("./data_test.pt")
 BATCH_SIZE = config["simulation"]["BATCH_SIZE"]
-print("BATCH_SIZE", BATCH_SIZE)
 
 train_dataset = DatasetInMemory(x=img_train,
                                 y=count_train,
