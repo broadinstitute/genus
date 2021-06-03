@@ -738,8 +738,8 @@ def plot_reconstruction_and_inference(output: Output,
     iou_on = iou_bk[c_bk]
     iou_off = iou_bk[~c_bk]
     fig = plt.figure(figsize=(12,12))
-    plt.hist(iou_on.cpu().detach().numpy(), density=False, bins=20, label="iou_on", alpha=0.3)
-    plt.hist(iou_off.cpu().detach().numpy(), density=False, bins=20, label='iou_off', alpha=0.3)
+    plt.hist(iou_on.cpu().detach().numpy(), density=False, bins=20, label="iou_on", alpha=0.3, rwidth=0.8)
+    plt.hist(iou_off.cpu().detach().numpy(), density=False, bins=20, label='iou_off', alpha=0.3, rwidth=0.8)
     plt.title("IoU histogram, epoch="+str(epoch))
     plt.legend()
     fig.tight_layout()
@@ -753,8 +753,8 @@ def plot_reconstruction_and_inference(output: Output,
     kl_box_on = kl_box_bk[c_bk]
     kl_box_off = kl_box_bk[~c_bk]
     fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_box_on.cpu().detach().numpy(), density=False, bins=20, label="kl_box_on", alpha=0.3)
-    plt.hist(kl_box_off.cpu().detach().numpy(), density=False, bins=20, label='kl_box_off', alpha=0.3)
+    plt.hist(kl_box_on.cpu().detach().numpy(), density=False, bins=20, label="kl_box_on", alpha=0.3, rwidth=0.8)
+    plt.hist(kl_box_off.cpu().detach().numpy(), density=False, bins=20, label='kl_box_off', alpha=0.3, rwidth=0.8)
     plt.title("KL box histogram, epoch=" + str(epoch))
     plt.legend()
     fig.tight_layout()
@@ -768,8 +768,8 @@ def plot_reconstruction_and_inference(output: Output,
     kl_fg_on = kl_fg_bk[c_bk]
     kl_fg_off = kl_fg_bk[~c_bk]
     fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_fg_on.cpu().detach().numpy(), density=False, bins=20, label="kl_fg_on", alpha=0.3)
-    plt.hist(kl_fg_off.cpu().detach().numpy(), density=False, bins=20, label='kl_bg_off', alpha=0.3)
+    plt.hist(kl_fg_on.cpu().detach().numpy(), density=False, bins=20, label="kl_fg_on", alpha=0.3, rwidth=0.8)
+    plt.hist(kl_fg_off.cpu().detach().numpy(), density=False, bins=20, label='kl_bg_off', alpha=0.3, rwidth=0.8)
     plt.title("KL fg histogram, epoch=" + str(epoch))
     plt.legend()
     fig.tight_layout()
@@ -779,8 +779,9 @@ def plot_reconstruction_and_inference(output: Output,
 
     # KL_bg
     kl_bg = output.inference.kl_bg
+    print("kl_bg.shape", kl_bg.shape)
     fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg")
+    plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg", rwidth=0.8)
     plt.title("KL bg histogram, epoch=" + str(epoch))
     plt.legend()
     fig.tight_layout()
@@ -790,8 +791,9 @@ def plot_reconstruction_and_inference(output: Output,
 
     # KL_dpp
     kl_dpp = output.inference.kl_dpp
+    print("kl_dpp.shape", kl_dpp.shape)
     fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp")
+    plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp", rwidth=0.8)
     plt.title("KL dpp histogram, epoch=" + str(epoch))
     plt.legend()
     fig.tight_layout()
