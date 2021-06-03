@@ -267,6 +267,7 @@ class Inference(NamedTuple):
     sample_c_grid_before_nms: torch.Tensor
     sample_c_grid_after_nms: torch.Tensor
     sample_prob_k: torch.Tensor
+    sample_c_k: torch.Tensor
     sample_bb_k: BB
     sample_bb_ideal_k: BB
     # Debug
@@ -319,12 +320,14 @@ class MetricMiniBatch(NamedTuple):
     similarity_l: float
     similarity_w: float
     iou_boxes: float
-    lambda_mse: float
     lambda_annealing: float
     lambda_fgfraction_max: float
     lambda_fgfraction_min: float
     lambda_nobj_max: float
     lambda_nobj_min: float
+    lambda_kl_fg: float
+    lambda_kl_bg: float
+    lambda_kl_boxes: float
     entropy_ber: float
     reinforce_ber: float
     moving_average_logit: float

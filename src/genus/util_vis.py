@@ -732,39 +732,74 @@ def plot_reconstruction_and_inference(output: Output,
                    experiment=experiment,
                    neptune_name=prefix+"/f_map")
 
-###    _ = show_batch(output.inference.delta_msefg_msebg[:,0].unsqueeze(-3),
-###                   n_col=5,
-###                   n_padding=4,
-###                   pad_value=0.5,
-###                   normalize=True,
-###                   normalize_range=(-1.0, 1.0),
-###                   title='delta_msefg_msebg, epoch= {0:6d}'.format(epoch),
-###                   experiment=experiment,
-###                   neptune_name=prefix+"/delta_mse")
-###
-###    fig = plt.figure(figsize=(12,12))
-###    mask = (output.inference.delta_msefg_msebg != 0)
-###    plt.hist(output.inference.delta_msefg_msebg[mask].cpu().detach().numpy(), density=True, bins=20)
-###    plt.title("epoch="+str(epoch))
-###    fig.tight_layout()
-###    if (prefix is not None) and (experiment is not None):
-###        experiment[prefix+"/delta_mse_hist"].log(neptune.types.File.as_image(fig))
-###    plt.close(fig)
+    # IoU histo
+    c_bk = output.inference.sample_c_k
+    iou_bk = output.inference.iou_boxes_k
+    iou_on = iou_bk[c_bk]
+    iou_off = iou_bk[~c_bk]
+    fig = plt.figure(figsize=(12,12))
+    plt.hist(iou_on.cpu().detach().numpy(), density=False, bins=20, label="iou_on", alpha=0.3)
+    plt.hist(iou_off.cpu().detach().numpy(), density=False, bins=20, label='iou_off', alpha=0.3)
+    plt.title("IoU histogram, epoch="+str(epoch))
+    plt.legend()
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix+"/iou_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+
+    # KL_where
+    c_bk = output.inference.sample_c_k
+    kl_box_bk = output.inference.kl_where_k
+    kl_box_on = kl_box_bk[c_bk]
+    kl_box_off = kl_box_bk[~c_bk]
+    fig = plt.figure(figsize=(12, 12))
+    plt.hist(kl_box_on.cpu().detach().numpy(), density=False, bins=20, label="kl_box_on", alpha=0.3)
+    plt.hist(kl_box_off.cpu().detach().numpy(), density=False, bins=20, label='kl_box_off', alpha=0.3)
+    plt.title("KL box histogram, epoch=" + str(epoch))
+    plt.legend()
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix + "/kl_box_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+
+    # KL_instance
+    c_bk = output.inference.sample_c_k
+    kl_fg_bk = output.inference.kl_instance_k
+    kl_fg_on = kl_fg_bk[c_bk]
+    kl_fg_off = kl_fg_bk[~c_bk]
+    fig = plt.figure(figsize=(12, 12))
+    plt.hist(kl_fg_on.cpu().detach().numpy(), density=False, bins=20, label="kl_fg_on", alpha=0.3)
+    plt.hist(kl_fg_off.cpu().detach().numpy(), density=False, bins=20, label='kl_bg_off', alpha=0.3)
+    plt.title("KL fg histogram, epoch=" + str(epoch))
+    plt.legend()
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix + "/kl_fg_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+
+    # KL_bg
+    kl_bg = output.inference.kl_bg
+    fig = plt.figure(figsize=(12, 12))
+    plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg")
+    plt.title("KL bg histogram, epoch=" + str(epoch))
+    plt.legend()
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix + "/kl_bg_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+
+    # KL_dpp
+    kl_dpp = output.inference.kl_dpp
+    fig = plt.figure(figsize=(12, 12))
+    plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp")
+    plt.title("KL dpp histogram, epoch=" + str(epoch))
+    plt.legend()
+    fig.tight_layout()
+    if (prefix is not None) and (experiment is not None):
+        experiment[prefix + "/kl_dpp_hist"].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
 
 
-
-
-####    # print(output.inference.small_imgs_in.shape) --> batch_size, k_boxes, ch, w, h
-####    # print(output.inference.small_imgs_out.shape)  --> batch_size, k_boxes, ch, w, h
-####    tmp = torch.cat((output.inference.small_imgs_in[0], output.inference.small_imgs_out[0]), dim=0)
-####    _ = show_batch(tmp,
-####                   n_col=tmp.shape[0]//2,
-####                   n_padding=4,
-####                   normalize=True,
-####                   normalize_range=(-0.5, 1.5),
-####                   title='small patches, epoch= {0:6d}'.format(epoch),
-####                   experiment=experiment,
-####                   neptune_name=prefix+"/small_patch")
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")

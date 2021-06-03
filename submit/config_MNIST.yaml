@@ -18,7 +18,7 @@ architecture:
   # If the input image is 256x256 and unet_scale_factor_boundigboxes=32
   # then the bounding_boxes are defined on a 8x8 grid
   unet_ch_feature_map: 8
-  pretrained_unet_from_mateuszbuda: True
+  pretrained_unet_from_mateuszbuda: False
   unet_scale_factor_boundingboxes: 8
 
   # The following values are used only if pretrained_unet_from_mateuszbuda == False
@@ -33,7 +33,7 @@ architecture:
   # 1. Use low zbg_dim
   # 2. Use a fc encoder-decoder for the background
   zbg_dim: 10  # small value otherwise the background can learn to reconstruct the foreground. (latent_bg is on 2D grid)
-  zwhere_dim: 8  # must be a multiple of 4
+  zwhere_dim: 4  # must be a multiple of 4
 
   # related to encoding-decoding of glimpses
   glimpse_size: 28  # only 28 will work for now
@@ -67,26 +67,10 @@ input_image:
   # Tuple with the range of the size of the objects (in pixels)
   range_object_size: [10, 35]
 
-  # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
-  # sigma_MSE provide the overall scale it should be chosen so that acceptable reconstructions are of order 1.
-  # For example if the input image is in the range (0,1) then sigma_mse should be 0.1
-  #
-  # Target_mse is the range of acceptable values for MSE. For example [1.0, 3.0]
-  #
-  # The model will tune its parameters to try to achieve MSE in this range while using as few objects as possible.
-  # If the background is too expressive or this value is too high, the model can achieve the target MSE with the background only
-  # If the foreground is not expressive enough or this value is too low, the model will never reach the target
-  sigma_mse: 0.1
-  target_mse_min_max: [1.0, 5.0]  # let it be
-  lambda_mse_min_max: [0.5, 0.9] # let it be
-  lambda_learnc_min_max: [0.01, 10.0]
-  kl_strength: 0.000001  # put this to a small value so that MSE is dominant and model learns a good reconstruction
-
   # Tuple with the desired fraction of pixel to be assigned to the foreground objects.
   # The values are in the (0,1) range. If unsure, use vague values.
   # The values are used to guide the model toward the desired segmentation.
-  target_fgfraction_min_max: [0.05, 0.15]  # this depends on the dataset
-  lambda_fgfraction_min_max: [0.0, 25.0]    # let it be
+  target_fgfraction_min_max: [0.05, 0.15]
 
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # See our example notebook to see how to choose these parameters.
@@ -95,26 +79,52 @@ input_image:
   DPP_learnable_parameters: True
   DPP_length: 5.0
   DPP_weight: 0.3
-  target_nobj_av_per_patch_min_max: [3.0, 5.0]
-  lambda_nobj_min_max: [0.0, 25.0]    # let it be
+  target_nobj_av_per_patch_min_max: [ 3.0, 5.0 ]
+
+  # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
+  # sigma_MSE provide the overall scale it should be chosen so that acceptable reconstructions are of order 1.
+  # For example if the input image is in the range (0,1) then sigma_mse should be 0.1
+  # Target_mse_fg and target_mse_bg are the desired values for the MSE, the strength of the KL regularization will be
+  # adjusted to achieve these results
+  sigma_mse: 0.1
+  target_mse_fg: 1.0
+  target_mse_bg: 1.0
+  target_mse_for_annealing: 5.0  # when this value is reached I start to anneal down the pretraining
+
+  # The bounding boxes should be similar to the ideal bounding boxes.
+  # Here you set a target for the Intersection over Union between inferred and ideal boxes.
+  # The strength of the KL regularization will be adjusted to achieve this result
+  target_IoU_bounding_boxes: 0.9
 
 
 # parameter related to the loss function
+# Most likely users should not change these.
 loss:
-  # Can be "one_detached", "c_detached", "one_attached", "c_attached":
-  # Newer version can be: "one", "c", "prob"
-  indicator_type: "c"
+
+  # this need to be fixed
+  lambda_learnc: 0.01
+
+  lambda_fgfraction_max: 25.0
+  lambda_nobj_max: 25.0
+  lambda_kl_fg_min_max: [0.0001, 10.0]
+  lambda_kl_bg_min_max: [0.0001, 10.0]
+
+  # bounding box regression
+  bounding_box_regression_penalty_strength: 0.01
+  bounding_box_regression_padding: 3
+  lambda_kl_box_min_max: [0.001, 10.0]
 
   # Hyper-parameters which control additional loss terms.
   # Do not change them unless you understand what you are doing
   mask_overlap_penalty_strength: 0.001
   box_overlap_penalty_strength: 0.0
-  bounding_box_regression_penalty_strength: 0.001
-  bounding_box_regression_padding: 3
 
   # Integer. Number of monte-carlo samples used to estimate the KL divergence with the DPP prior
   n_mc_samples: 10
 
+  # Can be "one_detached", "c_detached", "one_attached", "c_attached":
+  # Newer version can be: "one", "c", "prob"
+  indicator_type: "c"
 
 # parameter related to the optimizer
 optimizer:
