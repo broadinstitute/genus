@@ -102,12 +102,12 @@ input_image:
 loss:
 
   # this need to be fixed
-  lambda_learnc: 0.01
+  lambda_learnc: 0.0001
 
   lambda_fgfraction_max: 25.0
   lambda_nobj_max: 25.0
-  lambda_kl_fg_min_max: [0.0001, 10.0]
-  lambda_kl_bg_min_max: [0.0001, 10.0]
+  lambda_kl_fg_min_max: [0.001, 10.0]
+  lambda_kl_bg_min_max: [0.001, 10.0]
 
   # bounding box regression
   bounding_box_regression_penalty_strength: 0.01

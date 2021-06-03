@@ -235,24 +235,12 @@ class DecoderInstance(nn.Module):
 # 2. batch, ch, 1, 1  (if using fully connected layer)
 
 class EncoderBg(nn.Module):
-
     def __init__(self, ch_in: int, ch_out: int):
         super().__init__()
-        self.linear = Mlp1by1(ch_in=ch_in, ch_out=CH_BG_MAP, ch_hidden=(ch_in + CH_BG_MAP) // 2)
-        self.adaptive_avg_2D = nn.AdaptiveAvgPool2d(output_size=LOW_RESOLUTION_BG) # 5x5
-        self.convolutional = nn.Sequential(
-            nn.Conv2d(in_channels=CH_BG_MAP, out_channels=2*CH_BG_MAP, kernel_size=3, padding=0),  # 3x3
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=2*CH_BG_MAP, out_channels=4*CH_BG_MAP, kernel_size=3),  # 1x1
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=4 * CH_BG_MAP, out_channels=ch_out, kernel_size=1)  # 1x1
-        )
+        self.encode_bg = Mlp1by1(ch_in=ch_in, ch_out=ch_out, ch_hidden=ch_in // 2)
 
     def forward(self, x, verbose=False):
-        x1 = torch.nn.ReLU()(self.linear(x))
-        x2 = self.adaptive_avg_2D(x1)
-        x3 = self.convolutional(x2)
-        return x3
+        return self.encode_bg(x)
 
 
 class DecoderBg(nn.Module):
@@ -263,7 +251,7 @@ class DecoderBg(nn.Module):
         It relies on :class:`DoubleSpatialResolution` which doubles the spatial resolution of the tensor
         at each application.
     """
-    CH_MIN_DECODER = 16
+    CH_MIN_DECODER = 32
 
     def __init__(self, ch_in: int, ch_out: int, scale_factor: int):
         """
@@ -278,11 +266,7 @@ class DecoderBg(nn.Module):
         self.ch_in = ch_in
         self.ch_out = ch_out
 
-        self.upsample = nn.Conv2d(in_channels=self.ch_in,
-                                  out_channels=CH_BG_MAP * LOW_RESOLUTION_BG * LOW_RESOLUTION_BG,
-                                  kernel_size=1, padding=0)
-
-        ch = CH_BG_MAP
+        ch = self.ch_in
         ch_half = max(ch // 2, self.CH_MIN_DECODER)
         self.decoder = torch.nn.ModuleList()
         for n in range(0, int(n_levels)-1):
@@ -297,11 +281,80 @@ class DecoderBg(nn.Module):
         self.decoder.append(Mlp1by1(ch_in=ch, ch_out=self.ch_out, ch_hidden=-1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        assert len(x.shape) == 4
-        y = self.upsample(x).view(-1, CH_BG_MAP, LOW_RESOLUTION_BG, LOW_RESOLUTION_BG)
+        y = x.flatten(end_dim=-4)
         for i, module in enumerate(self.decoder):
             y = module(y)
-        return y
+        return y.view(list(x.shape[:-3]) + list(y.shape[-3:]))
 
-
-
+####class EncoderBg(nn.Module):
+####
+####    def __init__(self, ch_in: int, ch_out: int):
+####        super().__init__()
+####        self.linear = Mlp1by1(ch_in=ch_in, ch_out=CH_BG_MAP, ch_hidden=(ch_in + CH_BG_MAP) // 2)
+####        self.adaptive_avg_2D = nn.AdaptiveAvgPool2d(output_size=LOW_RESOLUTION_BG) # 5x5
+####        self.convolutional = nn.Sequential(
+####            nn.Conv2d(in_channels=CH_BG_MAP, out_channels=2*CH_BG_MAP, kernel_size=3, padding=0),  # 3x3
+####            nn.ReLU(inplace=True),
+####            nn.Conv2d(in_channels=2*CH_BG_MAP, out_channels=4*CH_BG_MAP, kernel_size=3),  # 1x1
+####            nn.ReLU(inplace=True),
+####            nn.Conv2d(in_channels=4 * CH_BG_MAP, out_channels=ch_out, kernel_size=1)  # 1x1
+####        )
+####
+####    def forward(self, x, verbose=False):
+####        x1 = torch.nn.ReLU()(self.linear(x))
+####        x2 = self.adaptive_avg_2D(x1)
+####        x3 = self.convolutional(x2)
+####        return x3
+####
+####
+####class DecoderBg(nn.Module):
+####    """
+####    Decode a small patch into a larger patch.
+####
+####    Note:
+####        It relies on :class:`DoubleSpatialResolution` which doubles the spatial resolution of the tensor
+####        at each application.
+####    """
+####    CH_MIN_DECODER = 16
+####
+####    def __init__(self, ch_in: int, ch_out: int, scale_factor: int):
+####        """
+####        Args:
+####            ch_in: int, number of channels in the input
+####            ch_out: int, number of channels in the output
+####            scale_factor: integer factor of 2, describes the increase in the spatial extension from input to output
+####        """
+####        super().__init__()
+####        n_levels = numpy.log2(float(scale_factor))
+####        assert (n_levels % 1.0 == 0) and (n_levels >= 1) # scale_factor is a power of 2 and larger than 2
+####        self.ch_in = ch_in
+####        self.ch_out = ch_out
+####
+####        self.upsample = nn.Conv2d(in_channels=self.ch_in,
+####                                  out_channels=CH_BG_MAP * LOW_RESOLUTION_BG * LOW_RESOLUTION_BG,
+####                                  kernel_size=1, padding=0)
+####
+####        ch = CH_BG_MAP
+####        ch_half = max(ch // 2, self.CH_MIN_DECODER)
+####        self.decoder = torch.nn.ModuleList()
+####        for n in range(0, int(n_levels)-1):
+####            self.decoder.append(DoubleSpatialResolution(ch, ch))
+####            self.decoder.append(nn.ReLU(inplace=True))
+####            self.decoder.append(Mlp1by1(ch_in=ch, ch_out=ch_half, ch_hidden=-1))
+####            self.decoder.append(nn.ReLU(inplace=True))
+####            ch = ch_half
+####            ch_half = max(ch // 2, self.CH_MIN_DECODER)
+####        self.decoder.append(DoubleSpatialResolution(ch, ch))
+####        self.decoder.append(nn.ReLU(inplace=True))
+####        self.decoder.append(Mlp1by1(ch_in=ch, ch_out=self.ch_out, ch_hidden=-1))
+####
+####    def forward(self, x: torch.Tensor) -> torch.Tensor:
+####        assert len(x.shape) == 4
+####        y = self.upsample(x).view(-1, CH_BG_MAP, LOW_RESOLUTION_BG, LOW_RESOLUTION_BG)
+####        for i, module in enumerate(self.decoder):
+####            y = module(y)
+####        return y
+####
+####
+####
+####

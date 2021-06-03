@@ -451,8 +451,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                                   posterior_std=F.softplus(zbg_std)+1E-3,
                                                   noisy_sampling=noisy_sampling,
                                                   sample_from_prior=generate_synthetic_data)
-        out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else \
-            F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
+        out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else self.decoder_zbg(zbg.value)
+        # out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else \
+        #     F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
 
         # 3. Bounding-Box decoding
         zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
