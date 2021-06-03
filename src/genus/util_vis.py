@@ -781,7 +781,6 @@ def plot_reconstruction_and_inference(output: Output,
 
     # KL_bg
     kl_bg = output.inference.kl_bg
-    print("kl_bg.shape", kl_bg.shape)
     fig = plt.figure(figsize=(12, 12))
     plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg", rwidth=0.8)
     plt.title("KL bg histogram, epoch=" + str(epoch))
@@ -793,7 +792,6 @@ def plot_reconstruction_and_inference(output: Output,
 
     # KL_dpp
     kl_dpp = output.inference.kl_dpp
-    print("kl_dpp.shape", kl_dpp.shape)
     fig = plt.figure(figsize=(12, 12))
     plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp", rwidth=0.8)
     plt.title("KL dpp histogram, epoch=" + str(epoch))
