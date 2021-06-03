@@ -11,6 +11,39 @@ from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, D
 from .non_max_suppression import NonMaxSuppression
 # from collections.abc import Iterable
 
+@torch.no_grad()
+def compute_iou(bounding_boxes_a: BB, bounding_boxes_b: BB):
+    """
+    Compute the Intersection Over Union between pairs of bounding boxes (one from each set).
+
+    Args:
+        bounding_boxes_a: first set of bounding box
+        bounding_boxes_b: second set of bounding box
+
+    Returns:
+        A tensor with the intersection over union between boxes
+    """
+    area_a = bounding_boxes_a.bw * bounding_boxes_a.bh
+    x1_a = bounding_boxes_a.bx - 0.5*bounding_boxes_a.bw
+    x3_a = bounding_boxes_a.bx + 0.5*bounding_boxes_a.bw
+    y1_a = bounding_boxes_a.by - 0.5*bounding_boxes_a.bh
+    y3_a = bounding_boxes_a.by + 0.5*bounding_boxes_a.bh
+
+    area_b = bounding_boxes_b.bw * bounding_boxes_b.bh
+    x1_b = bounding_boxes_b.bx - 0.5*bounding_boxes_b.bw
+    x3_b = bounding_boxes_b.bx + 0.5*bounding_boxes_b.bw
+    y1_b = bounding_boxes_b.by - 0.5*bounding_boxes_b.bh
+    y3_b = bounding_boxes_b.by + 0.5*bounding_boxes_b.bh
+
+    x1 = torch.max(x1_a, x1_b)
+    x3 = torch.min(x3_a, x3_b)
+    y1 = torch.max(y1_a, y1_b)
+    y3 = torch.min(y3_a, y3_b)
+    intersection = torch.clamp(x3 - x1, min=0) * torch.clamp(y3 - y1, min=0)
+
+    iou = intersection / (area_a + area_b - intersection)
+    return iou
+
 
 @torch.no_grad()
 def optimal_bb(mixing_k1wh: torch.Tensor,
@@ -551,7 +584,11 @@ class InferenceAndGeneration(torch.nn.Module):
                            (bb_ideal_bk.bw - bounding_box_bk.bw).pow(2) + \
                            (bb_ideal_bk.bh - bounding_box_bk.bh).pow(2)
 
-            # 13. Compute the KL divergence between bernoulli posterior and DPP prior
+        iou_bk = compute_iou(bounding_boxes_a=bounding_box_bk, bounding_boxes_b=bb_ideal_bk)
+        iou_av = (iou_bk * c_detached_bk).sum() / c_detached_bk.sum().clamp(min=1.0)
+
+
+        # 13. Compute the KL divergence between bernoulli posterior and DPP prior
         # Compute KL divergence between the DPP prior and the posterior:
         # KL(a,DPP) = \sum_c q(c|a) * [ log_q(c|a) - log_p(c|DPP) ] = -H[q] - sum_c q(c|a) log_p(c|DPP)
         # The first term is the negative entropy of the Bernoulli distribution.
@@ -585,6 +622,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # D. Put together the expression for both the evaluation of the gradients and the evaluation of the value
         logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
+        logit_kl_for_value_b = (logp_ber_nb - logp_dpp_nb).mean(dim=0).detach()
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
@@ -661,6 +699,8 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_fg_bk = torch.sum(out_mask_bk1wh * mse_fg_bkcwh,
                                   dim=(-1, -2, -3)) / torch.sum(out_mask_bk1wh, dim=(-1, -2, -3)).clamp(min=1.0)
             mse_fg_av = torch.mean(mse_fg_bk)
+            mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
+            mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).sum() / mixing_bg_b1wh.sum().clamp(min=1.0)
 
             # ANNEALING: Reduce if mse_av < self.target_mse_max and other condition are satisfied
             decrease_annealing = (mse_av < self.target_mse_max) * nobj_in_range * fgfraction_in_range
@@ -748,7 +788,12 @@ class InferenceAndGeneration(torch.nn.Module):
                               sample_prob_k=prob_bk.detach(),
                               sample_bb_k=bounding_box_bk,
                               sample_bb_ideal_k=bb_ideal_bk,
-                              feature_map=unet_output.features.detach())
+                              feature_map=unet_output.features.detach(),
+                              iou_boxes_k=iou_bk.detach(),
+                              kl_instance_k=zinstance_kl_bk.detach(),
+                              kl_where_k=zwhere_kl_bk.detach(),
+                              kl_bg=zbg.kl.sum(dim=(-1,-2,-3)).detach(),
+                              kl_dpp=logit_kl_for_value_b.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
@@ -757,6 +802,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  mse_fg_av=mse_fg_av.detach().item(),
+                                 mse_bg_av=mse_bg_av.detach().item(),
                                  fgfraction_smooth_av=fgfraction_av_smooth.detach().item(),
                                  fgfraction_hard_av=fgfraction_av_hard.detach().item(),
                                  nobj_smooth_av=nav_selected_smooth.detach().item(),
@@ -778,6 +824,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  logit_max=unet_output.logit.max().detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
+                                 iou_boxes=iou_av.detach().item(),
                                  # TODO: change name to geco_kl
                                  lambda_mse=geco_learnc.hyperparam.detach().item(),
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),

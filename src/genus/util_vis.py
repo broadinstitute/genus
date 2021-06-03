@@ -135,7 +135,6 @@ def plot_img_contours_label(image: Union[torch.Tensor, numpy.ndarray],
 
     assert image.shape[:2] == label.shape[:2]
 
-    print(window)
     if window is None:
         window = [0, 0, label.shape[-2], label.shape[-1]]
     else:
@@ -295,7 +294,9 @@ def draw_bounding_boxes(bounding_box: BB,
 
 
 
-
+##########################
+# FROM HERE
+###########################
 
 
 
@@ -415,10 +416,6 @@ def plot_img_and_seg(img: torch.Tensor,
 
     fig.tight_layout()
     if (neptune_name is not None) and (experiment is not None):
-        # experiment[neptune_name].log(fig)
-        # tmp_file_name = neptune_name.replace("/", "_")
-        # fig.savefig(tmp_file_name + ".png")
-        # experiment[neptune_name].log(File(tmp_file_name + ".png"))
         experiment[neptune_name].log(neptune.types.File.as_image(fig))
     plt.close(fig)
     return fig

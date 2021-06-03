@@ -12,7 +12,7 @@ from .namedtuple import DIST
 
 class MovingAverageCalculator(torch.nn.Module):
     """ Compute the moving average of 1D tensor of shape: n_features
-        The moving averages are saved as module parameters and can be reloaded from checkpoint
+        The moving averages are saved as module parameters and can be reloaded from checkpoint.
     """
 
     def __init__(self, n_features: int, beta: float=0.99):
@@ -42,9 +42,12 @@ class MovingAverageCalculator(torch.nn.Module):
         Returns:
             A tensor of the shape (n_features) with the time-average up to that point
         """
+        assert x.shape == self._accumulated_tensor.shape, \
+            "Input data has wrong shape. Expected {0} received {1}".format(self._accumulated_tensor.shape, x.shape)
+
         if self.training:
             self._steps += 1
-            tmp = self._beta * self._accumulated_tensor.data + (1 - self._beta) * x
+            tmp = self._beta * self._accumulated_tensor + (1 - self._beta) * x
             self._accumulated_tensor.data = tmp
 
         return self.get_average()

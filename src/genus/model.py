@@ -117,15 +117,15 @@ class CompositionalVae(torch.nn.Module):
 
     @staticmethod
     @torch.no_grad()
-    def _compute_sparse_similarity_matrix(mixing_k: torch.tensor,
-                                          batch_of_index: torch.tensor,
-                                          max_index: int,
-                                          radius_nn: int,
-                                          min_threshold: float = 0.01) -> torch.sparse.FloatTensor:
+    def _compute_sparse_coobject_probability_matrix(mixing_k: torch.tensor,
+                                                    batch_of_index: torch.tensor,
+                                                    max_index: int,
+                                                    radius_nn: int,
+                                                    min_threshold: float = 0.01) -> torch.sparse.FloatTensor:
         """
-        Compute the similarity between two pixels by computing the dot product of the mixing probabilities.
-        To save memory, if the similarity is less than min_threshold the value is not recorded (i.e. effectively zero).
-        The user should not use this method directly.
+        Compute the probability that two pixels belong to the same instance by taking the dot product
+        of the mixing probabilities. To save memory, if the coobject probability is less than min_threshold
+        the value is not recorded (i.e. effectively zero). The user should not use this method directly.
         This method is called internally by the method :meth:`process_batch_imgs` which is exposed to the user.
 
         Args:
@@ -135,7 +135,7 @@ class CompositionalVae(torch.nn.Module):
             max_index: The maximum pixel ID. This is necessary b/c a sparse matrix can only be constructed if the
                 largest possible row and col ID is known.
             radius_nn: size of the neighborhood used to compute the connectivity of each pixel.
-            min_threshold: minimum value of the connectivity which will be recorded.
+            min_threshold: minimum value of the coobject probability which will be recorded.
 
         Returns:
             A sparse matrix in the COO(rdinate) format of size (max_index, max_index). The number of non-zero entries
@@ -148,9 +148,6 @@ class CompositionalVae(torch.nn.Module):
             This function is a thin wrapper around a dot product. For each displacement
             (let's say +1 in the x direction) all pixel pairs are computed simultaneously.
             Unfortunately there is no way to compute all displacement without using a for-loop.
-
-        Todo:
-            * investigate other measure of similarity such as sqrt(dot_product) or dot_product^2.
         """
         with torch.no_grad():
             # start_time = time.time()
@@ -259,7 +256,7 @@ class CompositionalVae(torch.nn.Module):
                           draw_boxes_ideal: bool,
                           batch_of_index: Optional[torch.tensor],
                           max_index: Optional[int],
-                          radius_nn: int) -> Segmentation:
+                          radius_nn: Optional[int]) -> Segmentation:
         """
         This is an private method called by :meth:`segment' and :meth:`segment_with_tiling`.
         The user should not use this method directly.
@@ -286,17 +283,25 @@ class CompositionalVae(torch.nn.Module):
         integer_mask = ((most_likely_mixing > 0.5) * (index + 1)).squeeze(-4).to(dtype=torch.int32)  # bg=0 fg=1,2,.
         fg_prob = torch.sum(inference.mixing_k1wh, dim=-4)  # sum over instances
 
-        bounding_boxes = draw_bounding_boxes(prob=inference.sample_prob_k,
-                                             bounding_box=inference.sample_bb_k,
-                                             width=integer_mask.shape[-2],
-                                             height=integer_mask.shape[-1],
-                                             color='red') if draw_boxes else None
+        bounding_boxes_p_large = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                                     width=integer_mask.shape[-2],
+                                                     height=integer_mask.shape[-1],
+                                                     c=(inference.sample_prob_k > 0.5),
+                                                     color='red') if draw_boxes else None
 
-        bounding_boxes_ideal = draw_bounding_boxes(prob=inference.sample_prob_k,
-                                                   bounding_box=inference.sample_bb_ideal_k,
+        bounding_boxes_p_small = draw_bounding_boxes(bounding_box=inference.sample_bb_k,
+                                                     width=integer_mask.shape[-2],
+                                                     height=integer_mask.shape[-1],
+                                                     c=(inference.sample_prob_k < 0.5),
+                                                     color='blue') if draw_boxes else None
+
+        bounding_boxes_ideal = draw_bounding_boxes(bounding_box=inference.sample_bb_ideal_k,
                                                    width=integer_mask.shape[-2],
                                                    height=integer_mask.shape[-1],
-                                                   color='blue') if draw_boxes_ideal else None
+                                                   c=torch.ones_like(inference.sample_prob_k),
+                                                   color='green') if draw_boxes_ideal else None
+
+        all_bounding_boxes = bounding_boxes_p_large+bounding_boxes_p_small if draw_boxes else None
 
         # print("inference time", time.time()-start_time)
 
@@ -304,21 +309,21 @@ class CompositionalVae(torch.nn.Module):
             return Segmentation(raw_image=batch_imgs,
                                 fg_prob=fg_prob,
                                 integer_mask=integer_mask,
-                                bounding_boxes=bounding_boxes,
+                                bounding_boxes=all_bounding_boxes,
                                 bounding_boxes_ideal=bounding_boxes_ideal,
                                 similarity=None)
 
         else:
             max_index = torch.max(batch_of_index) if max_index is None else max_index
-            similarity_matrix = CompositionalVae._compute_sparse_similarity_matrix(mixing_k=inference.mixing_k1wh,
-                                                                                   batch_of_index=batch_of_index,
-                                                                                   max_index=max_index,
-                                                                                   radius_nn=radius_nn,
-                                                                                   min_threshold=0.1)
+            similarity_matrix = CompositionalVae._compute_sparse_coobject_probability_matrix(mixing_k=inference.mixing_k1wh,
+                                                                                             batch_of_index=batch_of_index,
+                                                                                             max_index=max_index,
+                                                                                             radius_nn=radius_nn,
+                                                                                             min_threshold=0.1)
             return Segmentation(raw_image=batch_imgs,
                                 fg_prob=fg_prob,
                                 integer_mask=integer_mask,
-                                bounding_boxes=bounding_boxes,
+                                bounding_boxes=bounding_boxes_p_large+bounding_boxes_p_small,
                                 bounding_boxes_ideal=bounding_boxes_ideal,
                                 similarity=SparseSimilarity(sparse_matrix=similarity_matrix,
                                                             index_matrix=None))

@@ -1,6 +1,6 @@
 import torch
 import numpy
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, Tuple
 import skimage.color
 import matplotlib.pyplot as plt
 
@@ -177,8 +177,44 @@ class NmsOutput(NamedTuple):
 
 
 class SparseSimilarity(NamedTuple):
-    sparse_matrix: torch.sparse.FloatTensor
+    sparse_matrix: Optional[torch.sparse.FloatTensor]
     index_matrix: Optional[torch.tensor]
+
+
+def filter_sparse_similarity_by_window(sparse_similarity: SparseSimilarity, window=Tuple[int, int, int, int]):
+        """ The window is specified in the scikit image convention: (min_row, min_col, max_row, max_col) """
+        tmp_index_matrix = sparse_similarity.index_matrix.clone()
+        tmp_index_matrix[..., :window[0], :] = -1
+        tmp_index_matrix[..., window[2]:, :] = -1
+        tmp_index_matrix[..., :, :window[1]] = -1
+        tmp_index_matrix[..., :, window[3]:] = -1
+        cum_sum = torch.cumsum((tmp_index_matrix >= 0).flatten(), dim=-1).view_as(tmp_index_matrix)
+        tmp_count = (cum_sum - cum_sum[..., window[0], window[1]]).view_as(tmp_index_matrix)
+        new_index_matrix = torch.where(tmp_index_matrix == -1, tmp_index_matrix, tmp_count)
+
+        # compute the transformation old2new
+        new_ids = new_index_matrix.flatten()
+        old_ids = sparse_similarity.index_matrix.flatten()
+        new_ids_ge0 = new_ids[old_ids >= 0]
+        old_ids_ge0 = old_ids[old_ids >= 0]
+        old2new = -1 * torch.ones_like(new_ids_ge0)
+        old2new[old_ids_ge0] = new_ids_ge0
+
+        sparse_matrix = sparse_similarity.sparse_matrix if sparse_similarity.sparse_matrix.is_coalesced() \
+            else sparse_similarity.sparse_matrix.coalesce()
+
+        new_row = old2new[sparse_matrix.indices()[0, :]]
+        new_col = old2new[sparse_matrix.indices()[1, :]]
+        filter = (new_row >= 0) * (new_col >= 0)
+
+        value_filtered = sparse_matrix.values()[filter]
+        indices_filtered = torch.stack((new_row[filter], new_col[filter]), dim=0).long()
+        max_index = torch.max(indices_filtered).item()
+
+        return SparseSimilarity(sparse_matrix=torch.sparse_coo_tensor(indices=indices_filtered,
+                                                                      values=value_filtered,
+                                                                      size=(max_index+1, max_index+1)),
+                                index_matrix=new_index_matrix[..., window[0]:window[2], window[1]:window[3]])
 
 
 class Segmentation(NamedTuple):
@@ -189,6 +225,28 @@ class Segmentation(NamedTuple):
     bounding_boxes: Optional[torch.Tensor] = None  # *,3,w,h
     bounding_boxes_ideal: Optional[torch.Tensor] = None  # *,3,w,h
     similarity: Optional[SparseSimilarity] = None
+
+    def filter_by_window(self, window=Tuple[int, int, int, int]):
+        """ The window is specified in the scikit image convention: (min_row, min_col, max_row, max_col) """
+
+        small_raw_image = self.raw_image[... ,window[0]:window[2], window[1]:window[3]].clone()
+        small_fg_prob = self.fg_prob[... ,window[0]:window[2], window[1]:window[3]].clone()
+        small_integer_mask = self.integer_mask[... ,window[0]:window[2], window[1]:window[3]].clone()
+
+        small_bounding_boxes = None if self.bounding_boxes is None \
+            else self.bounding_boxes[..., window[0]:window[2], window[1]:window[3]].clone()
+        small_bounding_boxes_ideal = None if self.bounding_boxes_ideal is None \
+            else self.bounding_boxes_ideal[..., window[0]:window[2], window[1]:window[3]].clone()
+
+        small_sparse_similarity = None if self.similarity is None else \
+            filter_sparse_similarity_by_window(self.similarity, window=window)
+
+        return Segmentation(raw_image=small_raw_image,
+                            fg_prob=small_fg_prob,
+                            integer_mask=small_integer_mask,
+                            bounding_boxes=small_bounding_boxes,
+                            bounding_boxes_ideal=small_bounding_boxes_ideal,
+                            similarity=small_sparse_similarity)
 
 
 class UNEToutput(NamedTuple):
@@ -213,6 +271,11 @@ class Inference(NamedTuple):
     sample_bb_ideal_k: BB
     # Debug
     feature_map: torch.Tensor
+    iou_boxes_k: torch.Tensor
+    kl_instance_k: torch.Tensor
+    kl_where_k: torch.Tensor
+    kl_bg: torch.Tensor
+    kl_dpp: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):
@@ -233,6 +296,7 @@ class MetricMiniBatch(NamedTuple):
     # monitoring
     mse_av: float
     mse_fg_av: float
+    mse_bg_av: float
     fgfraction_smooth_av: float
     fgfraction_hard_av: float
     nobj_smooth_av: float
@@ -254,6 +318,7 @@ class MetricMiniBatch(NamedTuple):
     logit_max: float
     similarity_l: float
     similarity_w: float
+    iou_boxes: float
     lambda_mse: float
     lambda_annealing: float
     lambda_fgfraction_max: float
