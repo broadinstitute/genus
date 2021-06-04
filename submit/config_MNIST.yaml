@@ -4,7 +4,7 @@ neptune_project: "cellarium/genus"
 # simulation-level parameters
 simulation:
   # can be scratch, resume, pretrained
-  type: "pretrained"
+  type: "scratch"
   BATCH_SIZE: 400
   MAX_EPOCHS: 1601
   TEST_FREQUENCY: 10
@@ -18,7 +18,7 @@ architecture:
   # If the input image is 256x256 and unet_scale_factor_boundigboxes=32
   # then the bounding_boxes are defined on a 8x8 grid
   unet_ch_feature_map: 8
-  pretrained_unet_from_mateuszbuda: True
+  pretrained_unet_from_mateuszbuda: False
   unet_scale_factor_boundingboxes: 8
 
   # The following values are used only if pretrained_unet_from_mateuszbuda == False
@@ -101,8 +101,6 @@ input_image:
 # parameter related to the loss function
 # Most likely users should not change these.
 loss:
-
-  # this need to be fixed
 
   lambda_fgfraction_max: 25.0
   lambda_nobj_max: 25.0
