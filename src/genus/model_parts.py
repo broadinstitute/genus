@@ -698,9 +698,9 @@ class InferenceAndGeneration(torch.nn.Module):
             # If self.target_mse_fg < mse_fg then decrease kl_instance and viceversa
             # If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
             # If self.target_mse_for_learnc < mse_av then decrease kl_learnc and viceversa
-            constraint_kl_bg = (self.target_mse_bg - mse_bg_av)
-            constraint_kl_fg = (self.target_mse_fg - mse_fg_av)
-            constraint_kl_learnc = (self.target_mse_for_learnc - mse_av)
+            constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * (annealing_factor == 0.0)
+            constraint_kl_fg = (self.target_mse_fg - mse_fg_av) * (annealing_factor == 0.0)
+            constraint_kl_learnc = (self.target_mse_for_learnc - mse_av) * (annealing_factor == 0.0)
 
         # Produce both the loss and the hyperparameters
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
