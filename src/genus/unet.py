@@ -115,7 +115,6 @@ class UNetNew(torch.nn.Module):
         # check frozen/unfrozen parameters
         for name, param in self.named_parameters():
             print(name, param.requires_grad)
-        assert 1==2
 
     def forward(self, x, verbose: bool):
         fmap = self.backbone(x)
