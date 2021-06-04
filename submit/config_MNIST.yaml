@@ -19,7 +19,7 @@ architecture:
   # then the bounding_boxes are defined on a 8x8 grid
   unet_ch_feature_map: 8
   pretrained_unet_from_mateuszbuda: True
-  partially_frozen_unet: True
+  partially_frozen_unet: False
   unet_scale_factor_boundingboxes: 8
 
   # The following values are used only if pretrained_unet_from_mateuszbuda == False
@@ -133,8 +133,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 5E-4
-  lr: 0.0001
-  lr_geco: 0.0001
+  lr: 0.001
+  lr_geco: 0.001
 
   # This parameter set the time-window for the moving averages
   beta_moving_averages: 0.999
@@ -151,7 +151,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: False
+  is_active: True
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"
