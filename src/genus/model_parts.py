@@ -340,7 +340,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                          dim_zbg=config["architecture"]["zbg_dim"],
                                          dim_zwhere=config["architecture"]["zwhere_dim"],
                                          dim_logit=1,
-                                         pretrained=True)
+                                         pretrained=True,
+                                         partially_frozen=config["architecture"]["partially_frozen_unet"])
         else:
             self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
                                    scale_factor_background=config["architecture"]["unet_scale_factor_background"],

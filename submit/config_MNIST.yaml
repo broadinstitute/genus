@@ -18,7 +18,8 @@ architecture:
   # If the input image is 256x256 and unet_scale_factor_boundigboxes=32
   # then the bounding_boxes are defined on a 8x8 grid
   unet_ch_feature_map: 8
-  pretrained_unet_from_mateuszbuda: False
+  pretrained_unet_from_mateuszbuda: True
+  partially_frozen_unet: True
   unet_scale_factor_boundingboxes: 8
 
   # The following values are used only if pretrained_unet_from_mateuszbuda == False
@@ -105,8 +106,8 @@ loss:
 
   lambda_fgfraction_max: 25.0
   lambda_nobj_max: 25.0
-  lambda_kl_fg_min_max: [0.1, 10.0]
-  lambda_kl_bg_min_max: [0.1, 10.0]
+  lambda_kl_fg_min_max: [0.001, 10.0]
+  lambda_kl_bg_min_max: [0.001, 10.0]
   lambda_kl_learnc_min_max: [0.001, 10.0]
 
   # bounding box regression

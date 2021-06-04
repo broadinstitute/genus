@@ -16,7 +16,8 @@ class UNetNew(torch.nn.Module):
                  dim_zbg: int,
                  dim_zwhere: int,
                  dim_logit: int,
-                 pretrained: bool):
+                 pretrained: bool,
+                 partially_frozen: bool):
 
         super().__init__()
 
@@ -29,6 +30,11 @@ class UNetNew(torch.nn.Module):
 
         self.backbone = torch.hub.load('mateuszbuda/brain-segmentation-pytorch', 'unet',
                                        in_channels=3, out_channels=1, init_features=32, pretrained=pretrained)
+
+        # Freeze all parameters. Note that newly created ones will be unfrozen
+        if partially_frozen:
+            for param in self.backbone.parameters():
+                param.requires_grad = False
 
         # Some surgery last layer with feature map
         self.backbone.conv = torch.nn.Conv2d(32, self.ch_output_features, kernel_size=(1, 1), stride=(1, 1))
@@ -105,6 +111,11 @@ class UNetNew(torch.nn.Module):
         self.encode_logit = EncoderLogit(ch_in=ch_in_logit, ch_out=self.dim_logit)
         self.encode_zwhere = EncoderWhere(ch_in=ch_in_zwhere, ch_out=2 * self.dim_zwhere)
         self.encode_background = EncoderBg(ch_in=ch_in_bg, ch_out=2* self.dim_zbg)
+
+        # check frozen/unfrozen parameters
+        for name, param in self.named_parameters():
+            print(name, param.requires_grad)
+        assert 1==2
 
     def forward(self, x, verbose: bool):
         fmap = self.backbone(x)

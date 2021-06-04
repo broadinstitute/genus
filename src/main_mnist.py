@@ -56,8 +56,8 @@ show_batch(train_img_example, n_col=5, title="example train imgs",
 
 # Make reference images
 #index_tmp = torch.tensor([25, 26, 27, 28, 29, 30, 31, 32, 34, 35], dtype=torch.long)
-index_tmp = torch.arange(256, dtype=torch.long) + 25
-#index_tmp = torch.arange(5, dtype=torch.long)
+#index_tmp = torch.arange(256, dtype=torch.long) + 25
+index_tmp = torch.arange(5, dtype=torch.long)
 reference_imgs, reference_count, _ = test_loader.load(index=index_tmp)
 reference_imgs_fig = show_batch(reference_imgs[:10], n_col=5, title="reference imgs",
                                 normalize_range=(0.0, 1.0), neptune_name="reference_imgs", experiment=exp)
