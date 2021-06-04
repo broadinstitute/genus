@@ -771,7 +771,7 @@ def plot_reconstruction_and_inference(output: Output,
     kl_fg_off = kl_fg_bk[~c_bk]
     fig = plt.figure(figsize=(12, 12))
     plt.hist(kl_fg_on.cpu().detach().numpy(), density=False, bins=20, label="kl_fg_on", alpha=0.3, rwidth=0.8)
-    plt.hist(kl_fg_off.cpu().detach().numpy(), density=False, bins=20, label='kl_bg_off', alpha=0.3, rwidth=0.8)
+    plt.hist(kl_fg_off.cpu().detach().numpy(), density=False, bins=20, label='kl_fg_off', alpha=0.3, rwidth=0.8)
     plt.title("KL fg histogram, epoch=" + str(epoch))
     plt.legend()
     fig.tight_layout()
