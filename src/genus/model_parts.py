@@ -3,13 +3,52 @@ from typing import Union, Tuple
 import numpy
 import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
-from .unet import UNet, UNetNew
-from .conv import EncoderInstance, DecoderInstance, DecoderBg, DecoderWhere
+from .unet import UNet, UNetNew, UnetSPACE
+from .conv import EncoderInstance, DecoderInstance, DecoderBg, DecoderWhere, EncoderInstanceSPACE, DecoderInstanceSPACE
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
-# from collections.abc import Iterable
+
+def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, append_uniform_zero_weight: bool):
+    """
+    If append_uniform_zero_weight a uniform zero weight is appended before computing the softmax.
+    That's usefull if you want to set a reference (i.e. the background mixing probability in my case)
+
+    Args:
+          indicator: torch.Tensor in the range [0,1]
+          weight: torch.Tensor in (-infty, infty)
+          dim: int, dimension along which the input need to be normalized
+          append_uniform_zero_weight: bool, whether to add a constant zero weight before computing the softmax
+
+    Returns:
+        the softmax, i.e. y_k = indicator * weight.exp() / torch.sum(indicator * weight.exp(), dim=dim)
+    """
+
+    assert indicator.shape == weight.shape
+    # print("weight.shape", weight.shape)
+
+    if append_uniform_zero_weight:
+        first_chunk_dim = list(weight.shape[:dim])
+        if (dim == -1) or (dim == len(weight.shape)):
+            second_chunk_dim = [1]
+        else:
+            second_chunk_dim = [1] + list(weight.shape[dim+1:])
+        zero_weight = torch.zeros(first_chunk_dim + second_chunk_dim, dtype=weight.dtype, device=weight.device)
+        one_indicator = torch.ones(first_chunk_dim + second_chunk_dim, dtype=indicator.dtype, device=indicator.device)
+        extended_weight = torch.cat((weight, zero_weight), dim=dim)
+        extended_indicator = torch.cat((indicator, one_indicator), dim=dim)
+    else:
+        extended_weight = weight
+        extended_indicator = indicator
+
+    # print("extended_weight.shape", extended_weight.shape)
+
+    extended_weight_max = torch.max(extended_weight, dim=dim, keepdim=True)[0].detach()
+    extended_delta_weight = extended_weight - extended_weight_max
+    tmp = extended_indicator * extended_delta_weight.exp()
+    return tmp / torch.sum(tmp, dim=dim, keepdim=True)
+
 
 @torch.no_grad()
 def compute_iou(bounding_boxes_a: BB, bounding_boxes_b: BB):
@@ -314,6 +353,7 @@ class InferenceAndGeneration(torch.nn.Module):
         super().__init__()
 
         # variables
+        self.GMM = config["loss"]["GMM_observation_model"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
         self.indicator_type = config["loss"]["indicator_type"]
         self.is_zero_background = config["input_image"]["is_zero_background"]
@@ -332,7 +372,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                  weight=config["input_image"]["DPP_weight"],
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
-        if config["architecture"]["pretrained_unet_from_mateuszbuda"]:
+        if config["architecture"]["space_inspired"]:
+            self.unet: UnetSPACE = UnetSPACE(ch_in=config["input_image"]["ch_in"],
+                                             ch_out=config["architecture"]["unet_ch_feature_map"],
+                                             dim_zbg=config["architecture"]["zbg_dim"],
+                                             dim_zwhere=config["architecture"]["zwhere_dim"],
+                                             dim_logit=1)
+        elif config["architecture"]["pretrained_unet_from_mateuszbuda"]:
             self.unet: UNetNew = UNetNew(pre_processor=None,
                                          scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
                                          ch_in=config["input_image"]["ch_in"],
@@ -354,13 +400,21 @@ class InferenceAndGeneration(torch.nn.Module):
                                    dim_logit=1)
 
         # Encoder-Decoders
-        self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                  ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                                  dim_z=config["architecture"]["zinstance_dim"])
+        if config["architecture"]["space_inspired"]:
+            self.encoder_zinstance: EncoderInstanceSPACE = EncoderInstanceSPACE(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                                ch_in=config["architecture"]["unet_ch_feature_map"],
+                                                                                dim_z=config["architecture"]["zinstance_dim"])
+            self.decoder_zinstance: DecoderInstanceSPACE = DecoderInstanceSPACE(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                                dim_z=config["architecture"]["zinstance_dim"],
+                                                                                ch_out=config["input_image"]["ch_in"] + 1)
+        else:
+            self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                      ch_in=config["architecture"]["unet_ch_feature_map"],
+                                                                      dim_z=config["architecture"]["zinstance_dim"])
+            self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+                                                                      dim_z=config["architecture"]["zinstance_dim"],
+                                                                      ch_out=config["input_image"]["ch_in"] + 1)
 
-        self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                  dim_z=config["architecture"]["zinstance_dim"],
-                                                                  ch_out=config["input_image"]["ch_in"] + 1)
 
         self.decoder_zbg: DecoderBg = DecoderBg(ch_in=config["architecture"]["zbg_dim"],
                                                 ch_out=config["input_image"]["ch_in"],
@@ -456,6 +510,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #     F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
 
         # 3. Bounding-Box decoding
+        print("unet_output.zwhere.shape", unet_output.zwhere.shape)
         zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
                                             split_size_or_sections=unet_output.zwhere.shape[-3]//2,
                                             dim=-3)
@@ -535,55 +590,60 @@ class InferenceAndGeneration(torch.nn.Module):
                                            height_small=self.glimpse_size)
 
         # 8. Encode, Sample, Decode zinstance
-        zinstance_tmp = self.encoder_zinstance.forward(cropped_feature_map)
-        zinstance_mu, zinstance_std = torch.split(zinstance_tmp, split_size_or_sections=zinstance_tmp.shape[-1]//2, dim=-1)
+        zinstance_mu, zinstance_std = self.encoder_zinstance.forward(cropped_feature_map).chunk(chunks=2, dim=-1)
         zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
                                                         posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
                                                         sample_from_prior=generate_synthetic_data)
         zinstance_kl_bk = zinstance.kl.sum(dim=-1)  # average over the latent dimension
-        small_imgs_out, small_weights_out = torch.split(self.decoder_zinstance.forward(zinstance.value),
-                                                        split_size_or_sections=(ch_raw_image, 1),
-                                                        dim=-3)
 
-        # 9. Apply sigmoid non-linearity to obtain small mask and then use STN to paste on a zero-canvas
+        # 9. Dec(z_instance) -> y_k, w_k
+        small_imgs_and_weights_out = self.decoder_zinstance.forward(zinstance.value)
         big_stuff = Uncropper.uncrop(bounding_box=bounding_box_bk,
-                                     small_stuff=torch.cat((small_imgs_out, torch.sigmoid(small_weights_out),
-                                                            torch.ones_like(small_weights_out)), dim=-3),
+                                     small_stuff=torch.cat((small_imgs_and_weights_out,
+                                                            torch.ones_like(small_imgs_and_weights_out[..., :1, :, :])), dim=-3),
                                      width_big=width_raw_image,
                                      height_big=height_raw_image)  # shape: batch, n_box, ch, w, h
-        out_img_bkcwh,  out_mask_bk1wh, out_square_bk1wh = torch.split(big_stuff,
-                                                                       split_size_or_sections=(ch_raw_image, 1, 1),
-                                                                       dim=-3)
+        out_img_bkcwh,  out_weight_bk1wh, out_square_bk1wh = big_stuff.split(split_size=(ch_raw_image, 1, 1), dim=-3)
 
         # 10. Compute the mixing (using a softmax-like function).
-        # Note that I add a small value so that foreground is in (0.001, 0.999)
-        # so that both foreground and background so that they can learn
         c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
-        c_times_mask_bk1wh = c_attached_bk[..., None, None, None] * out_mask_bk1wh + 1E-3 * out_square_bk1wh
-        mixing_bk1wh = (1.0 - 1E-3) * c_times_mask_bk1wh / torch.sum(c_times_mask_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
-        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
-        mixing_bg_b1wh = mixing_fg_b1wh.mul(-1.0).add(1.0)
+        mixing_bk1wh, mixing_bg_b11wh = torch.split(softmax_with_indicator(indicator=c_attached_bk[..., None, None, None] * out_square_bk1wh,
+                                                                           weight=out_weight_bk1wh,
+                                                                           dim=-4,
+                                                                           append_uniform_zero_weight=True),
+                                                    split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
+        mixing_bg_b1wh = mixing_bg_b11wh.squeeze(dim=-4)
 
         # 12. Observation model
-        mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
-        mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
-        mse_bcwh = mixing_bg_b1wh * mse_bg_bcwh + torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4)
-        mse_av = mse_bcwh.mean()
-        with torch.no_grad():
-            mse_bg_av = (mixing_bg_b1wh * mse_bg_bcwh).sum() / mixing_bg_b1wh.sum()
-            fgfraction_av_smooth = mixing_fg_b1wh.mean()
-            fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
-            tmp_fg_fraction = fgfraction_av_smooth.clamp(min=self.target_fgfraction_min, max=self.target_fgfraction_max)
-            tmp_bg_fraction = tmp_fg_fraction.mul(-1.0).add(1.0)
-            mse_fg_av = (mse_av - tmp_bg_fraction * mse_bg_av) / tmp_fg_fraction
-            # print(mse_av, mse_bg_av, mse_fg_av, tmp_fg_fraction*mse_fg_av+tmp_bg_fraction*mse_bg_av)
+        if self.GMM:
+            y_bcwh = mixing_bg_b1wh * out_background_bcwh + (mixing_bk1wh * out_img_bkcwh).sum(dim=-4)
+            mse_bcwh = ((y_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
+            mse_av = mse_bcwh.mean()
+            with torch.no_grad():
+                mask_bg_b1wh = (mixing_bg_b1wh > 0.5)
+                mse_bg_av = (mask_bg_b1wh * mse_bcwh).sum() / mask_bg_b1wh.sum()
+                mse_fg_av = (~mask_bg_b1wh * mse_bcwh).sum() / ~mask_bg_b1wh.sum()
+        else:
+            mse_fg_bkcwh = ((out_img_bkcwh - imgs_bcwh.unsqueeze(-4)) / self.sigma_mse).pow(2)
+            mse_bg_bcwh = ((out_background_bcwh - imgs_bcwh) / self.sigma_mse).pow(2)
+            mse_bcwh = mixing_bg_b1wh * mse_bg_bcwh + torch.sum(mixing_bk1wh * mse_fg_bkcwh, dim=-4)
+            mse_av = mse_bcwh.mean()
+            with torch.no_grad():
+                mask_fg_bk1wh = (mixing_bk1wh > 0.5)
+                mse_fg_av = (mask_fg_bk1wh * mse_fg_bkcwh).sum() / mask_fg_bk1wh.sum()
+                mask_bg_b1wh = (mixing_bg_b1wh > 0.5)
+                mse_bg_av = (mask_bg_b1wh * mse_bg_bcwh).sum() / mask_bg_b1wh.sum()
+
 
         # Mask overlap. Note that only active masks contribute (b/c c_detached_bk)
         # Worst case scenario is when two masks are 0.5 for the same pixel -> cost = 0.5
         # Best case scenario is when one mask is 1.0 and other are zeros -> cost = 0.0
-        tmp_bk1wh = c_detached_bk[..., None, None, None].detach() * out_mask_bk1wh
-        tmp_mixing_bk1wh = tmp_bk1wh / torch.sum(tmp_bk1wh, dim=-4, keepdim=True).clamp(min=1.0)
+        tmp_mixing_bk1wh, _ = torch.split(softmax_with_indicator(indicator=c_attached_bk[..., None, None, None].detach() * out_square_bk1wh,
+                                                                 weight=out_weight_bk1wh,
+                                                                 dim=-4,
+                                                                 append_uniform_zero_weight=True),
+                                          split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
         mask_overlap_b1wh = tmp_mixing_bk1wh.sum(dim=-4).pow(2) - tmp_mixing_bk1wh.pow(2).sum(dim=-4)
 
         # Bounding box overlap. Note that only active boxes contribute (b/c d_detached_bk)
@@ -681,6 +741,9 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
             # FGFRACTION: Count and couple based on mixing (force fg_fraction in range)
+            mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
+            fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
+            fgfraction_av_smooth = mixing_fg_b1wh.mean()
             fgfraction_av = torch.min(fgfraction_av_hard, fgfraction_av_smooth)
             fgfraction_in_range = (fgfraction_av < self.target_fgfraction_max) * \
                                   (fgfraction_av > self.target_fgfraction_min)
@@ -755,7 +818,7 @@ class InferenceAndGeneration(torch.nn.Module):
         box_regression_cost =  self.bb_regression_strength * bb_regression_bk.sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
-        fgfraction_coupling = mixing_fg_b1wh.mean()
+        fgfraction_coupling = mixing_bk1wh.sum(dim=-4).mean()
 
         # Couple to the probabilities to push number of objects up/down
         nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes

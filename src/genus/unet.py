@@ -7,6 +7,104 @@ import numpy
 from typing import Optional
 
 
+class UnetSPACE(torch.nn.Module):
+    """
+    Foreground image encoder.
+    """
+
+    def __init__(self,
+                 ch_in: int,
+                 ch_out: int,
+                 dim_zbg: int,
+                 dim_zwhere: int,
+                 dim_logit: int):
+        super(UnetSPACE, self).__init__()
+
+        assert ch_out == ch_in
+        self.ch_raw_image = ch_in
+        self.dim_zbg = dim_zbg
+        self.dim_logit = dim_logit
+        self.dim_zwhere = dim_zwhere
+
+        second_to_last_stride = 1
+        last_stride = 1
+
+        # Foreground Image Encoder in the paper
+        # Encoder: (B, C, Himg, Wimg) -> (B, E, G, G)
+        # G is H=W in the paper
+        self.backbone = torch.nn.Sequential(
+            torch.nn.Conv2d(self.ch_raw_image, 16, 4, 2, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(4, 16),
+            torch.nn.Conv2d(16, 32, 4, 2, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(8, 32),
+            torch.nn.Conv2d(32, 64, 4, 2, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(8, 64),
+            torch.nn.Conv2d(64, 128, 3, second_to_last_stride, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(16, 128),
+            torch.nn.Conv2d(128, 256, 3, last_stride, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(32, 256),
+            torch.nn.Conv2d(256, 128, 1),
+            torch.nn.CELU(),
+            torch.nn.GroupNorm(16, 128)
+        )
+
+        self.encode_logit = EncoderLogit(ch_in=128, ch_out=self.dim_logit)
+        self.encode_zwhere = EncoderWhere(ch_in=128, ch_out=2 * self.dim_zwhere)
+        self.encode_background = EncoderBg(ch_in=128, ch_out=2 * self.dim_zbg)
+
+    def forward(self, x, verbose: bool):
+        x1 = self.backbone(x)
+        zbg = self.encode_background(x1)
+        zwhere = self.encode_zwhere(x1)
+        logit = self.encode_logit(x1)
+
+        if verbose:
+            print("INPUT ---> shape ", x.shape)
+            print("FMAP ----> shape ", x.shape)
+            print("LOGIT ---> shape ", logit.shape)
+            print("ZWHERE --> shape ", zwhere.shape)
+            print("ZBG -----> shape ", zbg.shape)
+
+        return UNEToutput(zwhere=zwhere,
+                          logit=logit,
+                          zbg=zbg,
+                          features=x)
+
+    def show_grid(self, ref_image):
+        """ overimpose a grid the size of the corresponding resolution of each unet layer """
+
+        assert len(ref_image.shape) == 4
+        batch, ch, w_raw, h_raw = ref_image.shape
+
+        feature_map = self.backbone(ref_image[:1])
+        j_list = [1, h_raw // feature_map.shape[-1]]
+
+        nj = len(j_list)
+        check_board = ref_image.new_zeros((nj, 1, 1, w_raw, h_raw))  # for each batch and channel the same check_board
+        counter_w = torch.arange(w_raw)
+        counter_h = torch.arange(h_raw)
+
+        for k in range(nj):
+            j = j_list[k]
+            index_w = 1 + ((counter_w // j) % 2)  # either 1 or 2
+            dx = index_w.float().view(w_raw, 1)
+            index_h = 1 + ((counter_h // j) % 2)  # either 1 or 2
+            dy = index_h.float().view(1, h_raw)
+            check_board[k, 0, 0, :, :] = 0.25 * (dy * dx)  # dx*dy=1,2,4 multiply by 0.25 to have (0,1)
+
+        assert check_board.shape == (nj, 1, 1, w_raw, h_raw)
+
+        # I need to sum:
+        # check_board of shape: --> levels, 1,      1, w_raw, h_raw
+        # ref_image of shape ----->         batch, ch, w_raw, h_raw
+        return ref_image + check_board
+
+
 class UNetNew(torch.nn.Module):
     def __init__(self,
                  pre_processor: Optional[torch.nn.Module],

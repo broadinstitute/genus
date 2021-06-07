@@ -206,6 +206,54 @@ class EncoderInstance(nn.Module):
         x2 = self.linear(x1).view(list(x.shape[:-3]) + [2*self.dim_z])
         return x2
 
+
+class EncoderInstanceSPACE(nn.Module):
+
+    def __init__(self, glimpse_size: int, ch_in: int, dim_z: int):
+        super(EncoderInstanceSPACE, self).__init__()
+
+        self.ch_in = ch_in
+        assert glimpse_size == 32
+        self.dim_z = dim_z
+
+        self.enc_zinstance = nn.Sequential(
+            nn.Conv2d(self.ch_in, 16, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(4, 16),
+            nn.Conv2d(16, 32, 4, 2, 1),
+            nn.CELU(),
+            nn.GroupNorm(8, 32),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(4, 32),
+            nn.Conv2d(32, 64, 4, 2, 1),
+            nn.CELU(),
+            nn.GroupNorm(8, 64),
+            nn.Conv2d(64, 128, 4, 2, 1),
+            nn.CELU(),
+            nn.GroupNorm(8, 128),
+            nn.Conv2d(128, 256, 4),
+            nn.CELU(),
+            nn.GroupNorm(16, 256),          # *, 256, 1, 1
+            nn.Flatten(start_dim=-3),       # *, 256
+            nn.Linear(256, self.dim_z * 2)  # *, 2*dim_z
+        )
+
+
+    def forward(self, x):
+        """
+        Encode a (32, 32) glimpse into z_what
+
+        Args:
+            x: Torch.Tensors fo size (*, C, H, W)
+
+        Returns:
+            z_instance: torch.tensor of shape (*, 2*dim_z)
+        """
+        x1 = self.enc_zinstance(x.flatten(end_dim=-4))
+        return x1.view(list(x.shape[:-3]) + [2 * self.dim_z])
+
+
 class DecoderInstance(nn.Module):
     def __init__(self, glimpse_size: int, dim_z: int, ch_out: int):
         super().__init__()
@@ -227,6 +275,85 @@ class DecoderInstance(nn.Module):
         x1 = self.upsample(z.view(-1, self.dim_z)).view(-1, 64, 7, 7)
         x2 = self.decoder(x1).view(independent_dim + [self.ch_out, self.glimpse_size, self.glimpse_size])
         return x2
+
+
+class DecoderInstanceSPACE(nn.Module):
+    """Decoder z_what into reconstructed objects"""
+
+    def __init__(self, glimpse_size: int, dim_z: int, ch_out: int):
+        super(DecoderInstanceSPACE, self).__init__()
+
+        assert glimpse_size == 32
+        self.dim_z = dim_z
+        self.ch_out = ch_out
+
+        # I am using really deep network here. But this is overkill
+        self.dec = nn.Sequential(
+            nn.Conv2d(self.dim_z, 256, 1),
+            nn.CELU(),
+            nn.GroupNorm(16, 256),
+
+            nn.Conv2d(256, 128 * 2 * 2, 1),
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.GroupNorm(16, 128),
+            nn.Conv2d(128, 128, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(16, 128),
+
+            nn.Conv2d(128, 128 * 2 * 2, 1),
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.GroupNorm(16, 128),
+            nn.Conv2d(128, 128, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(16, 128),
+
+            nn.Conv2d(128, 64 * 2 * 2, 1),
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.GroupNorm(8, 64),
+            nn.Conv2d(64, 64, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(8, 64),
+
+            nn.Conv2d(64, 32 * 2 * 2, 1),
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.GroupNorm(8, 32),
+            nn.Conv2d(32, 32, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(8, 32),
+
+            nn.Conv2d(32, 16 * 2 * 2, 1),
+            nn.PixelShuffle(2),
+            nn.CELU(),
+            nn.GroupNorm(4, 16),
+            nn.Conv2d(16, 16, 3, 1, 1),
+            nn.CELU(),
+            nn.GroupNorm(4, 16),
+        )
+
+        self.dec_object = nn.Conv2d(in_channels=16, out_channels=self.ch_out-1, kernel_size=3, stride=1, padding=1)
+        self.dec_mask = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Decoder z_what into glimpse
+
+        Args:
+            z: torch.Tensor of shape (B,K, dim_z)
+
+        Returns:
+            glimpse: torch.Tensor of size (B,K, dim_out, glimpse_size, glimpse_size)
+        """
+        independent_dim = list(z.shape[:-1])
+        x1 = self.dec(z.view(-1, self.dim_z, 1, 1))
+        x2 = torch.cat((self.dec_object(x1), self.dec_mask(x1)), dim=-3)
+        dependent_dim = list(x2.shape[-3:])
+        return x2.view(independent_dim + dependent_dim)
+
+
 
 #----- Zbg ------
 # TODO: Make zbg fully connected not on 2D grid
