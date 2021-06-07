@@ -510,7 +510,7 @@ class InferenceAndGeneration(torch.nn.Module):
         #     F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
 
         # 3. Bounding-Box decoding
-        print("unet_output.zwhere.shape", unet_output.zwhere.shape)
+        #print("unet_output.zwhere.shape", unet_output.zwhere.shape)
         zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
                                             split_size_or_sections=unet_output.zwhere.shape[-3]//2,
                                             dim=-3)
