@@ -50,7 +50,6 @@ def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: i
     return tmp / torch.sum(tmp, dim=dim, keepdim=True)
 
 
-@torch.no_grad()
 def compute_iou(bounding_boxes_a: BB, bounding_boxes_b: BB):
     """
     Compute the Intersection Over Union between pairs of bounding boxes (one from each set).
@@ -438,7 +437,7 @@ class InferenceAndGeneration(torch.nn.Module):
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
         self.target_mse_fg = config["input_image"]["target_mse_fg"]
         self.target_mse_bg = config["input_image"]["target_mse_bg"]
-        self.target_mse_for_learnc = config["input_image"]["target_mse_for_learnc"]
+        self.target_mse_for_sparsity = config["input_image"]["target_mse_for_sparsity"]
         self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
         self.target_IoU_bounding_boxes = config["input_image"]["target_IoU_bounding_boxes"]
 
@@ -577,7 +576,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
         assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).sum(dim=-1), dim=-1, index=nms_output.indices_k)
-        # logit_bk = torch.gather(convert_to_box_list(unet_output.logit).squeeze(-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
         c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
@@ -614,6 +612,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                                                            append_uniform_zero_weight=True),
                                                     split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
         mixing_bg_b1wh = mixing_bg_b11wh.squeeze(dim=-4)
+        mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
 
         # 12. Observation model
         if self.GMM:
@@ -657,11 +656,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                      min_box_size=self.min_box_size,
                                      max_box_size=self.max_box_size)
 
-        bb_regression_bk = (bb_ideal_bk.bx - bounding_box_bk.bx).pow(2) + \
-                           (bb_ideal_bk.by - bounding_box_bk.by).pow(2) + \
-                           (bb_ideal_bk.bw - bounding_box_bk.bw).pow(2) + \
-                           (bb_ideal_bk.bh - bounding_box_bk.bh).pow(2)
-
         iou_bk = compute_iou(bounding_boxes_a=bounding_box_bk, bounding_boxes_b=bb_ideal_bk)
 
 
@@ -703,27 +697,10 @@ class InferenceAndGeneration(torch.nn.Module):
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
-        # E. The other KL are between normal distributions and can be computed analytically
-        # TODO: Right now even the off boxes contribute to the KL. Should I use one_attached or c_attached?
-        if self.indicator_type == "one":
-            indicator_bk = (torch.ones_like(prob_bk) - prob_bk).detach() + prob_bk
-        elif self.indicator_type == "c":
-            indicator_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
-        elif self.indicator_type == "prob":
-            indicator_bk = prob_bk
-        else:
-            raise Exception("indicator type is not recognized")
-
-        zinstance_kl_av_learnz = (zinstance_kl_bk * indicator_bk.detach()).sum() / batch_size
-        zinstance_kl_av_learnc = (zinstance_kl_bk.detach() * indicator_bk).sum() / batch_size
-        zwhere_kl_av_learnz = (zwhere_kl_bk * indicator_bk.detach()).sum() / batch_size
-        zwhere_kl_av_learnc = (zwhere_kl_bk.detach() * indicator_bk).sum() / batch_size
+        indicator_bk = c_detached_bk
+        zinstance_kl_av = (zinstance_kl_bk * indicator_bk.detach()).sum() / batch_size
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk.detach()).sum() / batch_size
         zbg_kl_av = zbg.kl.sum() / batch_size
-
-        # Compute the moving average of all the logit used to learn c
-        all_kl_learn_c = torch.stack((logit_kl_av, zwhere_kl_av_learnc, zinstance_kl_av_learnc), dim=0)
-        ma_all_kl = self.moving_average_calculator(all_kl_learn_c)
-        kl_learn_c = (all_kl_learn_c / ma_all_kl.detach()).sum()
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
@@ -740,8 +717,9 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_max = nav_selected - self.target_nobj_av_per_patch_max  # positive if nobj > target_max
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
-            # FGFRACTION: Count and couple based on mixing (force fg_fraction in range)
-            mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
+
+
+            # FGFRACTION: Count and couple based on mixing_fg (force fg_fraction in range)
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av_smooth = mixing_fg_b1wh.mean()
             fgfraction_av = torch.min(fgfraction_av_hard, fgfraction_av_smooth)
@@ -750,21 +728,28 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
-            # BOUNDING_BOXES REGRESSION. If iou_av > target increase kl, otherwise decrease
+            # BOUNDING_BOXES REGRESSION. If iou_av > self.target_IoU_bounding_boxes increase kl_zwhere, otherwise decrease
             iou_av = (iou_bk * c_detached_bk).sum() / c_detached_bk.sum().clamp(min=1.0)
             constraint_kl_boxes = (iou_av - self.target_IoU_bounding_boxes)
+
+            # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
+            constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
 
             # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other condition are satisfied
             decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
 
             # MSE.
-            # If self.target_mse_fg < mse_fg then decrease kl_instance and viceversa
-            # If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
-            # If self.target_mse_for_learnc < mse_av then decrease kl_learnc and viceversa
-            constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * (annealing_factor == 0.0)
-            constraint_kl_fg = (self.target_mse_fg - mse_fg_av) * (annealing_factor == 0.0)
-            constraint_kl_learnc = (self.target_mse_for_learnc - mse_av) * (annealing_factor == 0.0)
+            # If mse_av > self.target_mse Increase mse_hyperparameter and viceversa
+            constraint_mse = (mse_av - self.target_mse)
+
+            # SPARSITY:
+            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
+            # If n_obj < n_min decrease sparsity
+            # If n_obj in range and reconstruction is bad do nothing
+            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
+            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
+            constraint_sparsity =
 
         # Produce both the loss and the hyperparameters
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
@@ -773,55 +758,28 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
         geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
 
-        geco_kl_fg: GECO = self.geco_kl_fg.forward(constraint=constraint_kl_fg)
-        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
-
-        geco_kl_boxes: GECO = self.geco_kl_boxes.forward(constraint=constraint_kl_boxes)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
-        geco_kl_learnc: GECO = self.geco_kl_learnc.forward(constraint=constraint_kl_learnc)
+        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
+        geco_sparsity: GECO = self.geco_sparsity.forward(constraint=constraint_sparsity)
+
+        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
+        geco_kl_boxes: GECO = self.geco_kl_boxes.forward(constraint=constraint_kl_boxes)
+
 
         # This is the loss which makes geco parameter change
         loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
                     geco_nobj_max.loss + geco_nobj_min.loss + \
-                    geco_kl_fg.loss + geco_kl_bg.loss + \
-                    geco_kl_boxes.loss + geco_annealing.loss + geco_kl_learnc.loss
-
-        # Explanation:
-        # 1. mse_av is normalized to be roughly of order 1 and provides the scale the other terms are compared against
-        # 2. box_regression_cost encourages boxes to be body-fitted around the objects masks
-        # 3. kl_learn_z is multiplied by a small factor so that initially the mse_av term is dominant and good z are learned
-        # 4. Due to the its parabolic nature, the kl terms acts as a confining potential preventing both zmu and zsigma
-        #    from escaping. The final value of zmu, zsigma are such that the confining force (i.e. minimization of kl)
-        #    and the escaping force (i.e. minimization of reconstruction) are balanced.
-        # 5. kl_learn_c is made of 3 pieces (DPP, zwhere, zinstance) each normalized by their separate running average.
-        #    Therefore this term is roughly equal to 3.
-        # 6. The decision to turn on/off some objects is based on the balance between improving reconstruction and decreasing
-        #    the kl cost. Objects with:
-        #    a. small kl and large mse gain will be preferentially "on"
-        #    b. large kl and small mse gain will be preferentially "off"
-        #    The overall balance between improving reconstruction and decreasing the kl cost
-        #    (i.e. a sort of chemical potential) is controlled by geco_learnc.hyperparam which is self tuned
-        #    to achieve mse_av = self.target_mse_min
-        # 7. all_logit_in_range is a quadratic confining potential with a flat bottom which prevents the logit from
-        #    becoming too large or too small thus allowing the model to keep learning. Its scale is not important since
-        #    being a quadratic function it always takes over at sufficiently large value of logit
-        # 8. mask_overlap_cost encourages non-overlapping mask.
-        #    This terms is in competition with mse_av and need to have a similar scale
-        # 9. mask_overlap_cost encourages non-overlapping bounding boxes (we are currently not using this term since
-        #    we believe that overlap of bounding boxes does not signal a problem in the model). It is left here for
-        #    future experimentation.
-        # 10. fgfraction_coupling and nobj_coupling are terms which are active during early training and become zero
-        #    at later time. They are a pretraining strategy to encourage the model to explore only configurations
-        #    compatible with user-defined constraints
+                    geco_kl_bg.loss + geco_kl_boxes.loss + \
+                    geco_annealing.loss + geco_mse.loss
 
         # Make boxes adjust to masks (all boxes, both active and inactive)
         box_regression_cost =  self.bb_regression_strength * bb_regression_bk.sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
-        fgfraction_coupling = mixing_bk1wh.sum(dim=-4).mean()
+        fgfraction_coupling = mixing_fg_b1wh.mean()
 
         # Couple to the probabilities to push number of objects up/down
-        nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[...,0,0,0])  # divide by batch and n_boxes
+        nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[:2])  # divide by batch and n_boxes
 
         # Penalize overlapping masks
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
@@ -836,13 +794,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                          (logit_min - unet_output.logit).clamp(min=0.0).pow(2) )
 
         # Loss for the model for fixed geco parameters
-        loss_vae = mse_av + box_regression_cost + all_logit_in_range + mask_overlap_cost + box_overlap_cost + \
+        # I might need to add sparsity, if sum_k ck > Nmin and
+        loss_vae = logit_kl_av + zinstance_kl_av + \
+                   geco_kl_bg.hyperparam * zbg_kl_av + geco_kl_boxes.hyperparam * zwhere_kl_av + \
+                   all_logit_in_range + geco_sparsity.hyperparam * nobj_coupling + \
+                   geco_mse.hyperparam * (mse_av + box_regression_cost + mask_overlap_cost + box_overlap_cost) + \
                    (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
-                   (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
-                   geco_kl_fg.hyperparam * zinstance_kl_av_learnz + \
-                   geco_kl_bg.hyperparam * zbg_kl_av + \
-                   geco_kl_boxes.hyperparam * zwhere_kl_av_learnz + \
-                   geco_kl_learnc.hyperparam * kl_learn_c
+                   (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling
 
         loss_tot = loss_vae + loss_geco
 
@@ -884,9 +842,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                  cost_box_overlap_av=box_overlap_cost.detach().item(),
                                  cost_fgfraction=fgfraction_coupling.detach().item(),
                                  cost_bb_regression_av=box_regression_cost.detach().item(),
-                                 kl_zinstance=zinstance_kl_av_learnc.detach().item(),
+                                 kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
-                                 kl_zwhere=zwhere_kl_av_learnc.detach().item(),
+                                 kl_zwhere=zwhere_kl_av.detach().item(),
                                  kl_logit=logit_kl_av.detach().item(),
                                  # debug
                                  logit_min=unet_output.logit.min().detach().item(),
@@ -907,10 +865,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages
-                                 # all_kl_learn_c = torch.stack((logit_kl_av, zwhere_kl_av_learnc, zinstance_kl_av_learnc), dim=0)
-                                 moving_average_logit=ma_all_kl[0].detach().item(),
-                                 moving_average_instance=ma_all_kl[2].detach().item(),
-                                 moving_average_where=ma_all_kl[1].detach().item(),
                                  # count accuracy
                                  count_prediction=(prob_bk > 0.5).int().sum(dim=-1).detach().cpu().numpy(),
                                  wrong_examples=-1 * numpy.ones(1),

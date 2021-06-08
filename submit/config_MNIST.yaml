@@ -90,9 +90,8 @@ input_image:
   # target_mse_fg < target_mse_bg = target_mse_for_learnc
   # the strength of the KL regularization will be adjusted to achieve these results
   sigma_mse: 0.1
-  target_mse_fg: 1.0
+  target_mse: 1.0
   target_mse_bg: 1.0
-  target_mse_for_learnc: 1.0  # when this value is reached I try to make the solution more sparse
   target_mse_for_annealing: 5.0  # when this value is reached I start to anneal down the pretraining
 
   # The bounding boxes should be similar to the ideal bounding boxes.
