@@ -351,6 +351,12 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
+        # Variable related to multi-objective optimization
+        self.multi_objective_optimization = config["loss"]["multi_objective_optimization"]
+        self.approximate_MGDA = config["loss"]["approximate_MGDA"]
+        self.compute_frankwolfe_coeff_frequency = config["loss"]["compute_frankwolfe_coeff_frequency"]
+        self.frankwolfe_coeff = None
+
         # variables
         self.GMM = config["loss"]["GMM_observation_model"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
@@ -435,9 +441,8 @@ class InferenceAndGeneration(torch.nn.Module):
         self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
-        self.target_mse_fg = config["input_image"]["target_mse_fg"]
+        self.target_mse = config["input_image"]["target_mse"]
         self.target_mse_bg = config["input_image"]["target_mse_bg"]
-        self.target_mse_for_sparsity = config["input_image"]["target_mse_for_sparsity"]
         self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
         self.target_IoU_bounding_boxes = config["input_image"]["target_IoU_bounding_boxes"]
 
@@ -464,20 +469,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                         max_value=config["loss"]["lambda_kl_bg_min_max"][1],
                                         linear_exp=True)
 
-        self.geco_kl_fg = GecoParameter(initial_value=config["loss"]["lambda_kl_fg_min_max"][0],
-                                        min_value=config["loss"]["lambda_kl_fg_min_max"][0],
-                                        max_value=config["loss"]["lambda_kl_fg_min_max"][1],
-                                        linear_exp=True)
-
         self.geco_kl_boxes = GecoParameter(initial_value=1.0,
                                            min_value=config["loss"]["lambda_kl_box_min_max"][0],
                                            max_value=config["loss"]["lambda_kl_box_min_max"][1],
                                            linear_exp=True)
 
-        self.geco_kl_learnc = GecoParameter(initial_value=config["loss"]["lambda_kl_learnc_min_max"][0],
-                                            min_value=config["loss"]["lambda_kl_learnc_min_max"][0],
-                                            max_value=config["loss"]["lambda_kl_learnc_min_max"][1],
-                                            linear_exp=True)
+        self.geco_mse = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
+                                      min_value=config["loss"]["lambda_mse_min_max"][0],
+                                      max_value=config["loss"]["lambda_mse_min_max"][1],
+                                      linear_exp=True)
 
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
@@ -649,14 +649,14 @@ class InferenceAndGeneration(torch.nn.Module):
         box_bk1wh = c_detached_bk[..., None, None, None].detach() * out_square_bk1wh
         box_overlap_b1wh = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
 
-        # 13. Cost for bounding boxes not being properly fitted around the object
+        # 13. Compute the ideal boxes and the IoU between inferred and ideal boxes
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
                                      bounding_boxes_k=bounding_box_bk,
                                      pad_size=self.pad_size_bb,
                                      min_box_size=self.min_box_size,
                                      max_box_size=self.max_box_size)
-
         iou_bk = compute_iou(bounding_boxes_a=bounding_box_bk, bounding_boxes_b=bb_ideal_bk)
+        iou_av = (iou_bk * c_detached_bk).sum() / c_detached_bk.sum().clamp(min=1.0)
 
 
         # 13. Compute the KL divergence between bernoulli posterior and DPP prior
@@ -718,7 +718,6 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
 
-
             # FGFRACTION: Count and couple based on mixing_fg (force fg_fraction in range)
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av_smooth = mixing_fg_b1wh.mean()
@@ -729,8 +728,6 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
             # BOUNDING_BOXES REGRESSION. If iou_av > self.target_IoU_bounding_boxes increase kl_zwhere, otherwise decrease
-            iou_av = (iou_bk * c_detached_bk).sum() / c_detached_bk.sum().clamp(min=1.0)
-            constraint_kl_boxes = (iou_av - self.target_IoU_bounding_boxes)
 
             # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
             constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
@@ -743,13 +740,13 @@ class InferenceAndGeneration(torch.nn.Module):
             # If mse_av > self.target_mse Increase mse_hyperparameter and viceversa
             constraint_mse = (mse_av - self.target_mse)
 
-            # SPARSITY:
-            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
-            # If n_obj < n_min decrease sparsity
-            # If n_obj in range and reconstruction is bad do nothing
-            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
-            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
-            constraint_sparsity =
+#####            # SPARSITY:
+#####            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
+#####            # If n_obj < n_min decrease sparsity
+#####            # If n_obj in range and reconstruction is bad do nothing
+#####            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
+#####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
+#####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
 
         # Produce both the loss and the hyperparameters
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
@@ -760,20 +757,14 @@ class InferenceAndGeneration(torch.nn.Module):
 
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
         geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
-        geco_sparsity: GECO = self.geco_sparsity.forward(constraint=constraint_sparsity)
 
         geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
-        geco_kl_boxes: GECO = self.geco_kl_boxes.forward(constraint=constraint_kl_boxes)
 
-
-        # This is the loss which makes geco parameter change
-        loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                    geco_nobj_max.loss + geco_nobj_min.loss + \
-                    geco_kl_bg.loss + geco_kl_boxes.loss + \
-                    geco_annealing.loss + geco_mse.loss
-
-        # Make boxes adjust to masks (all boxes, both active and inactive)
-        box_regression_cost =  self.bb_regression_strength * bb_regression_bk.sum() / batch_size
+####        # This is the loss which makes geco parameter change
+####        loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+####                    geco_nobj_max.loss + geco_nobj_min.loss + \
+####                    geco_kl_bg.loss + geco_kl_boxes.loss + \
+####                    geco_annealing.loss + geco_mse.loss
 
         # Couple to mixing to push the fgfraction up/down
         fgfraction_coupling = mixing_fg_b1wh.mean()
@@ -794,15 +785,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                          (logit_min - unet_output.logit).clamp(min=0.0).pow(2) )
 
         # Loss for the model for fixed geco parameters
-        # I might need to add sparsity, if sum_k ck > Nmin and
-        loss_vae = logit_kl_av + zinstance_kl_av + \
-                   geco_kl_bg.hyperparam * zbg_kl_av + geco_kl_boxes.hyperparam * zwhere_kl_av + \
-                   all_logit_in_range + geco_sparsity.hyperparam * nobj_coupling + \
-                   geco_mse.hyperparam * (mse_av + box_regression_cost + mask_overlap_cost + box_overlap_cost) + \
-                   (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
-                   (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling
+        task_geco = geco_annealing.loss
+        task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
+        task_mse = mse_av + box_overlap_cost + mask_overlap_cost
+        task_iou = (iou_bk - self.target_IoU_bounding_boxes).clamp(min=0).mean()
+        task_fgfraction = (fgfraction_coupling - self.target_fgfraction_min).clamp(min=0) + \
+                          (self.target_fgfraction_max - fgfraction_coupling).clamp(min=0)
+        task_nobj = nobj_coupling * torch.sign(nav_selected - self.target_nobj_av_per_patch_min).detach()
 
-        loss_tot = loss_vae + loss_geco
+        loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -825,7 +816,6 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
-
         metric = MetricMiniBatch(loss=loss_tot,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
@@ -841,7 +831,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  cost_mask_overlap_av=mask_overlap_cost.detach().item(),
                                  cost_box_overlap_av=box_overlap_cost.detach().item(),
                                  cost_fgfraction=fgfraction_coupling.detach().item(),
-                                 cost_bb_regression_av=box_regression_cost.detach().item(),
                                  kl_zinstance=zinstance_kl_av.detach().item(),
                                  kl_zbg=zbg_kl_av.detach().item(),
                                  kl_zwhere=zwhere_kl_av.detach().item(),
@@ -859,9 +848,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
-                                 lambda_kl_fg=geco_kl_fg.hyperparam.detach().item(),
+                                 lambda_mse=geco_mse.hyperparam.detach().item(),
                                  lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
-                                 lambda_kl_boxes=geco_kl_boxes.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages

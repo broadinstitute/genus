@@ -3,14 +3,13 @@ import torch
 import numpy
 import dill
 import skimage.measure
-from typing import Union, Optional
+from typing import Union, Optional, List
 from .namedtuple import BB, ConcordanceIntMask
 import torch.nn.functional as F
 
 
 """ This modules has many low-level utilities such as saving and loading files, flatten dictionary to list, 
     reshape of tensor and so on. """
-
 
 def are_broadcastable(a: torch.Tensor, b: torch.Tensor) -> bool:
     """ Returns True if the two tensor are broadcastable to each other, False otherwise. """

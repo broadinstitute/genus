@@ -308,7 +308,6 @@ class MetricMiniBatch(NamedTuple):
     cost_mask_overlap_av: float
     cost_box_overlap_av: float
     cost_fgfraction: float
-    cost_bb_regression_av: float
     kl_zinstance: float
     kl_zbg: float
     kl_zwhere: float
@@ -325,9 +324,8 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction_min: float
     lambda_nobj_max: float
     lambda_nobj_min: float
-    lambda_kl_fg: float
+    lambda_mse: float
     lambda_kl_bg: float
-    lambda_kl_boxes: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy

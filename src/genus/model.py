@@ -10,6 +10,7 @@ from .model_parts import InferenceAndGeneration
 from .util_ml import MetricsAccumulator
 from .util import load_yaml_as_dict, save_dict_as_yaml, roller_2d
 
+from .util_moo import MinNormSolver
 
 class CompositionalVae(torch.nn.Module):
     """
@@ -954,9 +955,54 @@ def process_one_epoch(model: CompositionalVae,
 
             # Only if training I apply backward
             if model.training:
-                optimizer.zero_grad()
-                metrics.loss.backward()  # do back_prop and compute all the gradients
-                optimizer.step()  # update the parameters
+                if model.inference_and_generator.multi_objective_optimization:
+                    # do multi-objective optimization
+
+                    if (i % model.inference_and_generator.compute_frankwolfe_coeff_frequency == 0) or \
+                            (model.inference_and_generator.frankwolfe_coeff is None):
+                        # compute the frankwolfe coefficients
+                        if model.inference_and_generator.approximate_MGDA:
+                            # the approximation
+                            raise NotImplementedError
+                        else:
+
+                            # multiple backward passes for all losses which are not identically zero
+                            grads = {}  # empty dictionary
+                            active_task = (metrics.loss != 0.0)
+
+                            cumsum = active_task.cumsum(dim=-1)
+                            last_active = (cumsum == cumsum[-1]) * active_task
+                            retain_graph = active_task * ~last_active
+
+                            # Put all the gradients in a dictionary
+                            for n, loss_task in enumerate(metrics.loss):
+                                if active_task[n]:
+                                    print(n, "backward", loss_task, retain_graph[n].item())
+                                    optimizer.zero_grad()
+                                    loss_task.backward(retain_graph=retain_graph[n].item())
+
+                                    # Copy all the gradients in a list
+                                    tmp_grads = []
+                                    for param in model.parameters():
+                                        if param.grad is not None:
+                                            tmp_grads.append(param.grad.data.clone().detach().flatten())
+                                    grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
+                                else:
+                                    grads[n] = None
+
+                            n_active = torch.arange(active_task.shape[0])[active_task]
+                            # Frank-Wolfe iteration to compute scales.
+                            sol, min_norm = MinNormSolver.find_min_norm_element([grads[n] for n in n_active.numpy()])
+                            print(type(sol), type(min_norm), sol, min_norm)
+
+                            assert 1==2
+
+                else:
+                    # standard scalar optimization
+                    optimizer.zero_grad()
+                    metrics.loss.backward()  # do back_prop and compute all the gradients
+                    optimizer.step()  # update the parameters
+
 
             if verbose:
                 print("i = %3d train_loss=%.5f" % (i, metrics.loss.item()))
