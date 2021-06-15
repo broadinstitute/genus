@@ -353,9 +353,9 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Variable related to multi-objective optimization
         self.multi_objective_optimization = config["loss"]["multi_objective_optimization"]
-        self.approximate_MGDA = config["loss"]["approximate_MGDA"]
-        self.compute_frankwolfe_coeff_frequency = config["loss"]["compute_frankwolfe_coeff_frequency"]
-        self.frankwolfe_coeff = None
+        # self.approximate_MGDA = config["loss"]["approximate_MGDA"]
+        # self.compute_frankwolfe_coeff_frequency = config["loss"]["compute_frankwolfe_coeff_frequency"]
+        # self.frankwolfe_coeff = None
 
         # variables
         self.GMM = config["loss"]["GMM_observation_model"]
@@ -793,7 +793,12 @@ class InferenceAndGeneration(torch.nn.Module):
                           (self.target_fgfraction_max - fgfraction_coupling).clamp(min=0)
         task_nobj = nobj_coupling * torch.sign(nav_selected - self.target_nobj_av_per_patch_min).detach()
 
-        loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
+        if self.multi_objective_optimization:
+            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
+        else:
+            # do the geco sum
+            loss_tot = 0.0
+            raise NotImplementedError
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),

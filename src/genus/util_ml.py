@@ -73,7 +73,10 @@ class MetricsAccumulator(object):
     def _accumulate_key_value(self, _key, _value, counter_increment):
 
         if isinstance(_value, torch.Tensor):
-            x = _value.detach().item()
+            try:
+                x = _value.detach().item()
+            except ValueError:
+                x = 0
         elif isinstance(_value, float):
             x = _value
         elif isinstance(_value, numpy.ndarray):

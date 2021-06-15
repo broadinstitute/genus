@@ -334,14 +334,13 @@ class MetricMiniBatch(NamedTuple):
     accuracy: float
 
     def pretty_print(self, epoch: int = 0) -> str:
-        s = "[epoch {0:4d}] loss={1:.3f}, mse={2:.3f}, mask_overlap={3:.3f}, \
-             bb_regression={4:.3f}, fgfraction_hard_av={5:.3f}, prob_grid_av={6:.3f}".format(epoch,
-                                                                                          self.loss,
-                                                                                          self.mse_av,
-                                                                                          self.cost_mask_overlap_av,
-                                                                                          self.cost_bb_regression_av,
-                                                                                          self.fgfraction_hard_av,
-                                                                                          self.prob_grid_av)
+        s = "[epoch {0:4d}], mse={1:.3f}, mask_overlap={2:.3f}, \
+             iou_boxes={3:.3f}, fgfraction_hard_av={4:.3f}, prob_grid_av={5:.3f}".format(epoch,
+                                                                                         self.mse_av,
+                                                                                         self.cost_mask_overlap_av,
+                                                                                         self.iou_boxes,
+                                                                                         self.fgfraction_hard_av,
+                                                                                         self.prob_grid_av)
         return s
 
 
