@@ -779,27 +779,27 @@ def plot_reconstruction_and_inference(output: Output,
         experiment[prefix + "/kl_fg_hist"].log(neptune.types.File.as_image(fig))
     plt.close(fig)
 
-    # KL_bg
-    kl_bg = output.inference.kl_bg
-    fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg", rwidth=0.8)
-    plt.title("KL bg histogram, epoch=" + str(epoch))
-    plt.legend()
-    fig.tight_layout()
-    if (prefix is not None) and (experiment is not None):
-        experiment[prefix + "/kl_bg_hist"].log(neptune.types.File.as_image(fig))
-    plt.close(fig)
-
-    # KL_dpp
-    kl_dpp = output.inference.kl_dpp
-    fig = plt.figure(figsize=(12, 12))
-    plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp", rwidth=0.8)
-    plt.title("KL dpp histogram, epoch=" + str(epoch))
-    plt.legend()
-    fig.tight_layout()
-    if (prefix is not None) and (experiment is not None):
-        experiment[prefix + "/kl_dpp_hist"].log(neptune.types.File.as_image(fig))
-    plt.close(fig)
+###    # KL_bg
+###    kl_bg = output.inference.kl_bg
+###    fig = plt.figure(figsize=(12, 12))
+###    plt.hist(kl_bg.cpu().detach().numpy(), density=False, bins=20, label="kl_bg", rwidth=0.8)
+###    plt.title("KL bg histogram, epoch=" + str(epoch))
+###    plt.legend()
+###    fig.tight_layout()
+###    if (prefix is not None) and (experiment is not None):
+###        experiment[prefix + "/kl_bg_hist"].log(neptune.types.File.as_image(fig))
+###    plt.close(fig)
+###
+###    # KL_dpp
+####    kl_dpp = output.inference.kl_dpp
+####    fig = plt.figure(figsize=(12, 12))
+####    plt.hist(kl_dpp.cpu().detach().numpy(), density=False, bins=20, label="kl_dpp", rwidth=0.8)
+####    plt.title("KL dpp histogram, epoch=" + str(epoch))
+####    plt.legend()
+####    fig.tight_layout()
+####    if (prefix is not None) and (experiment is not None):
+####        experiment[prefix + "/kl_dpp_hist"].log(neptune.types.File.as_image(fig))
+####    plt.close(fig)
 
     if verbose:
         print("leaving plot_reconstruction_and_inference")

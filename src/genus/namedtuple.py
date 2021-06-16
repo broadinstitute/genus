@@ -275,8 +275,6 @@ class Inference(NamedTuple):
     iou_boxes_k: torch.Tensor
     kl_instance_k: torch.Tensor
     kl_where_k: torch.Tensor
-    kl_bg: torch.Tensor
-    kl_dpp: torch.Tensor
 
 
 class MetricMiniBatch(NamedTuple):
@@ -324,6 +322,7 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction_min: float
     lambda_nobj_max: float
     lambda_nobj_min: float
+    lambda_iou: float
     lambda_mse: float
     lambda_kl_bg: float
     entropy_ber: float

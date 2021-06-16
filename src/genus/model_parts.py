@@ -3,8 +3,10 @@ from typing import Union, Tuple
 import numpy
 import torch.nn.functional as F
 from .cropper_uncropper import Uncropper, Cropper
-from .unet import UNet, UNetNew, UnetSPACE
-from .conv import EncoderInstance, DecoderInstance, DecoderBg, DecoderWhere, EncoderInstanceSPACE, DecoderInstanceSPACE
+from .unet import UnetSPACE
+from .conv import DecoderBg, EncoderInstanceSPACE, DecoderInstanceSPACE
+#from .unet import UNet, UNetNew, UnetSPACE
+#from .conv import EncoderInstance, DecoderInstance, DecoderBg, DecoderWhere, EncoderInstanceSPACE, DecoderInstanceSPACE
 from .util import convert_to_box_list, invert_convert_to_box_list, compute_average_in_box, compute_ranking
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
@@ -13,7 +15,7 @@ from .non_max_suppression import NonMaxSuppression
 def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, append_uniform_zero_weight: bool):
     """
     If append_uniform_zero_weight a uniform zero weight is appended before computing the softmax.
-    That's usefull if you want to set a reference (i.e. the background mixing probability in my case)
+    That is useful if you want to set a reference (i.e. the background mixing probability in our case)
 
     Args:
           indicator: torch.Tensor in the range [0,1]
@@ -22,7 +24,7 @@ def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: i
           append_uniform_zero_weight: bool, whether to add a constant zero weight before computing the softmax
 
     Returns:
-        the softmax, i.e. y_k = indicator * weight.exp() / torch.sum(indicator * weight.exp(), dim=dim)
+        the softmax, i.e. y_k = indicator_k * weight_k.exp() / sum_j ( indicator_j * weight_j.exp() )
     """
 
     assert indicator.shape == weight.shape
@@ -42,8 +44,7 @@ def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: i
         extended_weight = weight
         extended_indicator = indicator
 
-    # print("extended_weight.shape", extended_weight.shape)
-
+    # Usual trick as in softmax to avoid exponentiating to a very large number
     extended_weight_max = torch.max(extended_weight, dim=dim, keepdim=True)[0].detach()
     extended_delta_weight = extended_weight - extended_weight_max
     tmp = extended_indicator * extended_delta_weight.exp()
@@ -153,6 +154,38 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
     return BB(bx=ideal_bx_k, by=ideal_by_k, bw=ideal_bw_k, bh=ideal_bh_k)
 
 
+def tt_to_bb(tt: TT,
+             rawimage_size: Tuple[int, int],
+             tgrid_size: Tuple[int, int],
+             min_box_size: float,
+             max_box_size: float) -> BB:
+    """
+    Transformation from :class:'TT' to :class:'BB'.
+
+    Note:
+        It is very important that MAX_DISPALCEMENT is larger than 0.5 meaning that multiple voxel can predict the same
+        bounding box. This ensure a degree of redundancy and robustness
+    """
+
+    # Logic:
+    # 1) ix + 0.5 is the center of the voxel
+    # 2) dx is the displacement from the center of the voxel
+    # 3) finally I convert to the large image size
+
+    MAX_DISPLACEMENT = 1.5
+    dx = MAX_DISPLACEMENT * 2.0 * (tt.tx - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
+    dy = MAX_DISPLACEMENT * 2.0 * (tt.ty - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
+
+    # values in (0.5 - MAX_DISPLACEMENT, rawimage_size - 0.5 + MAX_DISPLACEMENT)
+    bx = (tt.ix + 0.5 + dx) * float(rawimage_size[0]) / tgrid_size[0]
+    by = (tt.iy + 0.5 + dy) * float(rawimage_size[1]) / tgrid_size[1]
+
+    # Bounding boxes in the range (min_box_size, max_box_size)
+    bw = min_box_size + (max_box_size - min_box_size) * tt.tw
+    bh = min_box_size + (max_box_size - min_box_size) * tt.th
+    return BB(bx=bx, by=by, bw=bw, bh=bh)
+
+
 def tgrid_to_bb(t_grid,
                 rawimage_size: Tuple[int, int],
                 min_box_size: float,
@@ -200,32 +233,6 @@ def tgrid_to_bb(t_grid,
                     tgrid_size=t_grid.shape[-2:],
                     min_box_size=min_box_size,
                     max_box_size=max_box_size)
-
-
-def tt_to_bb(tt: TT,
-             rawimage_size: Tuple[int, int],
-             tgrid_size: Tuple[int, int],
-             min_box_size: float,
-             max_box_size: float) -> BB:
-    """ Transformation from :class:`TT` to :class:`BB` """
-
-    # Logic:
-    # 1) ix + 0.5 is the center of the voxel
-    # 2) dx is the displacement from the center of the voxel
-    # 3) finally I convert to the large image size
-
-    MAX_DISPLACEMENT = 1.5
-    dx = MAX_DISPLACEMENT * 2.0 * (tt.tx - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
-    dy = MAX_DISPLACEMENT * 2.0 * (tt.ty - 0.5)  # value in [-MAX_DISPLACEMENT, MAX_DISPLACEMENT]
-
-    # values in (0.5 - MAX_DISPLACEMENT, rawimage_size - 0.5 + MAX_DISPLACEMENT)
-    bx = (tt.ix + 0.5 + dx) * float(rawimage_size[0]) / tgrid_size[0]
-    by = (tt.iy + 0.5 + dy) * float(rawimage_size[1]) / tgrid_size[1]
-
-    # Bounding boxes in the range (min_box_size, max_box_size)
-    bw = min_box_size + (max_box_size - min_box_size) * tt.tw
-    bh = min_box_size + (max_box_size - min_box_size) * tt.th
-    return BB(bx=bx, by=by, bw=bw, bh=bh)
 
 
 # def bb_to_tt(bb: BB,
@@ -377,56 +384,66 @@ class InferenceAndGeneration(torch.nn.Module):
                                  weight=config["input_image"]["DPP_weight"],
                                  learnable_params=config["input_image"]["DPP_learnable_parameters"])
 
-        if config["architecture"]["space_inspired"]:
-            self.unet: UnetSPACE = UnetSPACE(ch_in=config["input_image"]["ch_in"],
-                                             ch_out=config["architecture"]["unet_ch_feature_map"],
-                                             dim_zbg=config["architecture"]["zbg_dim"],
-                                             dim_zwhere=config["architecture"]["zwhere_dim"],
-                                             dim_logit=1)
-        elif config["architecture"]["pretrained_unet_from_mateuszbuda"]:
-            self.unet: UNetNew = UNetNew(pre_processor=None,
-                                         scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
-                                         ch_in=config["input_image"]["ch_in"],
+        self.unet: UnetSPACE = UnetSPACE(ch_in=config["input_image"]["ch_in"],
                                          ch_out=config["architecture"]["unet_ch_feature_map"],
                                          dim_zbg=config["architecture"]["zbg_dim"],
                                          dim_zwhere=config["architecture"]["zwhere_dim"],
-                                         dim_logit=1,
-                                         pretrained=True,
-                                         partially_frozen=config["architecture"]["partially_frozen_unet"])
-        else:
-            self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
-                                   scale_factor_background=config["architecture"]["unet_scale_factor_background"],
-                                   scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
-                                   ch_in=config["input_image"]["ch_in"],
-                                   ch_out=config["architecture"]["unet_ch_feature_map"],
-                                   ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
-                                   dim_zbg=config["architecture"]["zbg_dim"],
-                                   dim_zwhere=config["architecture"]["zwhere_dim"],
-                                   dim_logit=1)
+                                         dim_logit=1)
 
-        # Encoder-Decoders
-        if config["architecture"]["space_inspired"]:
-            self.encoder_zinstance: EncoderInstanceSPACE = EncoderInstanceSPACE(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                                ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                                                dim_z=config["architecture"]["zinstance_dim"])
-            self.decoder_zinstance: DecoderInstanceSPACE = DecoderInstanceSPACE(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                                dim_z=config["architecture"]["zinstance_dim"],
-                                                                                ch_out=config["input_image"]["ch_in"] + 1)
-        else:
-            self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                      ch_in=config["architecture"]["unet_ch_feature_map"],
-                                                                      dim_z=config["architecture"]["zinstance_dim"])
-            self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
-                                                                      dim_z=config["architecture"]["zinstance_dim"],
-                                                                      ch_out=config["input_image"]["ch_in"] + 1)
+        self.encoder_zinstance: EncoderInstanceSPACE = EncoderInstanceSPACE(
+            glimpse_size=config["architecture"]["glimpse_size"],
+            ch_in=config["architecture"]["unet_ch_feature_map"],
+            dim_z=config["architecture"]["zinstance_dim"])
+
+        self.decoder_zinstance: DecoderInstanceSPACE = DecoderInstanceSPACE(
+            glimpse_size=config["architecture"]["glimpse_size"],
+            dim_z=config["architecture"]["zinstance_dim"],
+            ch_out=config["input_image"]["ch_in"] + 1)
+
+        self.decoder_zwhere: torch.nn.Module = torch.nn.Conv2d(in_channels=config["architecture"]["zwhere_dim"],
+                                                               out_channels=4, kernel_size=1, groups=4)
+
+        self.zbg_dim = config["architecture"]["zbg_dim"]
+        if not self.is_zero_background:
+            raise NotImplementedError
+            self.decoder_zbg: DecoderBg = DecoderBg(ch_in=config["architecture"]["zbg_dim"],
+                                                    ch_out=config["input_image"]["ch_in"],
+                                                    scale_factor=config["architecture"]["unet_scale_factor_background"])
 
 
-        self.decoder_zbg: DecoderBg = DecoderBg(ch_in=config["architecture"]["zbg_dim"],
-                                                ch_out=config["input_image"]["ch_in"],
-                                                scale_factor=config["architecture"]["unet_scale_factor_background"])
 
-        self.decoder_zwhere: DecoderWhere = DecoderWhere(ch_in=config["architecture"]["zwhere_dim"],
-                                                         ch_out=4)
+        #######        if config["architecture"]["space_inspired"]:
+        #######        elif config["architecture"]["pretrained_unet_from_mateuszbuda"]:
+        #######            self.unet: UNetNew = UNetNew(pre_processor=None,
+        #######                                         scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+#######                                         ch_in=config["input_image"]["ch_in"],
+#######                                         ch_out=config["architecture"]["unet_ch_feature_map"],
+#######                                         dim_zbg=config["architecture"]["zbg_dim"],
+#######                                         dim_zwhere=config["architecture"]["zwhere_dim"],
+#######                                         dim_logit=1,
+#######                                         pretrained=True,
+#######                                         partially_frozen=config["architecture"]["partially_frozen_unet"])
+#######        else:
+#######            self.unet: UNet = UNet(scale_factor_initial_layer=config["architecture"]["unet_scale_factor_initial_layer"],
+#######                                   scale_factor_background=config["architecture"]["unet_scale_factor_background"],
+#######                                   scale_factor_boundingboxes=config["architecture"]["unet_scale_factor_boundingboxes"],
+#######                                   ch_in=config["input_image"]["ch_in"],
+#######                                   ch_out=config["architecture"]["unet_ch_feature_map"],
+#######                                   ch_before_first_maxpool=config["architecture"]["unet_ch_before_first_maxpool"],
+#######                                   dim_zbg=config["architecture"]["zbg_dim"],
+#######                                   dim_zwhere=config["architecture"]["zwhere_dim"],
+#######                                   dim_logit=1)
+
+####3        # Encoder-Decoders
+####3        if config["architecture"]["space_inspired"]:
+####3        else:
+####3            self.encoder_zinstance: EncoderInstance = EncoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+####3                                                                      ch_in=config["architecture"]["unet_ch_feature_map"],
+####3                                                                      dim_z=config["architecture"]["zinstance_dim"])
+####3            self.decoder_zinstance: DecoderInstance = DecoderInstance(glimpse_size=config["architecture"]["glimpse_size"],
+####3                                                                      dim_z=config["architecture"]["zinstance_dim"],
+####3                                                                      ch_out=config["input_image"]["ch_in"] + 1)
+
 
         # Quantities to compute the moving averages
         self.moving_average_calculator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
@@ -439,12 +456,13 @@ class InferenceAndGeneration(torch.nn.Module):
         # Dynamical parameter controlled by GECO are adjusted according to the following targets
         self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
         self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
+
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
-        self.target_mse = config["input_image"]["target_mse"]
-        self.target_mse_bg = config["input_image"]["target_mse_bg"]
-        self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
-        self.target_IoU_bounding_boxes = config["input_image"]["target_IoU_bounding_boxes"]
+
+        self.target_IoU_min = config["input_image"]["target_IoU_min_max"][0]
+        self.target_IoU_max = config["input_image"]["target_IoU_min_max"][1]
+
 
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
                                                  min_value=0.0,
@@ -464,22 +482,34 @@ class InferenceAndGeneration(torch.nn.Module):
                                            max_value=config["loss"]["lambda_nobj_max"],
                                            linear_exp=True)
 
-        self.geco_kl_bg = GecoParameter(initial_value=config["loss"]["lambda_kl_bg_min_max"][0],
-                                        min_value=config["loss"]["lambda_kl_bg_min_max"][0],
-                                        max_value=config["loss"]["lambda_kl_bg_min_max"][1],
-                                        linear_exp=True)
-
-        self.geco_kl_boxes = GecoParameter(initial_value=1.0,
-                                           min_value=config["loss"]["lambda_kl_box_min_max"][0],
-                                           max_value=config["loss"]["lambda_kl_box_min_max"][1],
-                                           linear_exp=True)
-
-        self.geco_mse = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
-                                      min_value=config["loss"]["lambda_mse_min_max"][0],
-                                      max_value=config["loss"]["lambda_mse_min_max"][1],
+        self.geco_iou = GecoParameter(initial_value=1.0,
+                                      min_value=config["loss"]["lambda_iou_min_max"][0],
+                                      max_value=config["loss"]["lambda_iou_min_max"][1],
                                       linear_exp=True)
 
+        self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
+
+
+
+####        self.target_mse = config["input_image"]["target_mse"]
+####        self.target_mse_bg = config["input_image"]["target_mse_bg"]
+####
+####        self.geco_kl_bg = GecoParameter(initial_value=config["loss"]["lambda_kl_bg_min_max"][0],
+####                                        min_value=config["loss"]["lambda_kl_bg_min_max"][0],
+####                                        max_value=config["loss"]["lambda_kl_bg_min_max"][1],
+####                                        linear_exp=True)
+####
+####        self.geco_kl_boxes = GecoParameter(initial_value=1.0,
+####                                           min_value=config["loss"]["lambda_kl_box_min_max"][0],
+####                                           max_value=config["loss"]["lambda_kl_box_min_max"][1],
+####                                           linear_exp=True)
+####
+####        self.geco_mse = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
+####                                      min_value=config["loss"]["lambda_mse_min_max"][0],
+####                                      max_value=config["loss"]["lambda_mse_min_max"][1],
+####                                      linear_exp=True)
+
 
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -497,16 +527,21 @@ class InferenceAndGeneration(torch.nn.Module):
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
-        zbg_mu, zbg_std = torch.split(unet_output.zbg,
-                                      split_size_or_sections=unet_output.zbg.shape[-3]//2,
-                                      dim=-3)
-        zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
-                                                  posterior_std=F.softplus(zbg_std)+1E-3,
-                                                  noisy_sampling=noisy_sampling,
-                                                  sample_from_prior=generate_synthetic_data)
-        out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else self.decoder_zbg(zbg.value)
-        # out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else \
-        #     F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
+        if self.is_zero_background:
+            out_background_bcwh = torch.zeros_like(imgs_bcwh)
+            zbg_kl_av = torch.zeros(size=[1], dtype=imgs_bcwh.dtype, device=imgs_bcwh.device).mean()
+            # out_background_bcwh = torch.zeros_like(imgs_bcwh) if self.is_zero_background else \
+            #     F.interpolate(self.decoder_zbg(zbg.value), size=imgs_bcwh.shape[-2:], mode='bilinear', align_corners=False)
+        else:
+            zbg_mu, zbg_std = torch.split(unet_output.zbg,
+                                          split_size_or_sections=unet_output.zbg.shape[-3]//2,
+                                          dim=-3)
+            zbg: DIST = sample_and_kl_diagonal_normal(posterior_mu=zbg_mu,
+                                                      posterior_std=F.softplus(zbg_std)+1E-3,
+                                                      noisy_sampling=noisy_sampling,
+                                                      sample_from_prior=generate_synthetic_data)
+            out_background_bcwh = self.decoder_zbg(zbg.value)
+            zbg_kl_av = zbg.kl.sum() / batch_size
 
         # 3. Bounding-Box decoding
         #print("unet_output.zwhere.shape", unet_output.zwhere.shape)
@@ -638,16 +673,18 @@ class InferenceAndGeneration(torch.nn.Module):
         # Mask overlap. Note that only active masks contribute (b/c c_detached_bk)
         # Worst case scenario is when two masks are 0.5 for the same pixel -> cost = 0.5
         # Best case scenario is when one mask is 1.0 and other are zeros -> cost = 0.0
-        tmp_mixing_bk1wh, _ = torch.split(softmax_with_indicator(indicator=c_attached_bk[..., None, None, None].detach() * out_square_bk1wh,
-                                                                 weight=out_weight_bk1wh,
-                                                                 dim=-4,
-                                                                 append_uniform_zero_weight=True),
-                                          split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
-        mask_overlap_b1wh = tmp_mixing_bk1wh.sum(dim=-4).pow(2) - tmp_mixing_bk1wh.pow(2).sum(dim=-4)
+        #tmp_mixing_bk1wh, _ = torch.split(softmax_with_indicator(indicator=c_attached_bk[..., None, None, None].detach() * out_square_bk1wh,
+        #                                                         weight=out_weight_bk1wh,
+        #                                                         dim=-4,
+        #                                                         append_uniform_zero_weight=True),
+        #                                  split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
+        #mask_overlap_b1wh = tmp_mixing_bk1wh.sum(dim=-4).pow(2) - tmp_mixing_bk1wh.pow(2).sum(dim=-4)
+        mask_overlap_b1wh = torch.zeros_like(imgs_bcwh[:,:1,:,:])
 
         # Bounding box overlap. Note that only active boxes contribute (b/c d_detached_bk)
-        box_bk1wh = c_detached_bk[..., None, None, None].detach() * out_square_bk1wh
-        box_overlap_b1wh = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
+        #box_bk1wh = c_detached_bk[..., None, None, None].detach() * out_square_bk1wh
+        #box_overlap_b1wh = box_bk1wh.sum(dim=-4).pow(2) - box_bk1wh.pow(2).sum(dim=-4)
+        box_overlap_b1wh = torch.zeros_like(imgs_bcwh[:,:1,:,:])
 
         # 13. Compute the ideal boxes and the IoU between inferred and ideal boxes
         bb_ideal_bk: BB = optimal_bb(mixing_k1wh=mixing_bk1wh,
@@ -693,14 +730,13 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # D. Put together the expression for both the evaluation of the gradients and the evaluation of the value
         logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
-        logit_kl_for_value_b = (logp_ber_nb - logp_dpp_nb).mean(dim=0).detach()
         logit_kl_for_value_av = (logp_ber_nb - logp_dpp_nb).mean().detach()
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
+        # The KL for instance and boxes
         indicator_bk = c_detached_bk
         zinstance_kl_av = (zinstance_kl_bk * indicator_bk.detach()).sum() / batch_size
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk.detach()).sum() / batch_size
-        zbg_kl_av = zbg.kl.sum() / batch_size
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
@@ -717,7 +753,6 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_max = nav_selected - self.target_nobj_av_per_patch_max  # positive if nobj > target_max
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
-
             # FGFRACTION: Count and couple based on mixing_fg (force fg_fraction in range)
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av_smooth = mixing_fg_b1wh.mean()
@@ -727,26 +762,14 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
-            # BOUNDING_BOXES REGRESSION. If iou_av > self.target_IoU_bounding_boxes increase kl_zwhere, otherwise decrease
+            # BOUNDING_BOXES REGRESSION. (force IoU in the acceptable range)
+            increase_iou = (self.target_IoU_min - iou_av).clamp(min=0)
+            decrease_iou = (iou_av - self.target_IoU_max).clamp(min=0)
+            constraint_iou = increase_iou - decrease_iou
 
-            # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
-            constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
-
-            # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other condition are satisfied
+            # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other conditions are satisfied
             decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
-
-            # MSE.
-            # If mse_av > self.target_mse Increase mse_hyperparameter and viceversa
-            constraint_mse = (mse_av - self.target_mse)
-
-#####            # SPARSITY:
-#####            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
-#####            # If n_obj < n_min decrease sparsity
-#####            # If n_obj in range and reconstruction is bad do nothing
-#####            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
-#####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
-#####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
 
         # Produce both the loss and the hyperparameters
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
@@ -755,16 +778,33 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
         geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
 
+        geco_iou: GECO = self.geco_iou.forward(constraint=constraint_iou)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
-        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
 
-        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
-
+####        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
+####        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
 ####        # This is the loss which makes geco parameter change
 ####        loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
 ####                    geco_nobj_max.loss + geco_nobj_min.loss + \
 ####                    geco_kl_bg.loss + geco_kl_boxes.loss + \
 ####                    geco_annealing.loss + geco_mse.loss
+####        # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
+####        constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
+####
+####        # MSE.
+####        # If mse_av > self.target_mse Increase mse_hyperparameter and viceversa
+####        constraint_mse = (mse_av - self.target_mse)
+####
+####        #####            # SPARSITY:
+####        #####            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
+####        #####            # If n_obj < n_min decrease sparsity
+####        #####            # If n_obj in range and reconstruction is bad do nothing
+####        #####            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
+####        #####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
+####        #####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
+
+        # Couple to iou_bk to increase overlap between ideal and inferred boxes
+        iou_coupling = - iou_bk.mean()
 
         # Couple to mixing to push the fgfraction up/down
         fgfraction_coupling = mixing_fg_b1wh.mean()
@@ -784,21 +824,31 @@ class InferenceAndGeneration(torch.nn.Module):
         all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
                                          (logit_min - unet_output.logit).clamp(min=0.0).pow(2) )
 
-        # Loss for the model for fixed geco parameters
-        task_geco = geco_annealing.loss
-        task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
-        task_mse = mse_av + box_overlap_cost + mask_overlap_cost
-        task_iou = (iou_bk - self.target_IoU_bounding_boxes).clamp(min=0).mean()
-        task_fgfraction = (fgfraction_coupling - self.target_fgfraction_min).clamp(min=0) + \
-                          (self.target_fgfraction_max - fgfraction_coupling).clamp(min=0)
-        task_nobj = nobj_coupling * torch.sign(nav_selected - self.target_nobj_av_per_patch_min).detach()
-
         if self.multi_objective_optimization:
-            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
-        else:
-            # do the geco sum
-            loss_tot = 0.0
             raise NotImplementedError
+#            task_geco = geco_annealing.loss
+#            task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
+#            task_mse = mse_av + box_overlap_cost + mask_overlap_cost
+#            task_iou = (self.target_IoU_bounding_boxes - iou_bk).clamp(min=0).mean()
+#            task_fgfraction = (fgfraction_coupling - self.target_fgfraction_min).clamp(min=0) + \
+#                              (self.target_fgfraction_max - fgfraction_coupling).clamp(min=0)
+#            task_nobj = nobj_coupling * torch.sign(nav_selected - self.target_nobj_av_per_patch_min).detach()
+#
+#            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
+        else:
+            # Loss for the model for fixed geco parameters
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost + \
+                       geco_iou.hyperparam * iou_coupling + \
+                       (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
+                       (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
+                       (geco_iou.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss +
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
+
+            task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
+
+            task_sparsity = c_attached_bk.mean()
+
+            loss_tot = task_rec + 0.001 * task_kl + 0.0 * task_sparsity
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -815,9 +865,7 @@ class InferenceAndGeneration(torch.nn.Module):
                               feature_map=unet_output.features.detach(),
                               iou_boxes_k=iou_bk.detach(),
                               kl_instance_k=zinstance_kl_bk.detach(),
-                              kl_where_k=zwhere_kl_bk.detach(),
-                              kl_bg=zbg.kl.sum(dim=(-1,-2,-3)).detach(),
-                              kl_dpp=logit_kl_for_value_b.detach())
+                              kl_where_k=zwhere_kl_bk.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
@@ -853,8 +901,9 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
-                                 lambda_mse=geco_mse.hyperparam.detach().item(),
-                                 lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
+                                 lambda_iou=geco_iou.hyperparam.detach().item(),
+                                 lambda_mse=0.0, #geco_mse.hyperparam.detach().item(),
+                                 lambda_kl_bg=0.0, #geco_kl_bg.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages
