@@ -842,13 +842,14 @@ class InferenceAndGeneration(torch.nn.Module):
                        (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
                        (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
                        (geco_iou.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss +
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss) + \
+                        logit_kl_av + all_logit_in_range
 
-            task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
+            task_simplicity = zinstance_kl_av + zbg_kl_av + zwhere_kl_av
 
             task_sparsity = c_attached_bk.mean()
 
-            loss_tot = task_rec + 0.001 * task_kl + 0.0 * task_sparsity
+            loss_tot = task_rec + 0.001 * task_simplicity + 0.0 * task_sparsity
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
