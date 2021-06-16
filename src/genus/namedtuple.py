@@ -322,7 +322,6 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction_min: float
     lambda_nobj_max: float
     lambda_nobj_min: float
-    lambda_iou: float
     lambda_mse: float
     lambda_kl_bg: float
     entropy_ber: float

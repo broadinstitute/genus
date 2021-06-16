@@ -825,16 +825,15 @@ class InferenceAndGeneration(torch.nn.Module):
                                         (logit_min - unet_output.logit).clamp(min=0.0).pow(2) ) / batch_size
 
         if self.multi_objective_optimization:
-            raise NotImplementedError
-#            task_geco = geco_annealing.loss
-#            task_kl = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av + all_logit_in_range
-#            task_mse = mse_av + box_overlap_cost + mask_overlap_cost
-#            task_iou = (self.target_IoU_bounding_boxes - iou_bk).clamp(min=0).mean()
-#            task_fgfraction = (fgfraction_coupling - self.target_fgfraction_min).clamp(min=0) + \
-#                              (self.target_fgfraction_max - fgfraction_coupling).clamp(min=0)
-#            task_nobj = nobj_coupling * torch.sign(nav_selected - self.target_nobj_av_per_patch_min).detach()
-#
-#            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
+            # Reconstruction within the acceptable parameter range
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + all_logit_in_range + \
+                       (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
+                       (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
+                       (geco_fgfraction_max.loss + geco_fgfraction_min.loss +
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
+
+            loss_tot = torch.stack([task_rec, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av])
+
         else:
 
             # Reconstruction within the acceptable parameter range
@@ -904,7 +903,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
-                                 lambda_iou=geco_iou.hyperparam.detach().item(),
                                  lambda_mse=0.0, #geco_mse.hyperparam.detach().item(),
                                  lambda_kl_bg=0.0, #geco_kl_bg.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),

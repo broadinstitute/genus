@@ -971,6 +971,7 @@ def process_one_epoch(model: CompositionalVae,
                     grads = {}  # empty dictionary
                     one_over_grad_norm = torch.zeros_like(metrics.loss)
                     active_task = (metrics.loss != 0.0)
+                    print("metrics.loss.shape", metrics.loss.shape)
 
                     # Put all the gradients in a dictionary
                     for n, loss_task in enumerate(metrics.loss):
