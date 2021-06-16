@@ -59,7 +59,7 @@ input_image:
   # Integer. Size, in pixels, of the patches to analyze.
   # It can be smaller than the size of the image.
   # This is useful if a large image is processed by random crops
-  patch_size: 128
+  patch_size: 64
 
   # Integer. Maximum number of objects in each patch of square size patch_size x patch_size.
   # A too large value will lead to waste computations.
@@ -74,6 +74,10 @@ input_image:
   # The values are used to guide the model toward the desired segmentation.
   target_fgfraction_min_max: [0.05, 0.15]
 
+  # Tuple with the desired values of Intersection_Over_Union between the inferred and ideal ideal bounding boxes.
+  # The values are in the (0,1) range. If unsure, use [0.65, 0.8].
+  target_IoU_min_max: [0.65, 0.8]
+
   # The following parameters determine the DPP-prior which in turns determine the expected number of object in the scene.
   # See our example notebook to see how to choose these parameters.
   # If DPP_learnable_parameters the DPP parameters will be learned during training and the value reported here will
@@ -81,7 +85,7 @@ input_image:
   DPP_learnable_parameters: True
   DPP_length: 5.0
   DPP_weight: 0.3
-  target_nobj_av_per_patch_min_max: [ 3.0, 5.0 ]
+  target_nobj_av_per_patch_min_max: [2.0, 5.0]
 
   # The MSE is the pixel mean of: ((x-x_reconstructed) / sigma_mse)^2
   # sigma_mse provides the overall scale it should be chosen so that acceptable reconstructions are of order 1.
@@ -90,26 +94,27 @@ input_image:
   # target_mse_fg < target_mse_bg = target_mse_for_learnc
   # the strength of the KL regularization will be adjusted to achieve these results
   sigma_mse: 0.1
-  target_mse: 1.0
+  target_mse_fg: 1.0
   target_mse_bg: 1.0
   target_mse_for_annealing: 5.0  # when this value is reached I start to anneal down the pretraining
 
-  # The bounding boxes should be similar to the ideal bounding boxes.
-  # Here you set a target for the Intersection over Union between inferred and ideal boxes.
-  # The strength of the KL regularization will be adjusted to achieve this result
-  target_IoU_bounding_boxes: 0.65
 
 
 # parameter related to the loss function
 # Most likely users should not change these.
 loss:
 
+  # parameter related to multi-objective optimization
+  multi_objective_optimization: False
+  # approximate_MGDA: False
+  # compute_frankwolfe_coeff_frequency: 10
+
   GMM_observation_model: False
   lambda_fgfraction_max: 25.0
   lambda_nobj_max: 25.0
-  lambda_kl_fg_min_max: [0.001, 10.0]
+  lambda_iou_min_max: [0.001, 25.0]
   lambda_kl_bg_min_max: [0.001, 10.0]
-  lambda_kl_learnc_min_max: [0.001, 10.0]
+  lambda_mse_min_max: [0.001, 10.0]
 
   # bounding box regression
   bounding_box_regression_penalty_strength: 0.01
