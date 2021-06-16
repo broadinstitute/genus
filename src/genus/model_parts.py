@@ -837,16 +837,17 @@ class InferenceAndGeneration(torch.nn.Module):
 #            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
         else:
             # Loss for the model for fixed geco parameters
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost + \
-                       geco_iou.hyperparam * iou_coupling + \
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.mean()  + \
                        (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
                        (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
-                       (geco_iou.loss + geco_fgfraction_max.loss + geco_fgfraction_min.loss +
+                       (geco_fgfraction_max.loss + geco_fgfraction_min.loss +
                         geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss) + \
                         logit_kl_av + all_logit_in_range
 
+            # these three are tuned based on.....
             task_simplicity = zinstance_kl_av + zbg_kl_av + zwhere_kl_av
 
+            # then I tune this one....
             task_sparsity = c_attached_bk.mean()
 
             loss_tot = task_rec + 0.001 * task_simplicity + 0.0 * task_sparsity
