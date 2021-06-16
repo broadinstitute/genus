@@ -803,13 +803,12 @@ class InferenceAndGeneration(torch.nn.Module):
 ####        #####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
 ####        #####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
 
-        # Couple to iou_bk to increase overlap between ideal and inferred boxes
-        iou_coupling = - iou_bk.mean()
-
         # Couple to mixing to push the fgfraction up/down
+        lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam)
         fgfraction_coupling = mixing_fg_b1wh.mean()
 
         # Couple to the probabilities to push number of objects up/down
+        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
         nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[:2])  # divide by batch and n_boxes
 
         # Penalize overlapping masks
@@ -825,23 +824,25 @@ class InferenceAndGeneration(torch.nn.Module):
                                         (logit_min - unet_output.logit).clamp(min=0.0).pow(2) ) / batch_size
 
         if self.multi_objective_optimization:
+
+            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
+
             # Reconstruction within the acceptable parameter range
             task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + all_logit_in_range + \
-                       (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
-                       (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
-                       (geco_fgfraction_max.loss + geco_fgfraction_min.loss +
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
+                       lambda_fgfraction * fgfraction_coupling + lambda_nobj * nobj_coupling
 
-            loss_tot = torch.stack([task_rec, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av])
+            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av])
 
         else:
 
+            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
+
             # Reconstruction within the acceptable parameter range
             task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
-                       (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
-                       (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
-                       (geco_fgfraction_max.loss + geco_fgfraction_min.loss +
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
+                       lambda_fgfraction * fgfraction_coupling + \
+                       lambda_nobj * nobj_coupling
 
             # these three are tuned based on (rec_fg, rec_bg and iou_av).....
             task_simplicity = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av
@@ -850,7 +851,7 @@ class InferenceAndGeneration(torch.nn.Module):
             # N_obj should never be smaller than self.target_nobj_av_per_patch_min
             task_sparsity = c_attached_bk.mean()
 
-            loss_tot = task_rec + 0.001 * task_simplicity + 0.0 * task_sparsity
+            loss_tot = task_rec + loss_geco + 0.001 * task_simplicity + 0.0 * task_sparsity
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -901,8 +902,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
+                                 lambda_fgfraction=lambda_fgfraction.detach().item(),
                                  lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
                                  lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
+                                 lambda_nobj=lambda_nobj.detach().item(),
                                  lambda_mse=0.0, #geco_mse.hyperparam.detach().item(),
                                  lambda_kl_bg=0.0, #geco_kl_bg.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
