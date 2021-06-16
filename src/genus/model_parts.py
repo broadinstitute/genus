@@ -762,11 +762,6 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
 
-            # BOUNDING_BOXES REGRESSION. (force IoU in the acceptable range)
-            increase_iou = (self.target_IoU_min - iou_av).clamp(min=0)
-            decrease_iou = (iou_av - self.target_IoU_max).clamp(min=0)
-            constraint_iou = increase_iou - decrease_iou
-
             # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other conditions are satisfied
             decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
@@ -778,9 +773,14 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
         geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
 
-        geco_iou: GECO = self.geco_iou.forward(constraint=constraint_iou)
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
+
+## BOUNDING_BOXES REGRESSION. (force IoU in the acceptable range)
+#geco_iou: GECO = self.geco_iou.forward(constraint=constraint_iou)
+#increase_iou = (self.target_IoU_min - iou_av).clamp(min=0)
+#decrease_iou = (iou_av - self.target_IoU_max).clamp(min=0)
+#constraint_iou = increase_iou - decrease_iou
 ####        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
 ####        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
 ####        # This is the loss which makes geco parameter change
@@ -821,8 +821,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # Make sure that logit never become too large or too small.
         logit_max = 8.0
         logit_min = -8.0
-        all_logit_in_range = torch.mean( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
-                                         (logit_min - unet_output.logit).clamp(min=0.0).pow(2) )
+        all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                        (logit_min - unet_output.logit).clamp(min=0.0).pow(2) ) / batch_size
 
         if self.multi_objective_optimization:
             raise NotImplementedError
@@ -836,18 +836,19 @@ class InferenceAndGeneration(torch.nn.Module):
 #
 #            loss_tot = torch.stack([task_geco, task_kl, task_mse, task_iou, task_fgfraction, task_nobj], dim=0)
         else:
-            # Loss for the model for fixed geco parameters
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.mean()  + \
+
+            # Reconstruction within the acceptable parameter range
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
                        (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam) * fgfraction_coupling + \
                        (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam) * nobj_coupling + \
                        (geco_fgfraction_max.loss + geco_fgfraction_min.loss +
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss) + \
-                        logit_kl_av + all_logit_in_range
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss)
 
-            # these three are tuned based on.....
-            task_simplicity = zinstance_kl_av + zbg_kl_av + zwhere_kl_av
+            # these three are tuned based on (rec_fg, rec_bg and iou_av).....
+            task_simplicity = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av
 
-            # then I tune this one....
+            # then I do a crazy low ramp of this term.
+            # N_obj should never be smaller than self.target_nobj_av_per_patch_min
             task_sparsity = c_attached_bk.mean()
 
             loss_tot = task_rec + 0.001 * task_simplicity + 0.0 * task_sparsity
