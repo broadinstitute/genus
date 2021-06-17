@@ -12,43 +12,36 @@ from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
 
-def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, append_uniform_zero_weight: bool):
+def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, add_one_to_denominator: bool):
     """
-    If append_uniform_zero_weight a uniform zero weight is appended before computing the softmax.
-    That is useful if you want to set a reference (i.e. the background mixing probability in our case)
+    If add_one_to_denominator==True adds one to the denominator. Values will then sum to less than one.
+    This is useful if you want to get the complementary (i.e. the background mixing probability in our case)
 
     Args:
           indicator: torch.Tensor in the range [0,1]
           weight: torch.Tensor in (-infty, infty)
           dim: int, dimension along which the input need to be normalized
-          append_uniform_zero_weight: bool, whether to add a constant zero weight before computing the softmax
+          add_one_to_denominator: bool, whether to add 1 to the denominator
 
     Returns:
-        the softmax, i.e. y_k = indicator_k * weight_k.exp() / sum_j ( indicator_j * weight_j.exp() )
+        the softmax, i.e. y_k = indicator_k * weight_k.exp() / [1 + sum_j indicator_j * weight_j.exp() ]
+
+    Note:
+        For numerical stability it multiplies both numerator and denominator by torch.exp(-A):
+        y_k = indicator_k * (weight_k-A).exp() / [torch.exp(-A) + sum_j indicator_j * (weight_j-A).exp() ]
+        where A = max(weight_k)
     """
 
     assert indicator.shape == weight.shape
-    # print("weight.shape", weight.shape)
 
-    if append_uniform_zero_weight:
-        first_chunk_dim = list(weight.shape[:dim])
-        if (dim == -1) or (dim == len(weight.shape)):
-            second_chunk_dim = [1]
-        else:
-            second_chunk_dim = [1] + list(weight.shape[dim+1:])
-        zero_weight = torch.zeros(first_chunk_dim + second_chunk_dim, dtype=weight.dtype, device=weight.device)
-        one_indicator = torch.ones(first_chunk_dim + second_chunk_dim, dtype=indicator.dtype, device=indicator.device)
-        extended_weight = torch.cat((weight, zero_weight), dim=dim)
-        extended_indicator = torch.cat((indicator, one_indicator), dim=dim)
+    # Usual trick as in softmax to avoid exponentiating to a very large number (i.e. subtract the largest weight)
+    weight_max = torch.max(weight).detach()
+    num = indicator * torch.exp(weight - weight_max)
+    if add_one_to_denominator:
+        den = torch.sum(num, dim, keepdim=True) + torch.exp(-weight_max)
     else:
-        extended_weight = weight
-        extended_indicator = indicator
-
-    # Usual trick as in softmax to avoid exponentiating to a very large number
-    extended_weight_max = torch.max(extended_weight, dim=dim, keepdim=True)[0].detach()
-    extended_delta_weight = extended_weight - extended_weight_max
-    tmp = extended_indicator * extended_delta_weight.exp()
-    return tmp / torch.sum(tmp, dim=dim, keepdim=True)
+        den = torch.sum(num, dim, keepdim=True)
+    return num / den
 
 
 def compute_iou(bounding_boxes_a: BB, bounding_boxes_b: BB):
@@ -641,13 +634,12 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 10. Compute the mixing (using a softmax-like function).
         c_attached_bk = (c_detached_bk.float() - prob_bk).detach() + prob_bk
-        mixing_bk1wh, mixing_bg_b11wh = torch.split(softmax_with_indicator(indicator=c_attached_bk[..., None, None, None] * out_square_bk1wh,
-                                                                           weight=out_weight_bk1wh,
-                                                                           dim=-4,
-                                                                           append_uniform_zero_weight=True),
-                                                    split_size_or_sections=(out_square_bk1wh.shape[-4], 1), dim=-4)
-        mixing_bg_b1wh = mixing_bg_b11wh.squeeze(dim=-4)
+        mixing_bk1wh = softmax_with_indicator(indicator=c_attached_bk[..., None, None, None] * out_square_bk1wh,
+                                              weight=out_weight_bk1wh,
+                                              dim=-4,
+                                              add_one_to_denominator=True)
         mixing_fg_b1wh = mixing_bk1wh.sum(dim=-4)
+        mixing_bg_b1wh = torch.ones_like(mixing_fg_b1wh) - mixing_fg_b1wh
 
         # 12. Observation model
         if self.GMM:
@@ -721,12 +713,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # C. Simple MC estimator to make DPP adjust to the configuration after NMS.
         # This has gradients w.r.t DPP parameters
-        if self.grid_dpp.learnable_params:
-            # DPP is trainable
-            log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean()
-        else:
-            # DPP is not trainable
-            log_dpp_after_nms = torch.zeros_like(entropy_ber)
+        log_dpp_after_nms = self.grid_dpp.log_prob(value=c_grid_after_nms.squeeze(-3).detach()).mean() \
+            if self.grid_dpp.learnable_params else torch.zeros_like(entropy_ber)
 
         # D. Put together the expression for both the evaluation of the gradients and the evaluation of the value
         logit_kl_for_gradient_av = - entropy_ber - reinforce_ber - log_dpp_after_nms
