@@ -38,6 +38,9 @@ class MinNormSolver(object):
         sol_vec = torch.zeros(N, dtype=vecs[0].dtype, device=vecs[0].device)
         for n in range(N):
             sol_vec[n] = M_grads[n,n].pow(-1.0)
+        sol_vec /= sol_vec.sum()
+        if verbose:
+            print("initial solution", sol_vec)
 
         iter_count = 0
         delta = MinNormSolver.STOP_CRIT + 100

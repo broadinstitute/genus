@@ -829,7 +829,8 @@ class InferenceAndGeneration(torch.nn.Module):
                         geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
 
             # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
+            # task_rec = 0.0 * mse_av + \
+            task_rec = mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
                        lambda_fgfraction * fgfraction_coupling + \
                        lambda_nobj * nobj_coupling
 
