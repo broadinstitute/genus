@@ -6,7 +6,7 @@ from typing import List
 
 class MinNormSolver(object):
     MAX_ITER = 5550
-    STOP_CRIT = 1e-4
+    STOP_CRIT = 1e-5
 
     def __init__(self):
         super().__init__()
@@ -14,8 +14,9 @@ class MinNormSolver(object):
     @staticmethod
     def find_min_norm_element(vecs: List[torch.Tensor], verbose: bool=False):
         """
-        Given a list of normalized vectors (vecs), this method finds the minimum norm element in the convex hull
-        as min |u|_2 st. u = \sum c_i vecs[i] and \sum c_i = 1.
+        Given a list of normalized vectors (vecs), find the minimum norm element in the convex hull:
+        i.e. |u|^2 st. u = \sum c_i vecs[i] and \sum c_i = 1 and c_i >=0 .
+
         It is quite geometric, and the main idea is the fact that if d_{ij} = min |u|_2 st u = c x_i + (1-c) x_j;
         the solution lies in (0, d_{i,j})
         Hence, we find the best 2-task solution, and then run the projected gradient descent until convergence
@@ -33,8 +34,10 @@ class MinNormSolver(object):
         if verbose:
             print("M_grads", M_grads)
 
-        # Initial solution is the equal superposition
-        sol_vec = torch.ones(N, dtype=vecs[0].dtype, device=vecs[0].device)/N
+        # Initial solution is the superposition which is inversely proportional to norm
+        sol_vec = torch.zeros(N, dtype=vecs[0].dtype, device=vecs[0].device)
+        for n in range(N):
+            sol_vec[n] = M_grads[n,n].pow(-1.0)
 
         iter_count = 0
         delta = MinNormSolver.STOP_CRIT + 100
@@ -46,9 +49,11 @@ class MinNormSolver(object):
             # I should be a direction along which v1_M_v1 is likely to decrease
             # Note that both sol_vector and v2 are such that sum(sol_vector)=1 and sum(v2)=1 and all entries >= 0
             tmp = torch.matmul(sol_vec, M_grads)
-            t_iter = torch.argmin(tmp)
+            t_iter = torch.argmin(tmp).item()
+            #t_iter = (iter_count % N)
             v2 = torch.zeros_like(M_grads[0])
             v2[t_iter] = 1.0
+
 
             # The new vector will be: NEW = (1-gamma) * CURRENT + gamma * DELTA
             # I need to compute:
@@ -62,8 +67,7 @@ class MinNormSolver(object):
             v2_M_v2 = torch.dot(v2, M_v2)
             gamma = ((v1_M_v1 - v1_M_v2) / (v1_M_v1 + v2_M_v2 - 2 * v1_M_v2)).clamp(min=0.0, max=1.0)
             new_sol_vec = (1.0 - gamma) * sol_vec + gamma * v2
-            new_sol_vec /= new_sol_vec.sum()
-
+            new_sol_vec /= new_sol_vec.sum()  # very important to enforce exact normalization at each step!
 
             # Update
             change = new_sol_vec - sol_vec
@@ -74,6 +78,6 @@ class MinNormSolver(object):
             # for check print the metric
             check = torch.dot(sol_vec, torch.matmul(M_grads, sol_vec))
             if verbose:
-                print(iter_count, t_iter.item(), gamma.item(), check.item(), delta.item(), sol_vec.sum().item())
+                print(iter_count, check.item(), t_iter, gamma.item(), delta.item(), sol_vec.sum().item())
 
         return sol_vec

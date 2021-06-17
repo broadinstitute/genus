@@ -35,25 +35,42 @@ class UnetSPACE(torch.nn.Module):
         # Conv2D(kernel=1, stride=1, padding=0) -> leaves the size unchanged
 
         # Backbone: (B, C, H, W) -> (B, 128, H/8, W/8)
+##        self.backbone = torch.nn.Sequential(
+##            torch.nn.Conv2d(in_channels=self.ch_raw_image, out_channels=16, kernel_size=4, stride=2, padding=1), # 64 -> 32
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=4, num_channels=16),
+##            torch.nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1),  # 32 -> 16
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=8, num_channels=32),
+##            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1), # 16 -> 8
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=8, num_channels=64),
+##            torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=second_to_last_stride, padding=1), # 8 -> 8
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=16, num_channels=128),
+##            torch.nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=last_stride, padding=1), # 8 -> 8
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=32, num_channels=256),
+##            torch.nn.Conv2d(in_channels=256, out_channels=128, kernel_size=1, stride=1, padding=0), # 8 -> 8
+##            torch.nn.CELU(),
+##            torch.nn.GroupNorm(num_groups=16, num_channels=128)
+##        )
+
         self.backbone = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels=self.ch_raw_image, out_channels=16, kernel_size=4, stride=2, padding=1), # 64 -> 32
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=4, num_channels=16),
+            torch.nn.Conv2d(in_channels=self.ch_raw_image, out_channels=16, kernel_size=4, stride=2, padding=1),
+            # 64 -> 32
+            torch.nn.ReLU(),
             torch.nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4, stride=2, padding=1),  # 32 -> 16
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=8, num_channels=32),
-            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1), # 16 -> 8
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=8, num_channels=64),
-            torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=second_to_last_stride, padding=1), # 8 -> 8
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=16, num_channels=128),
-            torch.nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=last_stride, padding=1), # 8 -> 8
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=32, num_channels=256),
-            torch.nn.Conv2d(in_channels=256, out_channels=128, kernel_size=1, stride=1, padding=0), # 8 -> 8
-            torch.nn.CELU(),
-            torch.nn.GroupNorm(num_groups=16, num_channels=128)
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2, padding=1),  # 16 -> 8
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=second_to_last_stride, padding=1),
+            # 8 -> 8
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=last_stride, padding=1),  # 8 -> 8
+            torch.nn.ReLU(),
+            torch.nn.Conv2d(in_channels=256, out_channels=128, kernel_size=1, stride=1, padding=0),  # 8 -> 8
+            torch.nn.ReLU()
         )
 
         # Encoders based on Conv2D(kernel=1)
