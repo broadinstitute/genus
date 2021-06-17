@@ -1,5 +1,5 @@
 import torch
-from .conv import Encoder1by1SPACE, EncoderBg #UnetUpBlock, UnetDownBlock, SameSpatialResolution
+from .conv import Encoder1by1, Encoder1by1SPACE, EncoderBg #UnetUpBlock, UnetDownBlock, SameSpatialResolution
 #from .conv import EncoderLogit, EncoderWhere, EncoderBg
 from collections import deque
 from .namedtuple import UNEToutput
@@ -57,9 +57,12 @@ class UnetSPACE(torch.nn.Module):
         )
 
         # Encoders based on Conv2D(kernel=1)
-        self.encode_logit = Encoder1by1SPACE(ch_in=128, ch_out=self.dim_logit)
-        self.encode_zwhere = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zwhere)
-        self.encode_background = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zbg)
+        self.encode_logit = Encoder1by1(ch_in=128, ch_out=self.dim_logit)
+        self.encode_zwhere = Encoder1by1(ch_in=128, ch_out=2 * self.dim_zwhere)
+        self.encode_background = Encoder1by1(ch_in=128, ch_out=2 * self.dim_zbg)
+        #self.encode_logit = Encoder1by1SPACE(ch_in=128, ch_out=self.dim_logit)
+        #self.encode_zwhere = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zwhere)
+        #self.encode_background = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zbg)
 
     def forward(self, x, verbose: bool):
         x1 = self.backbone(x)

@@ -722,9 +722,10 @@ class InferenceAndGeneration(torch.nn.Module):
         logit_kl_av = (logit_kl_for_value_av - logit_kl_for_gradient_av).detach() + logit_kl_for_gradient_av
 
         # The KL for instance and boxes
-        indicator_bk = c_detached_bk
-        zinstance_kl_av = (zinstance_kl_bk * indicator_bk.detach()).sum() / batch_size
-        zwhere_kl_av = (zwhere_kl_bk * indicator_bk.detach()).sum() / batch_size
+        # indicator_bk = c_detached_bk
+        indicator_bk = torch.ones_like(c_detached_bk)
+        zinstance_kl_av = (zinstance_kl_bk * indicator_bk).sum() / batch_size
+        zwhere_kl_av = (zwhere_kl_bk * indicator_bk).sum() / batch_size
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased

@@ -228,6 +228,21 @@ import numpy
 ###        return x2
 
 
+class Encoder1by1(nn.Module):
+    """ Conv2D(kernel=1) + Relu + Conv2D(kernel=1) """
+    def __init__(self, ch_in: int, ch_out: int):
+        super().__init__()
+        assert ch_in % 4 == 0
+        self.ch_in = ch_in
+        self.ch_out = ch_out
+        self.encoder = nn.Sequential(
+            nn.Conv2d(in_channels=ch_in, out_channels=ch_in//2, kernel_size=1, stride=1, padding=0, bias=True),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=ch_in//2, out_channels=ch_out, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+
+    def forward(self, x):
+        return self.encoder(x)
 
 
 class Encoder1by1SPACE(nn.Module):

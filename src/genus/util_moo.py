@@ -6,13 +6,13 @@ from typing import List
 
 class MinNormSolver(object):
     MAX_ITER = 5550
-    STOP_CRIT = 1e-5
+    STOP_CRIT = 1e-4
 
     def __init__(self):
         super().__init__()
 
     @staticmethod
-    def find_min_norm_element(vecs: List[torch.Tensor]):
+    def find_min_norm_element(vecs: List[torch.Tensor], verbose: bool=False):
         """
         Given a list of normalized vectors (vecs), this method finds the minimum norm element in the convex hull
         as min |u|_2 st. u = \sum c_i vecs[i] and \sum c_i = 1.
@@ -30,7 +30,8 @@ class MinNormSolver(object):
                 M_grads[i,j] = torch.sum(vecs[i]*vecs[j])
                 M_grads[j,i] = M_grads[i,j]
 
-        # print("M_grads", M_grads)
+        if verbose:
+            print("M_grads", M_grads)
 
         # Initial solution is the equal superposition
         sol_vec = torch.ones(N, dtype=vecs[0].dtype, device=vecs[0].device)/N
@@ -40,12 +41,12 @@ class MinNormSolver(object):
 
         while (iter_count < MinNormSolver.MAX_ITER) and (delta > MinNormSolver.STOP_CRIT):
 
-            M_v1 = torch.matmul(M_grads, sol_vec)
 
             # Select a "direction" to try to change the composition vector.
             # I should be a direction along which v1_M_v1 is likely to decrease
             # Note that both sol_vector and v2 are such that sum(sol_vector)=1 and sum(v2)=1 and all entries >= 0
-            t_iter = torch.argmin(M_v1)
+            tmp = torch.matmul(sol_vec, M_grads)
+            t_iter = torch.argmin(tmp)
             v2 = torch.zeros_like(M_grads[0])
             v2[t_iter] = 1.0
 
@@ -55,11 +56,14 @@ class MinNormSolver(object):
             # v2_M_v2 = delta * M * delta
             # v1_M_v2 = current * M * delta
             M_v2 = torch.matmul(M_grads, v2)
+            M_v1 = torch.matmul(M_grads, sol_vec)
             v1_M_v1 = torch.dot(sol_vec, M_v1)
             v1_M_v2 = torch.dot(sol_vec, M_v2)
             v2_M_v2 = torch.dot(v2, M_v2)
-            gamma = ((v1_M_v1 - v1_M_v2) / (v1_M_v1 + v2_M_v2 - 2 * v1_M_v2)).clamp(min=0.0001, max=0.9999)
+            gamma = ((v1_M_v1 - v1_M_v2) / (v1_M_v1 + v2_M_v2 - 2 * v1_M_v2)).clamp(min=0.0, max=1.0)
             new_sol_vec = (1.0 - gamma) * sol_vec + gamma * v2
+            new_sol_vec /= new_sol_vec.sum()
+
 
             # Update
             change = new_sol_vec - sol_vec
@@ -69,6 +73,7 @@ class MinNormSolver(object):
 
             # for check print the metric
             check = torch.dot(sol_vec, torch.matmul(M_grads, sol_vec))
-            # print(iter_count, check.item(), delta.item(), sol_vec.sum().item())
+            if verbose:
+                print(iter_count, t_iter.item(), gamma.item(), check.item(), delta.item(), sol_vec.sum().item())
 
         return sol_vec
