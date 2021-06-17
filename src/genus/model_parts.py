@@ -792,13 +792,19 @@ class InferenceAndGeneration(torch.nn.Module):
 ####        #####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
 ####        #####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
 
+        # Confining potential which keeps logit into intermediate regime
+        logit_max = 8.0
+        logit_min = -8.0
+        all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                        (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
+
+        # Linear potential which can be used to control the number of object automatically.
+        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
+        nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
+
         # Couple to mixing to push the fgfraction up/down
         lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam)
         fgfraction_coupling = mixing_fg_b1wh.mean()
-
-        # Couple to the probabilities to push number of objects up/down
-        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
-        nobj_coupling = unet_prob_b1wh.sum() / torch.numel(mixing_bk1wh[:2])  # divide by batch and n_boxes
 
         # Penalize overlapping masks
         mask_overlap_cost = self.mask_overlap_strength * mask_overlap_b1wh.mean()
@@ -806,11 +812,6 @@ class InferenceAndGeneration(torch.nn.Module):
         # Penalize overlapping boxes
         box_overlap_cost = self.box_overlap_strength * box_overlap_b1wh.mean()
 
-        # Make sure that logit never become too large or too small.
-        logit_max = 8.0
-        logit_min = -8.0
-        all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
-                                        (logit_min - unet_output.logit).clamp(min=0.0).pow(2) ) / batch_size
 
         if self.multi_objective_optimization:
 
@@ -830,14 +831,23 @@ class InferenceAndGeneration(torch.nn.Module):
 
             # Reconstruction within the acceptable parameter range
             task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
-                       lambda_fgfraction * fgfraction_coupling + \
-                       lambda_nobj * nobj_coupling + 100 * nobj_coupling
+                       lambda_fgfraction * fgfraction_coupling + lambda_nobj * nobj_coupling
+
+            # unet_output.logit.retain_grad()
+            # mse_av.backward(retain_graph=True)
+            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max()) # in (0 - 0.0025)
+            # nobj_coupling.backward(retain_graph=True)
+            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max())  # in = 1E-6
+            # logit_kl_av.backward(retain_graph=True)
+            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max())  # in = (-0.04, 0.05)
+
 
             # these three are tuned based on (rec_fg, rec_bg and iou_av).....
             task_simplicity = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av
 
             # then I do a crazy low ramp of this term.
             # N_obj should never be smaller than self.target_nobj_av_per_patch_min
+            # Here I couple to logit_bk so that
             task_sparsity = c_attached_bk.mean()
 
             loss_tot = task_rec + loss_geco + 0.001 * task_simplicity + 0.0 * task_sparsity
