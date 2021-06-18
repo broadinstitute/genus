@@ -158,13 +158,15 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
 
                 if (epoch % TEST_FREQUENCY) == 0:
 
-                    vae.eval()
-                    test_metrics = process_one_epoch(model=vae,
-                                                     dataloader=test_loader,
-                                                     optimizer=optimizer,
-                                                     scheduler=scheduler,
-                                                     iom_threshold=config["architecture"]["nms_threshold_test"],
-                                                     verbose=(epoch == 0))
+                    with torch.enable_grad():
+                        vae.eval()
+                        test_metrics = process_one_epoch(model=vae,
+                                                         dataloader=test_loader,
+                                                         optimizer=optimizer,
+                                                         scheduler=scheduler,
+                                                         iom_threshold=config["architecture"]["nms_threshold_test"],
+                                                         verbose=(epoch == 0))
+
                     print("Test  "+test_metrics.pretty_print(epoch))
                     history_dict = append_to_dict(source=test_metrics,
                                                   destination=history_dict,

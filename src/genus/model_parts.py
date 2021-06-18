@@ -795,8 +795,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # Confining potential which keeps logit into intermediate regime
         logit_max = 8.0
         logit_min = -8.0
-        all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
-                                        (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
+        all_logit_in_range = 100 * torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                            (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
 
         # Linear potential which can be used to control the number of object automatically.
         lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
@@ -819,8 +819,9 @@ class InferenceAndGeneration(torch.nn.Module):
                         geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
 
             # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + all_logit_in_range + \
-                       lambda_fgfraction * fgfraction_coupling + lambda_nobj * nobj_coupling
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size  + \
+                       lambda_fgfraction * fgfraction_coupling + \
+                       lambda_nobj * nobj_coupling + all_logit_in_range
 
             loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av])
 
@@ -830,8 +831,9 @@ class InferenceAndGeneration(torch.nn.Module):
                         geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
 
             # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + all_logit_in_range + \
-                       lambda_fgfraction * fgfraction_coupling + lambda_nobj * nobj_coupling
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + \
+                       lambda_fgfraction * fgfraction_coupling + \
+                       all_logit_in_range + lambda_nobj * nobj_coupling
 
             # unet_output.logit.retain_grad()
             # mse_av.backward(retain_graph=True)
