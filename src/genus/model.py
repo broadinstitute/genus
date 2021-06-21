@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 import numpy
 import pathlib
+import time
 from typing import Tuple, Optional
 from .namedtuple import Inference, MetricMiniBatch, Segmentation, SparseSimilarity, Output
 from .util_vis import draw_bounding_boxes, draw_img
@@ -9,7 +10,6 @@ from .util_data import DataloaderWithLoad
 from .model_parts import InferenceAndGeneration
 from .util_ml import MetricsAccumulator
 from .util import load_yaml_as_dict, save_dict_as_yaml, roller_2d
-
 from .util_moo import MinNormSolver
 
 class CompositionalVae(torch.nn.Module):
@@ -945,6 +945,7 @@ def process_one_epoch(model: CompositionalVae,
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
             # model.forward returns metric and other stuff
+            tin = time.time()
             metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
                                                      iom_threshold=iom_threshold,
                                                      noisy_sampling=noisy_sampling,
@@ -952,6 +953,7 @@ def process_one_epoch(model: CompositionalVae,
                                                      draw_bg=False,
                                                      draw_boxes=False,
                                                      draw_boxes_ideal=False).metrics
+            print("forward ->", time.time() - tin)
 
             # Only if training I apply backward
             if model.training:
@@ -974,6 +976,7 @@ def process_one_epoch(model: CompositionalVae,
 
                     # Put all the gradients in a dictionary
                     for n, loss_task in enumerate(metrics.loss):
+                        tin = time.time()
                         if active_task[n]:
                             optimizer.zero_grad()
                             loss_task.backward(retain_graph=True)
@@ -987,11 +990,14 @@ def process_one_epoch(model: CompositionalVae,
                             print("grads[n].shape -->", grads[n].shape)
                         else:
                             grads[n] = None
+                        print(n, "backward ->", time.time() - tin)
 
                     # Frank-Wolfe iteration to compute scales.
+                    tin = time.time()
                     n_active = torch.arange(active_task.shape[0])[active_task]
                     scales, _ = MinNormSolver.find_min_norm_element([grads[n] for n in n_active.numpy()])
                     print("scales", scales)
+                    print("Franck-Wolfe ->", time.time() - tin)
 
                     # Now do the real backward pass with the effective loss:
                     effective_loss = torch.sum(metrics.loss[active_task] * scales)
