@@ -77,15 +77,27 @@ class UnetSPACE(torch.nn.Module):
         self.encode_logit = Encoder1by1(ch_in=128, ch_out=self.dim_logit)
         self.encode_zwhere = Encoder1by1(ch_in=128, ch_out=2 * self.dim_zwhere)
         self.encode_background = Encoder1by1(ch_in=128, ch_out=2 * self.dim_zbg)
+
         #self.encode_logit = Encoder1by1SPACE(ch_in=128, ch_out=self.dim_logit)
         #self.encode_zwhere = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zwhere)
         #self.encode_background = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zbg)
 
-    def forward(self, x, verbose: bool):
-        x1 = self.backbone(x)
+    def forward(self, x, backbone_no_grad: bool, verbose: bool):
+        if backbone_no_grad:
+            print("backbone no grad")
+            with torch.no_grad():
+                x1 = self.backbone(x)
+        else:
+            print("backbone with grad")
+            with torch.enable_grad():
+                x1 = self.backbone(x)
+
         zbg = self.encode_background(x1)
         zwhere = self.encode_zwhere(x1)
         logit = self.encode_logit(x1)
+        # Identiy but with requires_grad to True
+        features = x
+        features.requires_grad = True
 
         if verbose:
             print("INPUT ---> shape ", x.shape)
@@ -94,10 +106,16 @@ class UnetSPACE(torch.nn.Module):
             print("ZWHERE --> shape ", zwhere.shape)
             print("ZBG -----> shape ", zbg.shape)
 
+        if backbone_no_grad:
+            zwhere.retain_grad()
+            logit.retain_grad()
+            zbg.retain_grad()
+            features.retain_grad()
+
         return UNEToutput(zwhere=zwhere,
                           logit=logit,
                           zbg=zbg,
-                          features=x)
+                          features=features)
 
     def show_grid(self, ref_image):
         """ overimpose a grid the size of the corresponding resolution of each unet layer """

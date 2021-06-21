@@ -510,13 +510,14 @@ class InferenceAndGeneration(torch.nn.Module):
                 iom_threshold: float,
                 k_objects_max: int,
                 topk_only: bool,
-                noisy_sampling: bool) -> (Inference, MetricMiniBatch):
+                noisy_sampling: bool,
+                backbone_no_grad: bool) -> (Inference, MetricMiniBatch):
 
         # 0. preparation
         batch_size, ch_raw_image, width_raw_image, height_raw_image = imgs_bcwh.shape
 
         # 1. UNET
-        unet_output: UNEToutput = self.unet.forward(imgs_bcwh, verbose=False)
+        unet_output: UNEToutput = self.unet.forward(imgs_bcwh, backbone_no_grad=backbone_no_grad, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
 
         # 2. Background decoder
@@ -594,18 +595,21 @@ class InferenceAndGeneration(torch.nn.Module):
             nms_mask = invert_convert_to_box_list(nms_output.chosen_mask.unsqueeze(dim=-1),
                                                   original_width=score_grid.shape[-2],
                                                   original_height=score_grid.shape[-1])
-            assert nms_mask.shape == c_grid_before_nms.shape
             c_grid_after_nms = c_grid_before_nms * nms_mask
+
+            assert nms_mask.shape == c_grid_before_nms.shape == c_grid_after_nms.shape == unet_prob_b1wh.shape
+
+            c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1),
+                                         dim=-1,
+                                         index=nms_output.indices_k)
 
         # 6. Gather the probability and bounding_boxes which survived the NMS+TOP-K operation
         bounding_box_bk: BB = BB(bx=torch.gather(bounding_box_bn.bx, dim=-1, index=nms_output.indices_k),
                                  by=torch.gather(bounding_box_bn.by, dim=-1, index=nms_output.indices_k),
                                  bw=torch.gather(bounding_box_bn.bw, dim=-1, index=nms_output.indices_k),
                                  bh=torch.gather(bounding_box_bn.bh, dim=-1, index=nms_output.indices_k))
-        assert unet_prob_b1wh.shape == c_grid_after_nms.shape
         zwhere_kl_bk = torch.gather(convert_to_box_list(zwhere.kl).sum(dim=-1), dim=-1, index=nms_output.indices_k)
         prob_bk = torch.gather(convert_to_box_list(unet_prob_b1wh).squeeze(-1), dim=-1, index=nms_output.indices_k)
-        c_detached_bk = torch.gather(convert_to_box_list(c_grid_after_nms).squeeze(-1), dim=-1, index=nms_output.indices_k)
 
         # 7. Crop the unet_features according to the selected boxes
         batch_size, k_boxes = bounding_box_bk.bx.shape

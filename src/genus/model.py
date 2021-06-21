@@ -573,7 +573,8 @@ class CompositionalVae(torch.nn.Module):
                            draw_boxes_ideal: bool,
                            noisy_sampling: bool,
                            iom_threshold: float,
-                           k_objects_max: int) -> Output:
+                           k_objects_max: int,
+                           backbone_no_grad: bool) -> Output:
         """
         General method which process a batch of input images through the Variational Auto Encoder (i.e. applying both
         the encoder and the decoder). The output contains the latent variables, the metrics which are worth
@@ -602,6 +603,8 @@ class CompositionalVae(torch.nn.Module):
             k_objects_max: Maximum number of foreground instances. If this value if too small some foreground objects
                 will not be reconstructed or the model will be forced to clamp multiple objects into few bounding boxes.
                 If this value is too high, the model will waste computational resources.
+            backbone_no_grad: Boolean. If true the forward call is inside a torch.no_grad() manager so that the backbone
+                is not included in the computational graph. This will make the backward call much faster.
 
         Returns:
             A container of type :class:`output` with the latent variables, the metrics which are worth
@@ -654,7 +657,8 @@ class CompositionalVae(torch.nn.Module):
                                                           iom_threshold=iom_threshold,
                                                           k_objects_max=k_objects_max,
                                                           topk_only=topk_only,
-                                                          noisy_sampling=noisy_sampling)
+                                                          noisy_sampling=noisy_sampling,
+                                                          backbone_no_grad=backbone_no_grad)
 
         with torch.no_grad():
             if draw_image:
@@ -675,7 +679,8 @@ class CompositionalVae(torch.nn.Module):
                 draw_image: bool = False,
                 draw_bg: bool = False,
                 draw_boxes: bool = False,
-                draw_boxes_ideal: bool = False):
+                draw_boxes_ideal: bool = False,
+                backbone_no_grad: bool = False):
         """
         Wrapper around :meth:`process_batch_imgs` with some parameters pre-specified to values that
         make sense for training the model. See :meth:`process_batch_imgs` for details.
@@ -697,7 +702,8 @@ class CompositionalVae(torch.nn.Module):
                                        draw_boxes_ideal=draw_boxes_ideal,
                                        noisy_sampling=noisy_sampling,
                                        iom_threshold=iom_threshold,
-                                       k_objects_max=self._config["input_image"]["max_objects_per_patch"])
+                                       k_objects_max=self._config["input_image"]["max_objects_per_patch"],
+                                       backbone_no_grad=backbone_no_grad)
 
     def generate(self,
                  imgs_in: torch.Tensor,
@@ -959,6 +965,19 @@ def process_one_epoch(model: CompositionalVae,
             if model.training:
                 if model.inference_and_generator.multi_objective_optimization:
 
+                    tin = time.time()
+                    MOO_loss: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                             iom_threshold=iom_threshold,
+                                                             noisy_sampling=noisy_sampling,
+                                                             draw_image=False,
+                                                             draw_bg=False,
+                                                             draw_boxes=False,
+                                                             draw_boxes_ideal=False,
+                                                             backbone_no_grad=True).metrics.loss
+                    print("forward MOO_loss ->", time.time() - tin)
+
+
+
                     # TODO: Improve later
                     # do multi-objective optimization
                     #if (i % model.inference_and_generator.compute_frankwolfe_coeff_frequency == 0) or \
@@ -971,15 +990,16 @@ def process_one_epoch(model: CompositionalVae,
                     # compute the frankwolfe coefficients
                     # multiple backward passes for all losses which are not identically zero
                     grads = {}  # empty dictionary
-                    active_task = (metrics.loss != 0.0)
-                    print("metrics.loss.shape", metrics.loss.shape)
+                    active_task = (MOO_loss != 0.0)
+                    print("MOO_loss.shape", MOO_loss.shape)
 
                     # Put all the gradients in a dictionary
-                    for n, loss_task in enumerate(metrics.loss):
-                        tin = time.time()
+                    for n, loss_task in enumerate(MOO_loss):
                         if active_task[n]:
+                            tin = time.time()
                             optimizer.zero_grad()
                             loss_task.backward(retain_graph=True)
+                            print(n, "backward ->", time.time() - tin)
 
                             # Copy all the gradients in a list
                             tmp_grads = []
@@ -990,14 +1010,13 @@ def process_one_epoch(model: CompositionalVae,
                             print("grads[n].shape -->", grads[n].shape)
                         else:
                             grads[n] = None
-                        print(n, "backward ->", time.time() - tin)
 
                     # Frank-Wolfe iteration to compute scales.
                     tin = time.time()
                     n_active = torch.arange(active_task.shape[0])[active_task]
                     scales, _ = MinNormSolver.find_min_norm_element([grads[n] for n in n_active.numpy()])
                     print("scales", scales)
-                    print("Franck-Wolfe ->", time.time() - tin)
+                    print("Franck-Wolfe time ->", time.time() - tin)
 
                     # Now do the real backward pass with the effective loss:
                     effective_loss = torch.sum(metrics.loss[active_task] * scales)
