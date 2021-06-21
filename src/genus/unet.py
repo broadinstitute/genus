@@ -101,16 +101,16 @@ class UnetSPACE(torch.nn.Module):
 
         if verbose:
             print("INPUT ---> shape ", x.shape)
-            print("FMAP ----> shape ", x.shape)
+            print("FMAP ----> shape ", features.shape)
             print("LOGIT ---> shape ", logit.shape)
             print("ZWHERE --> shape ", zwhere.shape)
             print("ZBG -----> shape ", zbg.shape)
 
-        if backbone_no_grad:
-            zwhere.retain_grad()
-            logit.retain_grad()
-            zbg.retain_grad()
-            features.retain_grad()
+#        if backbone_no_grad:
+#            zwhere.retain_grad()
+#            logit.retain_grad()
+#            zbg.retain_grad()
+#            features.retain_grad()
 
         return UNEToutput(zwhere=zwhere,
                           logit=logit,

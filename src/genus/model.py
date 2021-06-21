@@ -950,84 +950,87 @@ def process_one_epoch(model: CompositionalVae,
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
-            # model.forward returns metric and other stuff
-            tin = time.time()
-            metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                     iom_threshold=iom_threshold,
-                                                     noisy_sampling=noisy_sampling,
-                                                     draw_image=False,
-                                                     draw_bg=False,
-                                                     draw_boxes=False,
-                                                     draw_boxes_ideal=False).metrics
-            print("forward ->", time.time() - tin)
 
-            # Only if training I apply backward
-            if model.training:
-                if model.inference_and_generator.multi_objective_optimization:
+            if model.training and model.inference_and_generator.multi_objective_optimization:
 
-                    tin = time.time()
-                    MOO_loss: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                             iom_threshold=iom_threshold,
-                                                             noisy_sampling=noisy_sampling,
-                                                             draw_image=False,
-                                                             draw_bg=False,
-                                                             draw_boxes=False,
-                                                             draw_boxes_ideal=False,
-                                                             backbone_no_grad=True).metrics.loss
-                    print("forward MOO_loss ->", time.time() - tin)
+                # TODO: wrap into a function to compute scales
+                tin = time.time()
+                MOO_loss: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                          iom_threshold=iom_threshold,
+                                                          noisy_sampling=noisy_sampling,
+                                                          draw_image=False,
+                                                          draw_bg=False,
+                                                          draw_boxes=False,
+                                                          draw_boxes_ideal=False,
+                                                          backbone_no_grad=True).metrics.loss
+                print("forward MOO_loss ->", time.time() - tin)
 
+                # compute the frankwolfe coefficients
+                # multiple backward passes for all losses which are not identically zero
+                grads = {}  # empty dictionary
+                active_task = (MOO_loss != 0.0)
+                scales = torch.zeros_like(MOO_loss)
+                print("MOO_loss.shape", MOO_loss.shape)
 
+                # Put all the gradients in a dictionary
+                for n, loss_task in enumerate(MOO_loss):
+                    if active_task[n]:
+                        tin = time.time()
+                        optimizer.zero_grad()
+                        loss_task.backward(retain_graph=True)
+                        print(n, "backward ->", time.time() - tin)
 
-                    # TODO: Improve later
-                    # do multi-objective optimization
-                    #if (i % model.inference_and_generator.compute_frankwolfe_coeff_frequency == 0) or \
-                    #        (model.inference_and_generator.frankwolfe_coeff is None):
-                    #    if model.inference_and_generator.approximate_MGDA:
-                    #        # the approximation
-                    #        raise NotImplementedError
-                    #    else:
+                        # Copy all the gradients in a list
+                        tmp_grads = []
+                        for param in model.parameters():
+                            if param.grad is not None:
+                                tmp_grads.append(param.grad.data.clone().detach().flatten())
+                        grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
+                        print("grads[n].shape -->", grads[n].shape)
+                    else:
+                        grads[n] = None
 
-                    # compute the frankwolfe coefficients
-                    # multiple backward passes for all losses which are not identically zero
-                    grads = {}  # empty dictionary
-                    active_task = (MOO_loss != 0.0)
-                    print("MOO_loss.shape", MOO_loss.shape)
+                # Frank-Wolfe iteration to compute scales.
+                tin = time.time()
+                n_active = torch.arange(active_task.shape[0])[active_task]
+                tmp_scales_active, _ = MinNormSolver.find_min_norm_element([grads[n] for n in n_active.numpy()])
+                scales[active_task] = tmp_scales_active
+                print("Franck-Wolfe time ->", time.time() - tin)
+                print("scales", scales)
+                # end of function which compute scales
 
-                    # Put all the gradients in a dictionary
-                    for n, loss_task in enumerate(MOO_loss):
-                        if active_task[n]:
-                            tin = time.time()
-                            optimizer.zero_grad()
-                            loss_task.backward(retain_graph=True)
-                            print(n, "backward ->", time.time() - tin)
+                # Run with the backward attached
+                tin = time.time()
+                metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                         iom_threshold=iom_threshold,
+                                                         noisy_sampling=noisy_sampling,
+                                                         draw_image=False,
+                                                         draw_bg=False,
+                                                         draw_boxes=False,
+                                                         draw_boxes_ideal=False,
+                                                         backbone_no_grad=False).metrics
+                print("forward ->", time.time() - tin)
+                effective_loss = torch.sum(metrics.loss * scales)
+                optimizer.zero_grad()
+                effective_loss.backward()
+                optimizer.step()
 
-                            # Copy all the gradients in a list
-                            tmp_grads = []
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    tmp_grads.append(param.grad.data.clone().detach().flatten())
-                            grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
-                            print("grads[n].shape -->", grads[n].shape)
-                        else:
-                            grads[n] = None
-
-                    # Frank-Wolfe iteration to compute scales.
-                    tin = time.time()
-                    n_active = torch.arange(active_task.shape[0])[active_task]
-                    scales, _ = MinNormSolver.find_min_norm_element([grads[n] for n in n_active.numpy()])
-                    print("scales", scales)
-                    print("Franck-Wolfe time ->", time.time() - tin)
-
-                    # Now do the real backward pass with the effective loss:
-                    effective_loss = torch.sum(metrics.loss[active_task] * scales)
-                    optimizer.zero_grad()
-                    effective_loss.backward()
-                    optimizer.step()
-                else:
+            elif not model.inference_and_generator.multi_objective_optimization:
+                tin = time.time()
+                metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                         iom_threshold=iom_threshold,
+                                                         noisy_sampling=noisy_sampling,
+                                                         draw_image=False,
+                                                         draw_bg=False,
+                                                         draw_boxes=False,
+                                                         draw_boxes_ideal=False,
+                                                         backbone_no_grad=False).metrics
+                print("forward ->", time.time() - tin)
+                if model.training:
                     # standard scalar optimization
                     optimizer.zero_grad()
-                    metrics.loss.backward()  # do back_prop and compute all the gradients
-                    optimizer.step()  # update the parameters
+                    metrics.loss.backward()
+                    optimizer.step()
 
             # Here you could print some gradient during test to see what's going on
             # raise NotImplementedError
