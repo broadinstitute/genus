@@ -291,7 +291,8 @@ class MetricMiniBatch(NamedTuple):
     Note:
         All entries should be scalars obtained by averaging over minibatch
     """
-    loss: torch.Tensor  # this is the only tensor b/c I need to take gradients
+    loss: torch.Tensor   # this is the only tensor b/c I need to take gradients
+    bottleneck: Tuple[torch.Tensor]  # these are the variable with the gradients to figure out MOO
     # monitoring
     mse_av: float
     mse_fg_av: float

@@ -95,7 +95,6 @@ class UnetSPACE(torch.nn.Module):
         zbg = self.encode_background(x1)
         zwhere = self.encode_zwhere(x1)
         logit = self.encode_logit(x1)
-        # Identiy but with requires_grad to True
         features = x
         features.requires_grad = True
 
@@ -105,12 +104,6 @@ class UnetSPACE(torch.nn.Module):
             print("LOGIT ---> shape ", logit.shape)
             print("ZWHERE --> shape ", zwhere.shape)
             print("ZBG -----> shape ", zbg.shape)
-
-#        if backbone_no_grad:
-#            zwhere.retain_grad()
-#            logit.retain_grad()
-#            zbg.retain_grad()
-#            features.retain_grad()
 
         return UNEToutput(zwhere=zwhere,
                           logit=logit,

@@ -1,5 +1,5 @@
 import torch
-from typing import List
+from typing import List, Optional
 
 """ This modules has low-level utilities related to multi-objective optimization """
 
@@ -12,7 +12,9 @@ class MinNormSolver(object):
         super().__init__()
 
     @staticmethod
-    def find_min_norm_element(vecs: List[torch.Tensor], verbose: bool=False) -> (torch.Tensor, float):
+    def find_min_norm_element(vecs: Optional[List[torch.Tensor]]=None,
+                              dot_product_matrix: Optional[torch.Tensor]=None,
+                              verbose: bool=False) -> (torch.Tensor, float):
         """
         Given a list of vectors (v), find the minimum norm element in the convex hull:
         i.e. |u|^2 st. u = \sum a_i v[i] and \sum a_i = 1 and a_i >=0.
@@ -23,21 +25,27 @@ class MinNormSolver(object):
 
         Args:
             vecs: A list of torch.Tensor
+            dot_product_matrix: A matrix with the dot_product between the vectors
             verbose: bool. Whether to print or not
 
         Returns:
             A tuple with a vector with the coefficients for summing the term in the loss function and
             the value of the |u|^2
         """
-
-        # Compute the dot products (i.e. the angle between the tensors)
-        N = len(vecs)
-        M = torch.zeros((N, N), dtype=vecs[0].dtype, device=vecs[0].device)
-        for i in range(N):
-            M[i,i] = torch.sum(vecs[i]*vecs[i])
-            for j in range(i+1, N):
-                M[i,j] = torch.sum(vecs[i]*vecs[j])
-                M[j,i] = M[i,j]
+        if (dot_product_matrix is None and vecs is None) or \
+                (dot_product_matrix is not None and vecs is not None):
+            raise Exception("Either dot_product_matrix or vecs must be None but not both.")
+        elif vecs is not None:
+            # Compute the dot products (i.e. the angle between the tensors)
+            N = len(vecs)
+            M = torch.zeros((N, N), dtype=vecs[0].dtype, device=vecs[0].device)
+            for i in range(N):
+                M[i,i] = torch.sum(vecs[i]*vecs[i])
+                for j in range(i+1, N):
+                    M[i,j] = torch.sum(vecs[i]*vecs[j])
+                    M[j,i] = M[i,j]
+        else:
+            M = dot_product_matrix
 
         if verbose:
             print("M_grads", M)

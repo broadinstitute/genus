@@ -353,6 +353,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Variable related to multi-objective optimization
         self.multi_objective_optimization = config["loss"]["multi_objective_optimization"]
+        self.moo_approximation = config["loss"]["multi_objective_approximation"]
+
         # self.approximate_MGDA = config["loss"]["approximate_MGDA"]
         # self.compute_frankwolfe_coeff_frequency = config["loss"]["compute_frankwolfe_coeff_frequency"]
         # self.frankwolfe_coeff = None
@@ -539,9 +541,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # 3. Bounding-Box decoding
         #print("unet_output.zwhere.shape", unet_output.zwhere.shape)
-        zwhere_mu, zwhere_std = torch.split(unet_output.zwhere,
-                                            split_size_or_sections=unet_output.zwhere.shape[-3]//2,
-                                            dim=-3)
+        zwhere_mu, zwhere_std = unet_output.zwhere.chunk(chunks=2, dim=-3)
         zwhere: DIST = sample_and_kl_diagonal_normal(posterior_mu=zwhere_mu,
                                                      posterior_std=F.softplus(zwhere_std)+1E-3,
                                                      noisy_sampling=noisy_sampling,
@@ -620,7 +620,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                            height_small=self.glimpse_size)
 
         # 8. Encode, Sample, Decode zinstance
-        zinstance_mu, zinstance_std = self.encoder_zinstance.forward(cropped_feature_map).chunk(chunks=2, dim=-1)
+        zinstance_mu_and_std: torch.Tensor = self.encoder_zinstance.forward(cropped_feature_map)
+        zinstance_mu, zinstance_std = zinstance_mu_and_std.chunk(chunks=2, dim=-1)
         zinstance: DIST = sample_and_kl_diagonal_normal(posterior_mu=zinstance_mu,
                                                         posterior_std=F.softplus(zinstance_std)+1E-3,
                                                         noisy_sampling=noisy_sampling,
@@ -877,7 +878,14 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
+        unet_output.zwhere.retain_grad()
+        unet_output.logit.retain_grad()
+        unet_output.zbg.retain_grad()
+        zinstance_mu_and_std.retain_grad()
+        bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
+
         metric = MetricMiniBatch(loss=loss_tot,
+                                 bottleneck=bottleneck,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  mse_fg_av=mse_fg_av.detach().item(),
