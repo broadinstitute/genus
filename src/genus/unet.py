@@ -84,11 +84,11 @@ class UnetSPACE(torch.nn.Module):
 
     def forward(self, x, backbone_no_grad: bool, verbose: bool):
         if backbone_no_grad:
-            print("backbone no grad")
+            # print("backbone no grad")
             with torch.no_grad():
                 x1 = self.backbone(x)
         else:
-            print("backbone with grad")
+            # print("backbone with grad")
             with torch.enable_grad():
                 x1 = self.backbone(x)
 
