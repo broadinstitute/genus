@@ -947,7 +947,7 @@ def process_one_epoch(model: CompositionalVae,
     with torch.autograd.set_detect_anomaly(mode=False):
 
         # Start loop over minibatches
-        for i, (imgs, labels, index) in enumerate(dataloader):
+        for counter, (imgs, labels, index) in enumerate(dataloader):
 
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
@@ -957,7 +957,7 @@ def process_one_epoch(model: CompositionalVae,
                 # Preliminary calculation to obtain scales (to scale the different terms in the loss function)
 
                 # TODO: wrap into a function to compute scales
-                tin = time.time()
+                # tin = time.time()
                 MOO_metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
                                                           iom_threshold=iom_threshold,
                                                           noisy_sampling=noisy_sampling,
@@ -966,7 +966,7 @@ def process_one_epoch(model: CompositionalVae,
                                                           draw_boxes=False,
                                                           draw_boxes_ideal=False,
                                                           backbone_no_grad=True).metrics
-                print("forward MOO_metrics ->", time.time() - tin)
+                # print("forward MOO_metrics ->", time.time() - tin)
 
                 # compute the frankwolfe coefficients
                 # multiple backward passes for all losses which are not identically zero
@@ -979,10 +979,10 @@ def process_one_epoch(model: CompositionalVae,
                 # Put all the gradients in a dictionary
                 for n, loss_task in enumerate(MOO_metrics.loss):
                     if active_task[n]:
-                        tin = time.time()
+                        # tin = time.time()
                         optimizer.zero_grad()
                         loss_task.backward(retain_graph=~is_last[n])
-                        print(n,"backward ->", time.time() - tin)
+                        # print(n,"backward ->", time.time() - tin)
 
                         # Copy all the gradients in a list
                         if model.inference_and_generator.moo_approximation:
@@ -1007,7 +1007,7 @@ def process_one_epoch(model: CompositionalVae,
                 # Frank-Wolfe iteration to compute scales.
                 # Compute the dot products (i.e. the angle between the tensors)
                 active_labels = torch.arange(active_task.shape[0])[active_task]
-                print("active_labels", active_labels)
+                # print("active_labels", active_labels)
                 matrix_dot_product_grads = torch.zeros((active_labels[-1].item(), active_labels[-1].item()),
                                                        dtype=MOO_metrics.loss.dtype,
                                                        device=MOO_metrics.loss.device)
@@ -1018,22 +1018,22 @@ def process_one_epoch(model: CompositionalVae,
                         elif ni > nj:
                             matrix_dot_product_grads[i, j] = torch.sum(grads[ni] * grads[nj])
                             matrix_dot_product_grads[j, i] = matrix_dot_product_grads[i, j]
-                print(matrix_dot_product_grads)
-                print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
+                #print(matrix_dot_product_grads)
+                #print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
                 del MOO_metrics
                 del grads
                 torch.cuda.empty_cache()
-                print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
+                #print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
 
-                tin = time.time()
+                # tin = time.time()
                 tmp_scales_active, _ = MinNormSolver.find_min_norm_element(dot_product_matrix=matrix_dot_product_grads)
-                print("tmp_scales_active", tmp_scales_active)
+                # print("tmp_scales_active", tmp_scales_active)
                 scales[active_task] = tmp_scales_active
-                print("Franck-Wolfe time ->", time.time() - tin)
-                print("scales", scales)
+                # print("Franck-Wolfe time ->", time.time() - tin)
+                print("Franck-Wolfe scales ->", scales)
 
             # In all cases run the model forward with the backbone attached
-            tin = time.time()
+            # tin = time.time()
             metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
                                                      iom_threshold=iom_threshold,
                                                      noisy_sampling=noisy_sampling,
@@ -1042,7 +1042,7 @@ def process_one_epoch(model: CompositionalVae,
                                                      draw_boxes=False,
                                                      draw_boxes_ideal=False,
                                                      backbone_no_grad=False).metrics
-            print("forward ->", time.time() - tin)
+            # print("forward ->", time.time() - tin)
 
             if model.training:
                 loss = torch.sum(metrics.loss * scales) if \
@@ -1059,7 +1059,7 @@ def process_one_epoch(model: CompositionalVae,
             #    #optimizer.zero_grad()
 
             if verbose:
-                print("i = "+str(i)+" train_loss=", metrics.loss.detach().cpu().numpy())
+                print("counter= "+str(counter)+" train_loss=", metrics.loss.detach().cpu().numpy())
 
             # Accumulate metrics over an epoch
             with torch.no_grad():
