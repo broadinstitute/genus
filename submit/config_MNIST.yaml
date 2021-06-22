@@ -105,7 +105,8 @@ input_image:
 loss:
 
   # parameter related to multi-objective optimization
-  multi_objective_optimization: False
+  multi_objective_optimization: True
+  multi_objective_approximation: True
   # approximate_MGDA: False
   # compute_frankwolfe_coeff_frequency: 10
 
@@ -138,9 +139,9 @@ optimizer:
   # Can be "adam", "SGD" or "RMSprop". In all our experiments we have used Adam.
   type: "adam"
 
-  # Learning rate. Use 5E-4
-  lr: 0.0003
-  lr_geco: 0.0003
+  # Learning rate. Use 3E-4
+  lr: 0.001
+  lr_geco: 0.001
 
   # This parameter set the time-window for the moving averages
   beta_moving_averages: 0.999
