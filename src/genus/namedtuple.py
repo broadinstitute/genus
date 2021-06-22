@@ -325,8 +325,9 @@ class MetricMiniBatch(NamedTuple):
     lambda_nobj_max: float
     lambda_nobj_min: float
     lambda_nobj: float
-    lambda_mse: float
+    lambda_kl_fg: float
     lambda_kl_bg: float
+    lambda_kl_box: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy
