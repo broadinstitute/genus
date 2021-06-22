@@ -466,6 +466,12 @@ class InferenceAndGeneration(torch.nn.Module):
                                            max_value=config["loss"]["lambda_nobj_max"],
                                            linear_exp=True)
 
+        self.geco_kl_logit = GecoParameter(initial_value=config["loss"]["lambda_kl_logit_min_max"][0],
+                                           min_value=config["loss"]["lambda_kl_logit_min_max"][0],
+                                           max_value=config["loss"]["lambda_kl_logit_min_max"][1],
+                                           linear_exp=True)
+
+
         self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
@@ -487,6 +493,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                          min_value=config["loss"]["lambda_kl_box_min_max"][0],
                                          max_value=config["loss"]["lambda_kl_box_min_max"][1],
                                          linear_exp=True)
+
 
 
 
@@ -730,6 +737,13 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_nobj_max = nav_selected - self.target_nobj_av_per_patch_max  # positive if nobj > target_max
             constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
 
+            # KL_LOGIT
+            # increase kl_logit if nobj_av > target_max
+            # decrease kl_logit if nobj_av_hard < target_min
+            increase_kl_logit = (nav_selected - self.target_nobj_av_per_patch_max).clamp(min=0.0)
+            decrease_kl_logit = (self.target_nobj_av_per_patch_min - nav_selected_hard).clamp(min=0.0)
+            constraint_kl_logit = increase_kl_logit - decrease_kl_logit
+
             # FGFRACTION: Count and couple based on mixing_fg (force fg_fraction in range)
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
             fgfraction_av_smooth = mixing_fg_b1wh.mean()
@@ -765,6 +779,7 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_kl_fg: GECO = self.geco_kl_fg.forward(constraint=constraint_kl_fg)
         geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
         geco_kl_box: GECO = self.geco_kl_box.forward(constraint=constraint_kl_box)
+        geco_kl_logit: GECO = self.geco_kl_logit.forward(constraint=constraint_kl_logit)
 
 
 ####        # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
@@ -827,22 +842,24 @@ class InferenceAndGeneration(torch.nn.Module):
         else:
 
             loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
+                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss + geco_kl_logit.loss
 
             # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + \
+            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + \
                        lambda_fgfraction * fgfraction_coupling + \
-                       all_logit_in_range + lambda_nobj * nobj_coupling
-
-            # these three are tuned based on (rec_fg, rec_bg and iou_av).....
-            task_simplicity = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av
+                       lambda_nobj * nobj_coupling + all_logit_in_range + \
+                       geco_kl_fg.hyperparam * zinstance_kl_av + \
+                       geco_kl_bg.hyperparam * zbg_kl_av + \
+                       geco_kl_box.hyperparam * zwhere_kl_av + \
+                       geco_kl_logit.hyperparam * logit_kl_av
 
             # then I do a crazy low ramp of this term.
             # N_obj should never be smaller than self.target_nobj_av_per_patch_min
             # Here I couple to logit_bk so that
-            task_sparsity = c_attached_bk.mean()
+            #task_sparsity = c_attached_bk.mean()
 
-            loss_tot = task_rec + loss_geco + 0.001 * task_simplicity + 0.0 * task_sparsity
+            loss_tot = task_rec + loss_geco #+ 0.001 * task_simplicity + 0.0 * task_sparsity
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -864,16 +881,14 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
         if backbone_no_grad and self.training:
-            unet_output.zwhere.retain_grad()
+            #unet_output.zwhere.retain_grad()
             unet_output.logit.retain_grad()
-            unet_output.zbg.retain_grad()
-            zinstance_mu_and_std.retain_grad()
-            bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
-        else:
-            bottleneck = None
+            #unet_output.zbg.retain_grad()
+            #zinstance_mu_and_std.retain_grad()
+            #bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
 
         metric = MetricMiniBatch(loss=loss_tot,
-                                 bottleneck=bottleneck,
+                                 bottleneck=unet_output.logit,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  mse_fg_av=mse_fg_av.detach().item(),
