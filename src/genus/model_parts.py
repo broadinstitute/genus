@@ -925,6 +925,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_kl_fg=geco_kl_fg.hyperparam.detach().item(),
                                  lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
                                  lambda_kl_box=geco_kl_box.hyperparam.detach().item(),
+                                 lambda_kl_logit=geco_kl_logit.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages
