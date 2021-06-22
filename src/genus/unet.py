@@ -83,7 +83,7 @@ class UnetSPACE(torch.nn.Module):
         #self.encode_background = Encoder1by1SPACE(ch_in=128, ch_out=2 * self.dim_zbg)
 
     def forward(self, x, backbone_no_grad: bool, verbose: bool):
-        if backbone_no_grad:
+        if backbone_no_grad or (not self.training):
             # print("backbone no grad")
             with torch.no_grad():
                 x1 = self.backbone(x)

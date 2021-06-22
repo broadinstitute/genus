@@ -959,13 +959,13 @@ def process_one_epoch(model: CompositionalVae,
                 # TODO: wrap into a function to compute scales
                 # tin = time.time()
                 MOO_metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                          iom_threshold=iom_threshold,
-                                                          noisy_sampling=noisy_sampling,
-                                                          draw_image=False,
-                                                          draw_bg=False,
-                                                          draw_boxes=False,
-                                                          draw_boxes_ideal=False,
-                                                          backbone_no_grad=True).metrics
+                                                             iom_threshold=iom_threshold,
+                                                             noisy_sampling=noisy_sampling,
+                                                             draw_image=False,
+                                                             draw_bg=False,
+                                                             draw_boxes=False,
+                                                             draw_boxes_ideal=False,
+                                                             backbone_no_grad=True).metrics
                 # print("forward MOO_metrics ->", time.time() - tin)
 
                 # compute the frankwolfe coefficients
