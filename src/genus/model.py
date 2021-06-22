@@ -1007,8 +1007,9 @@ def process_one_epoch(model: CompositionalVae,
                 # Frank-Wolfe iteration to compute scales.
                 # Compute the dot products (i.e. the angle between the tensors)
                 active_labels = torch.arange(active_task.shape[0])[active_task]
-                # print("active_labels", active_labels)
-                matrix_dot_product_grads = torch.zeros((active_labels[-1].item(), active_labels[-1].item()),
+                # print("active_labels", active_labels, active_labels.shape[0])
+
+                matrix_dot_product_grads = torch.zeros((active_labels.shape[0], active_labels.shape[0]),
                                                        dtype=MOO_metrics.loss.dtype,
                                                        device=MOO_metrics.loss.device)
                 for i, ni in enumerate(active_labels.numpy()):

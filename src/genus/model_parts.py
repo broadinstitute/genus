@@ -355,24 +355,19 @@ class InferenceAndGeneration(torch.nn.Module):
         self.multi_objective_optimization = config["loss"]["multi_objective_optimization"]
         self.moo_approximation = config["loss"]["multi_objective_approximation"]
 
-        # self.approximate_MGDA = config["loss"]["approximate_MGDA"]
-        # self.compute_frankwolfe_coeff_frequency = config["loss"]["compute_frankwolfe_coeff_frequency"]
-        # self.frankwolfe_coeff = None
-
         # variables
         self.GMM = config["loss"]["GMM_observation_model"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
         self.indicator_type = config["loss"]["indicator_type"]
         self.is_zero_background = config["input_image"]["is_zero_background"]
 
-        self.bb_regression_strength = config["loss"]["bounding_box_regression_penalty_strength"]
         self.mask_overlap_strength = config["loss"]["mask_overlap_penalty_strength"]
         self.box_overlap_strength = config["loss"]["box_overlap_penalty_strength"]
 
         self.min_box_size = config["input_image"]["range_object_size"][0]
         self.max_box_size = config["input_image"]["range_object_size"][1]
         self.glimpse_size = config["architecture"]["glimpse_size"]
-        self.pad_size_bb = config["loss"]["bounding_box_regression_padding"]
+        self.pad_size_bb = config["loss"]["ideal_box_padding"]
 
         # modules
         self.grid_dpp = Grid_DPP(length_scale=config["input_image"]["DPP_length"],
@@ -449,16 +444,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                              dtype=torch.float)[..., None, None], requires_grad=False)
 
         # Dynamical parameter controlled by GECO are adjusted according to the following targets
-        self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
-        self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
-
         self.target_fgfraction_min = config["input_image"]["target_fgfraction_min_max"][0]
         self.target_fgfraction_max = config["input_image"]["target_fgfraction_min_max"][1]
-
-        self.target_IoU_min = config["input_image"]["target_IoU_min_max"][0]
-        self.target_IoU_max = config["input_image"]["target_IoU_min_max"][1]
-
-
         self.geco_fgfraction_min = GecoParameter(initial_value=1.0,
                                                  min_value=0.0,
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
@@ -468,6 +455,8 @@ class InferenceAndGeneration(torch.nn.Module):
                                                  max_value=config["loss"]["lambda_fgfraction_max"],
                                                  linear_exp=True)
 
+        self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
+        self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
         self.geco_nobj_min = GecoParameter(initial_value=1.0,
                                            min_value=0.0,
                                            max_value=config["loss"]["lambda_nobj_max"],
@@ -477,33 +466,27 @@ class InferenceAndGeneration(torch.nn.Module):
                                            max_value=config["loss"]["lambda_nobj_max"],
                                            linear_exp=True)
 
-        self.geco_iou = GecoParameter(initial_value=1.0,
-                                      min_value=config["loss"]["lambda_iou_min_max"][0],
-                                      max_value=config["loss"]["lambda_iou_min_max"][1],
-                                      linear_exp=True)
-
         self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
         self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
 
+        self.target_mse_fg = config["input_image"]["target_mse_fg"]
+        self.geco_kl_fg = GecoParameter(initial_value=config["loss"]["lambda_kl_fg_min_max"][0],
+                                        min_value=config["loss"]["lambda_kl_fg_min_max"][0],
+                                        max_value=config["loss"]["lambda_kl_fg_min_max"][1],
+                                        linear_exp=True)
 
+        self.target_mse_bg = config["input_image"]["target_mse_bg"]
+        self.geco_kl_bg = GecoParameter(initial_value=config["loss"]["lambda_kl_bg_min_max"][0],
+                                        min_value=config["loss"]["lambda_kl_bg_min_max"][0],
+                                        max_value=config["loss"]["lambda_kl_bg_min_max"][1],
+                                        linear_exp=True)
 
-####        self.target_mse = config["input_image"]["target_mse"]
-####        self.target_mse_bg = config["input_image"]["target_mse_bg"]
-####
-####        self.geco_kl_bg = GecoParameter(initial_value=config["loss"]["lambda_kl_bg_min_max"][0],
-####                                        min_value=config["loss"]["lambda_kl_bg_min_max"][0],
-####                                        max_value=config["loss"]["lambda_kl_bg_min_max"][1],
-####                                        linear_exp=True)
-####
-####        self.geco_kl_boxes = GecoParameter(initial_value=1.0,
-####                                           min_value=config["loss"]["lambda_kl_box_min_max"][0],
-####                                           max_value=config["loss"]["lambda_kl_box_min_max"][1],
-####                                           linear_exp=True)
-####
-####        self.geco_mse = GecoParameter(initial_value=config["loss"]["lambda_mse_min_max"][1],
-####                                      min_value=config["loss"]["lambda_mse_min_max"][0],
-####                                      max_value=config["loss"]["lambda_mse_min_max"][1],
-####                                      linear_exp=True)
+        self.target_IoU_min = config["input_image"]["target_IoU_min_max"][0]
+        self.target_IoU_max = config["input_image"]["target_IoU_min_max"][1]
+        self.geco_kl_box = GecoParameter(initial_value=config["loss"]["lambda_kl_box_min_max"][0],
+                                         min_value=config["loss"]["lambda_kl_box_min_max"][0],
+                                         max_value=config["loss"]["lambda_kl_box_min_max"][1],
+                                         linear_exp=True)
 
 
 
@@ -760,6 +743,16 @@ class InferenceAndGeneration(torch.nn.Module):
             decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
             constraint_annealing = - 1.0 * decrease_annealing
 
+            # MSE_FG AND MSE_BG need to be equal to target. I change kl strength to satisfy this condition
+            # if target > mse increases factor in front of kl and viceverse
+            constraint_kl_fg = (self.target_mse_fg - mse_fg_av) * (annealing_factor == 0.0)
+            constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * (annealing_factor == 0.0)
+
+            # IoU need to be in range.
+            increase_kl_box = (iou_av - self.target_IoU_max).clamp(min=0) # if IoU_av > target_max increases kl strength
+            decrease_kl_box = (self.target_IoU_min - iou_av).clamp(min=0) # if IoU_av < target_min decreases kl strength
+            constraint_kl_box = increase_kl_box - decrease_kl_box
+
         # Produce both the loss and the hyperparameters
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
@@ -769,19 +762,11 @@ class InferenceAndGeneration(torch.nn.Module):
 
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
+        geco_kl_fg: GECO = self.geco_kl_fg.forward(constraint=constraint_kl_fg)
+        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
+        geco_kl_box: GECO = self.geco_kl_box.forward(constraint=constraint_kl_box)
 
-## BOUNDING_BOXES REGRESSION. (force IoU in the acceptable range)
-#geco_iou: GECO = self.geco_iou.forward(constraint=constraint_iou)
-#increase_iou = (self.target_IoU_min - iou_av).clamp(min=0)
-#decrease_iou = (iou_av - self.target_IoU_max).clamp(min=0)
-#constraint_iou = increase_iou - decrease_iou
-####        geco_mse: GECO = self.geco_mse.forward(constraint=constraint_mse)
-####        geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
-####        # This is the loss which makes geco parameter change
-####        loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-####                    geco_nobj_max.loss + geco_nobj_min.loss + \
-####                    geco_kl_bg.loss + geco_kl_boxes.loss + \
-####                    geco_annealing.loss + geco_mse.loss
+
 ####        # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
 ####        constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
 ####
@@ -821,14 +806,23 @@ class InferenceAndGeneration(torch.nn.Module):
         if self.multi_objective_optimization:
 
             loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss
+                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
+                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
 
             # Reconstruction within the acceptable parameter range
             task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size  + \
                        lambda_fgfraction * fgfraction_coupling + \
-                       lambda_nobj * nobj_coupling + all_logit_in_range
+                       lambda_nobj * nobj_coupling + all_logit_in_range + \
+                       geco_kl_fg.hyperparam * zinstance_kl_av + \
+                       geco_kl_bg.hyperparam * zbg_kl_av + \
+                       geco_kl_box.hyperparam * zwhere_kl_av
 
-            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av], dim=0)
+            # task_sparsity = c_attached_bk.mean()
+            # loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, task_sparsity], dim=0)
+            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av], dim=0)
+
+            # Idea. After this is done I can turn on a sparsity term
+
 
         else:
 
