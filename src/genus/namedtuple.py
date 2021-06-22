@@ -1,6 +1,6 @@
 import torch
 import numpy
-from typing import NamedTuple, Optional, Tuple
+from typing import NamedTuple, Optional, Tuple, Union
 import skimage.color
 import matplotlib.pyplot as plt
 
@@ -291,8 +291,8 @@ class MetricMiniBatch(NamedTuple):
     Note:
         All entries should be scalars obtained by averaging over minibatch
     """
-    loss: torch.Tensor   # this is the only tensor b/c I need to take gradients
-    bottleneck: Tuple[torch.Tensor]  # these are the variable with the gradients to figure out MOO
+    loss: Union[Tuple[torch.Tensor], torch.Tensor]   # this is the only tensor b/c I need to take gradients
+    bottleneck: Optional[Tuple[torch.Tensor]]  # these are the variable with the gradients to figure out MOO
     # monitoring
     mse_av: float
     mse_fg_av: float

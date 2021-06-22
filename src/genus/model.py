@@ -643,7 +643,8 @@ class CompositionalVae(torch.nn.Module):
             >>>                                 draw_boxes=False,
             >>>                                 noisy_sampling=True,
             >>>                                 iom_threshold=0.3,
-            >>>                                 n_objects_max=-25)
+            >>>                                 n_objects_max=25,
+            >>>                                 backbone_no_grad=False)
         """
 
         # Checks
@@ -737,7 +738,8 @@ class CompositionalVae(torch.nn.Module):
                                            draw_boxes_ideal=draw_boxes_ideal,
                                            noisy_sampling=True,
                                            iom_threshold=-1.0,
-                                           k_objects_max=self._config["input_image"]["max_objects_per_patch"])
+                                           k_objects_max=self._config["input_image"]["max_objects_per_patch"],
+                                           backbone_no_grad=True)
 
 
 def load_from_ckpt(ckpt: dict,
@@ -952,6 +954,7 @@ def process_one_epoch(model: CompositionalVae,
 
 
             if model.training and model.inference_and_generator.multi_objective_optimization:
+                # Preliminary calculation to obtain scales (to scale the different terms in the loss function)
 
                 # TODO: wrap into a function to compute scales
                 tin = time.time()
@@ -972,10 +975,6 @@ def process_one_epoch(model: CompositionalVae,
                 scales = torch.zeros_like(MOO_metrics.loss)
                 cumsum_active_task = torch.cumsum(active_task, dim=0)
                 is_last = (cumsum_active_task == cumsum_active_task[-1]) * active_task
-                print("Active_task",active_task)
-                print("cumsum     ",cumsum_active_task)
-                print("is_last    ",is_last)
-                print("MOO_loss.shape", MOO_metrics.loss.shape)
 
                 # Put all the gradients in a dictionary
                 for n, loss_task in enumerate(MOO_metrics.loss):
@@ -983,14 +982,18 @@ def process_one_epoch(model: CompositionalVae,
                         tin = time.time()
                         optimizer.zero_grad()
                         loss_task.backward(retain_graph=~is_last[n])
-                        print(n, "backward ->", time.time() - tin)
+                        print(n,"backward ->", time.time() - tin)
 
                         # Copy all the gradients in a list
                         if model.inference_and_generator.moo_approximation:
                             tmp_grads = []
-                            for v in MOO_metrics.bottleneck:
+                            for n_index, v in enumerate(MOO_metrics.bottleneck):
                                 if v.grad is not None:
+                                    # print("inside inner loop",n_index, v.grad.clone().detach().flatten().pow(2).sum().sqrt())
                                     tmp_grads.append(v.grad.clone().detach().flatten())
+                                    # these two lines act like optimizer.zero_grad()
+                                    v.grad.detach_()
+                                    v.grad.zero_()
                             grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
                         else:
                             tmp_grads = []
@@ -998,16 +1001,13 @@ def process_one_epoch(model: CompositionalVae,
                                 if param.grad is not None:
                                     tmp_grads.append(param.grad.data.clone().detach().flatten())
                             grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
-                        print("grads[n].shape -->", grads[n].shape)
-                        print("batch_shape ----->", imgs.shape)
-                        print("n, NON-zero",n)
                     else:
-                        print("n, zero",n)
                         grads[n] = 0.0
 
                 # Frank-Wolfe iteration to compute scales.
                 # Compute the dot products (i.e. the angle between the tensors)
                 active_labels = torch.arange(active_task.shape[0])[active_task]
+                print("active_labels", active_labels)
                 matrix_dot_product_grads = torch.zeros((active_labels[-1].item(), active_labels[-1].item()),
                                                        dtype=MOO_metrics.loss.dtype,
                                                        device=MOO_metrics.loss.device)
@@ -1025,47 +1025,31 @@ def process_one_epoch(model: CompositionalVae,
                 torch.cuda.empty_cache()
                 print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
 
-
                 tin = time.time()
                 tmp_scales_active, _ = MinNormSolver.find_min_norm_element(dot_product_matrix=matrix_dot_product_grads)
                 print("tmp_scales_active", tmp_scales_active)
                 scales[active_task] = tmp_scales_active
                 print("Franck-Wolfe time ->", time.time() - tin)
                 print("scales", scales)
-                # end of function which compute scales
 
-                # Run with the backward attached
-                tin = time.time()
-                metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                         iom_threshold=iom_threshold,
-                                                         noisy_sampling=noisy_sampling,
-                                                         draw_image=False,
-                                                         draw_bg=False,
-                                                         draw_boxes=False,
-                                                         draw_boxes_ideal=False,
-                                                         backbone_no_grad=False).metrics
-                print("forward ->", time.time() - tin)
-                effective_loss = torch.sum(metrics.loss * scales)
+            # In all cases run the model forward with the backbone attached
+            tin = time.time()
+            metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
+                                                     iom_threshold=iom_threshold,
+                                                     noisy_sampling=noisy_sampling,
+                                                     draw_image=False,
+                                                     draw_bg=False,
+                                                     draw_boxes=False,
+                                                     draw_boxes_ideal=False,
+                                                     backbone_no_grad=False).metrics
+            print("forward ->", time.time() - tin)
+
+            if model.training:
+                loss = torch.sum(metrics.loss * scales) if \
+                    model.inference_and_generator.multi_objective_optimization else metrics.loss
                 optimizer.zero_grad()
-                effective_loss.backward()
+                loss.backward()
                 optimizer.step()
-
-            elif not model.inference_and_generator.multi_objective_optimization:
-                tin = time.time()
-                metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                         iom_threshold=iom_threshold,
-                                                         noisy_sampling=noisy_sampling,
-                                                         draw_image=False,
-                                                         draw_bg=False,
-                                                         draw_boxes=False,
-                                                         draw_boxes_ideal=False,
-                                                         backbone_no_grad=False).metrics
-                print("forward ->", time.time() - tin)
-                if model.training:
-                    # standard scalar optimization
-                    optimizer.zero_grad()
-                    metrics.loss.backward()
-                    optimizer.step()
 
             # Here you could print some gradient during test to see what's going on
             # raise NotImplementedError

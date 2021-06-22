@@ -828,7 +828,7 @@ class InferenceAndGeneration(torch.nn.Module):
                        lambda_fgfraction * fgfraction_coupling + \
                        lambda_nobj * nobj_coupling + all_logit_in_range
 
-            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av])
+            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, zinstance_kl_av, zbg_kl_av, zwhere_kl_av], dim=0)
 
         else:
 
@@ -839,15 +839,6 @@ class InferenceAndGeneration(torch.nn.Module):
             task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum()/batch_size + \
                        lambda_fgfraction * fgfraction_coupling + \
                        all_logit_in_range + lambda_nobj * nobj_coupling
-
-            # unet_output.logit.retain_grad()
-            # mse_av.backward(retain_graph=True)
-            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max()) # in (0 - 0.0025)
-            # nobj_coupling.backward(retain_graph=True)
-            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max())  # in = 1E-6
-            # logit_kl_av.backward(retain_graph=True)
-            # print(unet_output.logit.grad.min(), unet_output.logit.grad.max())  # in = (-0.04, 0.05)
-
 
             # these three are tuned based on (rec_fg, rec_bg and iou_av).....
             task_simplicity = logit_kl_av + zinstance_kl_av + zbg_kl_av + zwhere_kl_av
@@ -878,11 +869,14 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
-        unet_output.zwhere.retain_grad()
-        unet_output.logit.retain_grad()
-        unet_output.zbg.retain_grad()
-        zinstance_mu_and_std.retain_grad()
-        bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
+        if backbone_no_grad and self.training:
+            unet_output.zwhere.retain_grad()
+            unet_output.logit.retain_grad()
+            unet_output.zbg.retain_grad()
+            zinstance_mu_and_std.retain_grad()
+            bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
+        else:
+            bottleneck = None
 
         metric = MetricMiniBatch(loss=loss_tot,
                                  bottleneck=bottleneck,

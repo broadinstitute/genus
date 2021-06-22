@@ -84,7 +84,9 @@ class MinNormSolver(object):
             v1_M_v1 = torch.dot(sol_vec, M_v1)
             v1_M_v2 = torch.dot(sol_vec, M_v2)
             v2_M_v2 = torch.dot(v2, M_v2)
-            gamma = ((v1_M_v1 - v1_M_v2) / (v1_M_v1 + v2_M_v2 - 2 * v1_M_v2)).clamp(min=0.0, max=1.0)
+
+            gamma = (v1_M_v1 - v1_M_v2) / (v1_M_v1 + v2_M_v2 - 2 * v1_M_v2).clamp(min=1E-6)
+            gamma.clamp_(min=0.0, max=1.0)
             new_sol_vec = (torch.ones_like(gamma) - gamma) * sol_vec + gamma * v2
 
             # Renormalize the solution at each step to prevent numerical error from accumulating

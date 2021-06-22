@@ -82,7 +82,8 @@ class MetricsAccumulator(object):
         elif isinstance(_value, numpy.ndarray):
             x = _value
         else:
-            raise Exception("value of unrecognized type", _key, type(_value))
+            x = -99.99
+            #raise Exception("value of unrecognized type", _key, type(_value))
 
         try:
             self._dict_accumulate[_key] = x * counter_increment + self._dict_accumulate.get(_key, 0)
