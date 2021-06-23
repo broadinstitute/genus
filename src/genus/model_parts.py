@@ -436,8 +436,8 @@ class InferenceAndGeneration(torch.nn.Module):
 
 
         # Quantities to compute the moving averages
-        self.moving_average_calculator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
-                                                                 n_features=3)
+        self.kl_moving_average_calulator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
+                                                                    n_features=4)
 
         # Observation model
         self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
@@ -722,6 +722,12 @@ class InferenceAndGeneration(torch.nn.Module):
         zinstance_kl_av = (zinstance_kl_bk * indicator_bk).sum() / batch_size
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).sum() / batch_size
 
+        # Compute the slow moving averages of all the KL terms
+        with torch.no_grad():
+            ma_kl_logit, ma_kl_where, ma_kl_what, ma_kl_bg = self.kl_moving_average_calulator.forward(
+                torch.stack((logit_kl_av, zwhere_kl_av, zinstance_kl_av, zbg_kl_av), dim=-1)).chunk(chunks=4, dim=-1)
+            # print("ma_kl_logit", ma_kl_logit)
+
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
         # if constraint > 0, parameter will be increased
@@ -852,9 +858,10 @@ class InferenceAndGeneration(torch.nn.Module):
                        geco_kl_fg.hyperparam * zinstance_kl_av + \
                        geco_kl_bg.hyperparam * zbg_kl_av + \
                        geco_kl_box.hyperparam * zwhere_kl_av + \
-                       geco_kl_logit.hyperparam * logit_kl_av
+                       logit_kl_av / ma_kl_logit
+                    # geco_kl_logit.hyperparam * \
 
-            # then I do a crazy low ramp of this term.
+                # then I do a crazy low ramp of this term.
             # N_obj should never be smaller than self.target_nobj_av_per_patch_min
             # Here I couple to logit_bk so that
             #task_sparsity = c_attached_bk.mean()
@@ -926,6 +933,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
                                  lambda_kl_box=geco_kl_box.hyperparam.detach().item(),
                                  lambda_kl_logit=geco_kl_logit.hyperparam.detach().item(),
+                                 ma_logit_kl=ma_kl_logit.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages

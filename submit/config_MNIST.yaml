@@ -114,7 +114,7 @@ loss:
   lambda_fgfraction_max: 25.0
   lambda_nobj_max: 25.0
 
-  lambda_kl_logit_min_max: [1.0, 1.0]
+  lambda_kl_logit_min_max: [10000.0, 10000.0]
   lambda_kl_bg_min_max: [0.001, 10.0]
   lambda_kl_fg_min_max: [0.001, 10.0]
   lambda_kl_box_min_max: [0.001, 10.0]

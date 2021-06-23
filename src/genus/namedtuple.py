@@ -330,6 +330,7 @@ class MetricMiniBatch(NamedTuple):
     lambda_kl_bg: float
     lambda_kl_box: float
     lambda_kl_logit: float
+    ma_logit_kl: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy
