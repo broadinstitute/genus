@@ -948,6 +948,7 @@ def process_one_epoch(model: CompositionalVae,
 
         # Start loop over minibatches
         for counter, (imgs, labels, index) in enumerate(dataloader):
+            model.inference_and_generator.first_in_epoch = (counter == 0)
 
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
@@ -1070,9 +1071,9 @@ def process_one_epoch(model: CompositionalVae,
                     model.inference_and_generator.multi_objective_optimization else metrics.loss
                 optimizer.zero_grad()
                 loss.backward()
-                logit = metrics.bottleneck
-                if logit.grad is not None:
-                    print("logit grad min, max",logit.grad.min(),logit.grad.max())
+                #logit = metrics.bottleneck
+                #if logit.grad is not None:
+                #    print("logit grad min, max",logit.grad.min(),logit.grad.max())
                 optimizer.step()
 
             # Here you could print some gradient during test to see what's going on

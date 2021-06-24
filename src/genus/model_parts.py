@@ -890,7 +890,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
-        if self.training:
+        if self.training and self.first_in_epoch:
             @torch.no_grad()
             def zero_grad():
                 for p in self.parameters():
@@ -905,7 +905,8 @@ class InferenceAndGeneration(torch.nn.Module):
                     n_non_zero = mask_non_zero.sum()
                     mean_non_zero = (mask_non_zero * grad).sum() / n_non_zero.clamp(min=1.0)
                     mean_abs_non_zero = (mask_non_zero * grad).abs().sum() / n_non_zero.clamp(min=1.0)
-                    return {"grad_max" : grad.max().detach().cpu().item(),
+                    return {"grad_numel" : grad.numel(),
+                            "grad_max" : grad.max().detach().cpu().item(),
                             "grad_min" : grad.min().detach().cpu().item(),
                             "grad_n_non_zero": n_non_zero.detach().cpu().item(),
                             "grad_mean_non_zero" : mean_non_zero.detach().cpu().item(),

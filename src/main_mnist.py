@@ -209,6 +209,7 @@ for delta_epoch in range(1, NUM_EPOCHS+1):
 ###                                                      prefix="error_clean",
 ###                                                      experiment=exp)
 
+                    print(vae.training)
                     ref_output_noisy: Output = vae.forward(reference_imgs,
                                                            iom_threshold=config["architecture"]["nms_threshold_test"],
                                                            noisy_sampling=True,
