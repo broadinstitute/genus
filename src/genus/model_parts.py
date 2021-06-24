@@ -921,6 +921,13 @@ class InferenceAndGeneration(torch.nn.Module):
 
             unet_output.logit.retain_grad()
 
+            # loss_total
+            zero_grad()
+            loss_tot.backward(retain_graph=True)
+            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+                           experiment=self.experiment,
+                           prefix="debug/total")
+
             # mse_av
             zero_grad()
             mse_av.backward(retain_graph=True)
