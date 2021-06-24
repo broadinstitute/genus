@@ -511,6 +511,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # 1. UNET
         unet_output: UNEToutput = self.unet.forward(imgs_bcwh, backbone_no_grad=backbone_no_grad, verbose=False)
         unet_prob_b1wh = torch.sigmoid(unet_output.logit)
+        if unet_output.logit.requires_grad:
+            handle = unet_output.logit.register_hook(lambda grad: grad.clamp(min=-1.0, max=1.0))
 
         # 2. Background decoder
         if self.is_zero_background:
