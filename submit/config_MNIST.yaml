@@ -138,8 +138,8 @@ optimizer:
   type: "adam"
 
   # Learning rate. Use 3E-4
-  lr: 0.001
-  lr_geco: 0.001
+  lr: 0.0003
+  lr_geco: 0.0003
 
   # This parameter set the time-window for the moving averages
   beta_moving_averages: 0.999
@@ -156,7 +156,7 @@ optimizer:
 # parameter relative to the learning rate scheduler
 scheduler:
   # Boolean. If True the scheduler is active. If False the learning rate is constant during the simulation
-  is_active: True
+  is_active: False
 
   # Can be "step_LR" or "multistep_LR"
   type: "multistep_LR"

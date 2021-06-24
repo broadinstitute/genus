@@ -64,6 +64,7 @@ reference_imgs_fig = show_batch(reference_imgs[:10], n_col=5, title="reference i
 
 # Instantiate model, optimizer and checks
 vae = CompositionalVae(config)
+vae.inference_and_generator.experiment = exp
 log_model_summary(vae, experiment=exp)
 optimizer = instantiate_optimizer(model=vae, config_optimizer=config["optimizer"])
 

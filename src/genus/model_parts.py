@@ -811,6 +811,9 @@ class InferenceAndGeneration(torch.nn.Module):
 
         # Linear potential which can be used to control the number of object automatically.
         lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
+        # TODO
+        #  this clamping is why nobj coupling is not effective
+        #  look at all the gradients of logit based on different terms
         nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
@@ -887,12 +890,70 @@ class InferenceAndGeneration(torch.nn.Module):
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
-        if backbone_no_grad and self.training:
-            #unet_output.zwhere.retain_grad()
+        if self.training:
+            @torch.no_grad()
+            def zero_grad():
+                for p in self.parameters():
+                    if p.grad is not None:
+                        p.grad.detach_()
+                        p.grad.zero_()
+
+            @torch.no_grad()
+            def get_statistics(grad):
+                if grad is not None:
+                    mask_non_zero = (grad != 0.0)
+                    n_non_zero = mask_non_zero.sum()
+                    mean_non_zero = (mask_non_zero * grad).sum() / n_non_zero.clamp(min=1.0)
+                    mean_abs_non_zero = (mask_non_zero * grad).abs().sum() / n_non_zero.clamp(min=1.0)
+                    return {"grad_max" : grad.max().detach().cpu().item(),
+                            "grad_min" : grad.min().detach().cpu().item(),
+                            "grad_n_non_zero": n_non_zero.detach().cpu().item(),
+                            "grad_mean_non_zero" : mean_non_zero.detach().cpu().item(),
+                            "grad_mean_abs_non_zero" : mean_abs_non_zero.detach().cpu().item()}
+                else:
+                    return {"grad_message" : 999.99 }
+
+            @torch.no_grad()
+            def log_dictionary(dictionary, prefix, experiment):
+                for key, value in dictionary.items():
+                    experiment[prefix + "/" + key].log(value)
+
             unet_output.logit.retain_grad()
-            #unet_output.zbg.retain_grad()
-            #zinstance_mu_and_std.retain_grad()
-            #bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
+
+            # mse_av
+            zero_grad()
+            mse_av.backward(retain_graph=True)
+            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+                           experiment=self.experiment,
+                           prefix="debug/mse")
+
+            # nobj_couupling
+            zero_grad()
+            (lambda_nobj * nobj_coupling).backward(retain_graph=True)
+            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+                           experiment=self.experiment,
+                           prefix="debug/nobj")
+
+            # all_logit_in_range
+            zero_grad()
+            all_logit_in_range.backward(retain_graph=True)
+            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+                           experiment=self.experiment,
+                           prefix="debug/all_logit_in_range")
+
+            # all_logit_in_range
+            zero_grad()
+            (logit_kl_av / ma_kl_logit).backward(retain_graph=True)
+            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+                           experiment=self.experiment,
+                           prefix="debug/logit_kl")
+
+
+        # if backbone_no_grad and self.training:
+        # unet_output.zwhere.retain_grad()
+        # unet_output.zbg.retain_grad()
+        # zinstance_mu_and_std.retain_grad()
+        # bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
 
         metric = MetricMiniBatch(loss=loss_tot,
                                  bottleneck=unet_output.logit,
