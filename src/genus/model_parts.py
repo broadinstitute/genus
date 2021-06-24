@@ -806,14 +806,14 @@ class InferenceAndGeneration(torch.nn.Module):
         # Confining potential which keeps logit into intermediate regime
         logit_max = 8.0
         logit_min = -8.0
-        all_logit_in_range = 100 * torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
-                                            (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
+        all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
+                                      (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
 
         # Linear potential which can be used to control the number of object automatically.
-        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
         # TODO
         #  this clamping is why nobj coupling is not effective
         #  look at all the gradients of logit based on different terms
+        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
         nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
@@ -893,6 +893,9 @@ class InferenceAndGeneration(torch.nn.Module):
         if self.training and self.first_in_epoch:
             @torch.no_grad()
             def zero_grad(module):
+                if unet_output.logit.grad is not None:
+                    unet_output.logit.grad.detach_()
+                    unet_output.logit.grad.zero_()
                 for name, p in module.named_parameters():
                     if p.grad is not None:
                         #print(name)
@@ -927,7 +930,8 @@ class InferenceAndGeneration(torch.nn.Module):
             #print(" --> total")
             zero_grad(self)
             loss_tot.backward(retain_graph=True)
-            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+            total_dict=get_statistics(unet_output.logit.grad)
+            log_dictionary(dictionary=total_dict,
                            experiment=self.experiment,
                            prefix="debug/total")
 
@@ -935,7 +939,8 @@ class InferenceAndGeneration(torch.nn.Module):
             #print(" --> mse_av")
             zero_grad(self)
             mse_av.backward(retain_graph=True)
-            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+            mse_dict=get_statistics(unet_output.logit.grad)
+            log_dictionary(dictionary=mse_dict,
                            experiment=self.experiment,
                            prefix="debug/mse")
 
@@ -943,7 +948,8 @@ class InferenceAndGeneration(torch.nn.Module):
             #print(" --> nobj_coupling")
             zero_grad(self)
             (lambda_nobj * nobj_coupling).backward(retain_graph=True)
-            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+            nobj_coupling_dict=get_statistics(unet_output.logit.grad)
+            log_dictionary(dictionary=nobj_coupling_dict,
                            experiment=self.experiment,
                            prefix="debug/nobj")
 
@@ -951,7 +957,8 @@ class InferenceAndGeneration(torch.nn.Module):
             #print(" --> all_logit_in_range")
             zero_grad(self)
             all_logit_in_range.backward(retain_graph=True)
-            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+            all_logit_in_range_dict=get_statistics(unet_output.logit.grad)
+            log_dictionary(dictionary=all_logit_in_range_dict,
                            experiment=self.experiment,
                            prefix="debug/all_logit_in_range")
 
@@ -959,7 +966,8 @@ class InferenceAndGeneration(torch.nn.Module):
             #print(" --> kl_logit")
             zero_grad(self)
             (logit_kl_av / ma_kl_logit).backward(retain_graph=True)
-            log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
+            kl_logit_dict=get_statistics(unet_output.logit.grad)
+            log_dictionary(dictionary=kl_logit_dict,
                            experiment=self.experiment,
                            prefix="debug/logit_kl")
 
