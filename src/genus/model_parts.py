@@ -827,49 +827,49 @@ class InferenceAndGeneration(torch.nn.Module):
         box_overlap_cost = self.box_overlap_strength * box_overlap_b1wh.mean()
 
 
-        if self.multi_objective_optimization:
+####        if self.multi_objective_optimization:
+####
+####            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+####                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
+####                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
+####
+####            # Reconstruction within the acceptable parameter range
+####            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size  + \
+####                       lambda_fgfraction * fgfraction_coupling + \
+####                       lambda_nobj * nobj_coupling + all_logit_in_range + \
+####                       geco_kl_fg.hyperparam * zinstance_kl_av + \
+####                       geco_kl_bg.hyperparam * zbg_kl_av + \
+####                       geco_kl_box.hyperparam * zwhere_kl_av
+####
+####            # task_sparsity = c_attached_bk.mean()
+####            # loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, task_sparsity], dim=0)
+####            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av], dim=0)
+####
+####            # Idea. After this is done I can turn on a sparsity term
+####
+####
+####        else:
 
-            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
-                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
+        loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
+                    geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
+                    geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss + geco_kl_logit.loss
 
-            # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size  + \
-                       lambda_fgfraction * fgfraction_coupling + \
-                       lambda_nobj * nobj_coupling + all_logit_in_range + \
-                       geco_kl_fg.hyperparam * zinstance_kl_av + \
-                       geco_kl_bg.hyperparam * zbg_kl_av + \
-                       geco_kl_box.hyperparam * zwhere_kl_av
+        # Reconstruction within the acceptable parameter range
+        task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + \
+                   lambda_fgfraction * fgfraction_coupling + \
+                   lambda_nobj * nobj_coupling + all_logit_in_range + \
+                   geco_kl_fg.hyperparam * zinstance_kl_av + \
+                   geco_kl_bg.hyperparam * zbg_kl_av + \
+                   geco_kl_box.hyperparam * zwhere_kl_av + \
+                   logit_kl_av / ma_kl_logit
+                # geco_kl_logit.hyperparam * \
 
-            # task_sparsity = c_attached_bk.mean()
-            # loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, task_sparsity], dim=0)
-            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av], dim=0)
+        # then I do a crazy low ramp of this term.
+        # N_obj should never be smaller than self.target_nobj_av_per_patch_min
+        # Here I couple to logit_bk so that
+        #task_sparsity = c_attached_bk.mean()
 
-            # Idea. After this is done I can turn on a sparsity term
-
-
-        else:
-
-            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
-                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss + geco_kl_logit.loss
-
-            # Reconstruction within the acceptable parameter range
-            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + \
-                       lambda_fgfraction * fgfraction_coupling + \
-                       lambda_nobj * nobj_coupling + all_logit_in_range + \
-                       geco_kl_fg.hyperparam * zinstance_kl_av + \
-                       geco_kl_bg.hyperparam * zbg_kl_av + \
-                       geco_kl_box.hyperparam * zwhere_kl_av + \
-                       logit_kl_av / ma_kl_logit
-                    # geco_kl_logit.hyperparam * \
-
-                # then I do a crazy low ramp of this term.
-            # N_obj should never be smaller than self.target_nobj_av_per_patch_min
-            # Here I couple to logit_bk so that
-            #task_sparsity = c_attached_bk.mean()
-
-            loss_tot = task_rec + loss_geco #+ 0.001 * task_simplicity + 0.0 * task_sparsity
+        loss_tot = task_rec + loss_geco #+ 0.001 * task_simplicity + 0.0 * task_sparsity
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -892,11 +892,13 @@ class InferenceAndGeneration(torch.nn.Module):
 
         if self.training and self.first_in_epoch:
             @torch.no_grad()
-            def zero_grad():
-                for p in self.parameters():
+            def zero_grad(module):
+                for name, p in module.named_parameters():
                     if p.grad is not None:
+                        #print(name)
                         p.grad.detach_()
                         p.grad.zero_()
+                #print(" --> leaving zero grad")
 
             @torch.no_grad()
             def get_statistics(grad):
@@ -922,35 +924,40 @@ class InferenceAndGeneration(torch.nn.Module):
             unet_output.logit.retain_grad()
 
             # loss_total
-            zero_grad()
+            #print(" --> total")
+            zero_grad(self)
             loss_tot.backward(retain_graph=True)
             log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
                            experiment=self.experiment,
                            prefix="debug/total")
 
             # mse_av
-            zero_grad()
+            #print(" --> mse_av")
+            zero_grad(self)
             mse_av.backward(retain_graph=True)
             log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
                            experiment=self.experiment,
                            prefix="debug/mse")
 
-            # nobj_couupling
-            zero_grad()
+            # nobj_coupling
+            #print(" --> nobj_coupling")
+            zero_grad(self)
             (lambda_nobj * nobj_coupling).backward(retain_graph=True)
             log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
                            experiment=self.experiment,
                            prefix="debug/nobj")
 
             # all_logit_in_range
-            zero_grad()
+            #print(" --> all_logit_in_range")
+            zero_grad(self)
             all_logit_in_range.backward(retain_graph=True)
             log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
                            experiment=self.experiment,
                            prefix="debug/all_logit_in_range")
 
-            # all_logit_in_range
-            zero_grad()
+            # kl_logit_in_range
+            #print(" --> kl_logit")
+            zero_grad(self)
             (logit_kl_av / ma_kl_logit).backward(retain_graph=True)
             log_dictionary(dictionary=get_statistics(unet_output.logit.grad),
                            experiment=self.experiment,
