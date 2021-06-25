@@ -507,7 +507,7 @@ def plot_gradient_maps(imgs: torch.Tensor,
                 map_min = torch.min(map).item()
                 map_max = torch.max(map).item()
             tick = numpy.linspace(map_min, map_max, 3)
-            tmp = axes[r, c].imshow(map, cmap='gray', vmin=map_min, vmax=map_max)
+            tmp = axes[r, c].imshow(map.detach().cpu().numpy(), cmap='gray', vmin=map_min, vmax=map_max)
             axes[r, c].set_title(title)
             plt.colorbar(tmp, ax=axes[r, c], ticks=tick)
 
@@ -516,7 +516,7 @@ def plot_gradient_maps(imgs: torch.Tensor,
         img_min = torch.min(img).item()
         img_max = torch.max(img).item()
         tick = numpy.linspace(img_min, img_max, 3)
-        tmp = axes[nrows, c].imshow(img, cmap='gray', vmin=img_min, vmax=img_max)
+        tmp = axes[nrows, c].imshow(img.detach().cpu().numpy(), cmap='gray', vmin=img_min, vmax=img_max)
         axes[nrows, c].set_title("raw_image")
         plt.colorbar(tmp, ax=axes[nrows, c], ticks=tick)
 
