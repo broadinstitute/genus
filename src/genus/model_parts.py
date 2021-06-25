@@ -11,6 +11,8 @@ from .util import convert_to_box_list, invert_convert_to_box_list, compute_avera
 from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP, sample_and_kl_diagonal_normal, MovingAverageCalculator
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
+from .util_vis import plot_hist, plot_gradient_maps
+
 
 def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, add_one_to_denominator: bool):
     """
@@ -912,14 +914,14 @@ class InferenceAndGeneration(torch.nn.Module):
                     n_non_zero = mask_non_zero.sum()
                     mean_non_zero = (mask_non_zero * grad).sum() / n_non_zero.clamp(min=1.0)
                     mean_abs_non_zero = (mask_non_zero * grad).abs().sum() / n_non_zero.clamp(min=1.0)
-                    return {"grad_numel" : grad.numel(),
-                            "grad_max" : grad.max().detach().cpu().item(),
-                            "grad_min" : grad.min().detach().cpu().item(),
-                            "grad_n_non_zero": n_non_zero.detach().cpu().item(),
-                            "grad_mean_non_zero" : mean_non_zero.detach().cpu().item(),
-                            "grad_mean_abs_non_zero" : mean_abs_non_zero.detach().cpu().item()}
+                    return {"numel" : grad.numel(),
+                            "max" : grad.max().detach().cpu().item(),
+                            "min" : grad.min().detach().cpu().item(),
+                            "n_non_zero": n_non_zero.detach().cpu().item(),
+                            "mean_non_zero" : mean_non_zero.detach().cpu().item(),
+                            "mean_abs_non_zero" : mean_abs_non_zero.detach().cpu().item()}
                 else:
-                    return {"grad_message" : 999.99 }
+                    return {"message" : 999.99 }
 
             @torch.no_grad()
             def log_dictionary(dictionary, prefix, experiment):
@@ -928,6 +930,22 @@ class InferenceAndGeneration(torch.nn.Module):
 
             unet_output.logit.retain_grad()
 
+            # prepare placeholder for plotting
+            n_to_plot = 3
+            maps_to_plot = torch.zeros_like(unet_output.logit[:6*n_to_plot])
+
+            # logit themselves
+            raw_logit_dict=get_statistics(unet_output.logit)
+            log_dictionary(dictionary=raw_logit_dict,
+                           experiment=self.experiment,
+                           prefix="debug/raw_logit")
+            plot_hist(x=unet_output.logit.detach(),
+                      title="Hist raw logit",
+                      neptune_name="debug/hist_raw_logit",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[:n_to_plot] = unet_output.logit[:n_to_plot].detach().clone()
+
             # loss_total
             #print(" --> total")
             zero_grad(self)
@@ -935,7 +953,13 @@ class InferenceAndGeneration(torch.nn.Module):
             total_dict=get_statistics(unet_output.logit.grad)
             log_dictionary(dictionary=total_dict,
                            experiment=self.experiment,
-                           prefix="debug/total")
+                           prefix="debug/grad_logit_total")
+            plot_hist(x=unet_output.logit.grad.detach(),
+                      title="Hist grad logit total",
+                      neptune_name="debug/hist_grad_logit_total",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[n_to_plot:2*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
 
             # mse_av
             #print(" --> mse_av")
@@ -944,7 +968,13 @@ class InferenceAndGeneration(torch.nn.Module):
             mse_dict=get_statistics(unet_output.logit.grad)
             log_dictionary(dictionary=mse_dict,
                            experiment=self.experiment,
-                           prefix="debug/mse")
+                           prefix="debug/grad_logit_mse")
+            plot_hist(x=unet_output.logit.grad.detach(),
+                      title="Hist grad logit mse",
+                      neptune_name="debug/hist_grad_logit_mse",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[2*n_to_plot:3*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
 
             # nobj_coupling
             #print(" --> nobj_coupling")
@@ -953,7 +983,13 @@ class InferenceAndGeneration(torch.nn.Module):
             nobj_coupling_dict=get_statistics(unet_output.logit.grad)
             log_dictionary(dictionary=nobj_coupling_dict,
                            experiment=self.experiment,
-                           prefix="debug/nobj")
+                           prefix="debug/grad_logit_nobj")
+            plot_hist(x=unet_output.logit.grad.detach(),
+                      title="Hist grad logit total",
+                      neptune_name="debug/hist_grad_logit_nobj",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[3*n_to_plot:4*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
 
             # all_logit_in_range
             #print(" --> all_logit_in_range")
@@ -962,7 +998,13 @@ class InferenceAndGeneration(torch.nn.Module):
             all_logit_in_range_dict=get_statistics(unet_output.logit.grad)
             log_dictionary(dictionary=all_logit_in_range_dict,
                            experiment=self.experiment,
-                           prefix="debug/all_logit_in_range")
+                           prefix="debug/grad_logit_inrange")
+            plot_hist(x=unet_output.logit.grad.detach(),
+                      title="Hist grad logit total",
+                      neptune_name="debug/hist_grad_logit_inrange",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[4*n_to_plot:5*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
 
             # kl_logit_in_range
             #print(" --> kl_logit")
@@ -971,8 +1013,18 @@ class InferenceAndGeneration(torch.nn.Module):
             kl_logit_dict=get_statistics(unet_output.logit.grad)
             log_dictionary(dictionary=kl_logit_dict,
                            experiment=self.experiment,
-                           prefix="debug/logit_kl")
+                           prefix="debug/grad_logit_kl")
+            plot_hist(x=unet_output.logit.grad.detach(),
+                      title="Hist grad logit total",
+                      neptune_name="debug/hist_grad_logit_kl",
+                      figsize=(12,12),
+                      experiment=self.experiment)
+            maps_to_plot[5*n_to_plot:6*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
 
+            _ = plot_gradient_maps(imgs=imgs_bcwh[:n_to_plot].detach(),
+                                   maps=maps_to_plot,
+                                   experiment=self.experiment,
+                                   neptune_name="debug/gradient_maps")
 
         # if backbone_no_grad and self.training:
         # unet_output.zwhere.retain_grad()

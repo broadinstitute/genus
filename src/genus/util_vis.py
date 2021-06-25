@@ -469,6 +469,64 @@ def plot_tiling(tiling,
     return fig
 
 
+def plot_gradient_maps(imgs: torch.Tensor,
+                       maps: torch.Tensor,
+                       figsize: tuple = (12, 20),
+                       experiment: Optional[neptune.run.Run] = None,
+                       neptune_name: Optional[str] = None):
+
+    nrows = 6
+    ncols = maps.shape[0] // nrows
+    fig, axes = plt.subplots(ncols=ncols, nrows=nrows+1, figsize=figsize)
+    for r in range(nrows):
+        if r == 0:
+            title = "raw_logit"
+        elif r == 1:
+            title = "minus grad_total"
+        elif r == 2:
+            title = "minus grad_mse"
+        elif r == 3:
+            title = "minus grad_nobj"
+        elif r == 4:
+            title = "minus grad_inrange"
+        elif r == 5:
+            title = "minus grad_kl"
+        elif r == 6:
+            title = "input_image"
+        else:
+            raise Exception("error. Out of bounds")
+
+        for c in range(ncols):
+            n = r * ncols + c
+            if (r >= 1) and (r <= 5):
+                map = -maps[n, 0] # plot minus gradient
+                map_max = map.abs().max().item()  # this make sure that zero is at the center
+                map_min = -map_max
+            else:
+                map = maps[n,0]
+                map_min = torch.min(map).item()
+                map_max = torch.max(map).item()
+            tick = numpy.linspace(map_min, map_max, 3)
+            tmp = axes[r, c].imshow(map, cmap='gray', vmin=map_min, vmax=map_max)
+            axes[r, c].set_title(title)
+            plt.colorbar(tmp, ax=axes[r, c], ticks=tick)
+
+    for c in range(ncols):
+        img = imgs[c,0]
+        img_min = torch.min(img).item()
+        img_max = torch.max(img).item()
+        tick = numpy.linspace(img_min, img_max, 3)
+        tmp = axes[nrows, c].imshow(img, cmap='gray', vmin=img_min, vmax=img_max)
+        axes[nrows, c].set_title("raw_image")
+        plt.colorbar(tmp, ax=axes[nrows, c], ticks=tick)
+
+    fig.tight_layout()
+    if (neptune_name is not None) and (experiment is not None):
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
+    return fig
+
+
 def plot_concordance(concordance,
                      figsize: tuple = (12, 12),
                      experiment: Optional[neptune.run.Run] = None,
@@ -612,6 +670,21 @@ def plot_generation(output: Output,
 
     if verbose:
         print("leaving plot_generation")
+
+
+def plot_hist(x: torch.Tensor,
+              title: Optional[str]="",
+              neptune_name: Optional[str]=None,
+              figsize: Optional[Tuple[int,int]]=(12,12),
+              experiment: Optional[neptune.run.Run]=None):
+
+    fig = plt.figure(figsize=figsize)
+    plt.hist(x.flatten().cpu().detach().numpy(), density=True, bins=20, rwidth=0.8)
+    plt.title(title)
+    fig.tight_layout()
+    if (neptune_name is not None) and (experiment is not None):
+        experiment[neptune_name].log(neptune.types.File.as_image(fig))
+    plt.close(fig)
 
 
 def plot_reconstruction_and_inference(output: Output,
