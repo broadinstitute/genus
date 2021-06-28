@@ -939,7 +939,7 @@ class InferenceAndGeneration(torch.nn.Module):
                                    neptune_name="debug/gradient_maps")
 
             # compute the coefficients
-
+            # TODO: compute the coefficients based on the entry which are not zero in mse
 
             grad_list = [task_rec_grad.flatten(), task_kl_grad.flatten(), task_sparsity_grad.flatten()]
             tmp_scales, _ = MinNormSolver.find_min_norm_element(vecs=grad_list[:2], verbose=False)
