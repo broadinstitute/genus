@@ -942,17 +942,18 @@ class InferenceAndGeneration(torch.nn.Module):
 
 
             grad_list = [task_rec_grad.flatten(), task_kl_grad.flatten(), task_sparsity_grad.flatten()]
-            tmp_scales, _ = MinNormSolver.find_min_norm_element(vecs=grad_list, verbose=False)
+            tmp_scales, _ = MinNormSolver.find_min_norm_element(vecs=grad_list[:2], verbose=False)
 
             with torch.no_grad():
+                tmp_scales = torch.cat((tmp_scales, torch.zeros_like(tmp_scales[:1])), dim=0)
                 self.moo_scales.data = self.moo_moving_average_calulator.forward(tmp_scales)
                 print("tmp_scales, tmp_scales.min(), moo_scales ->", tmp_scales, tmp_scales.min(), self.moo_scales.data)
                 moo_dict = {'rec_tmp' : tmp_scales[0].detach().cpu().item(),
-                            'kl_tmp': tmp_scales[1].detach().cpu().item(),
-                            'sp_tmp': tmp_scales[2].detach().cpu().item(),
                             'rec_ma': self.moo_scales[0].detach().cpu().item(),
-                            'kl_ma': self.moo_scales[1].detach().cpu().item(),
-                            'sp_ma': self.moo_scales[2].detach().cpu().item()}
+                            #'sp_tmp': tmp_scales[2].detach().cpu().item(),
+                            #'sp_ma': self.moo_scales[2].detach().cpu().item(),
+                            'kl_tmp': tmp_scales[1].detach().cpu().item(),
+                            'kl_ma': self.moo_scales[1].detach().cpu().item()}
                 log_dictionary(dictionary=moo_dict,
                                experiment=self.experiment,
                                prefix="debug/moo_scales")
