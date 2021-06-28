@@ -14,6 +14,7 @@ class MinNormSolver(object):
     @staticmethod
     def find_min_norm_element(vecs: Optional[List[torch.Tensor]]=None,
                               dot_product_matrix: Optional[torch.Tensor]=None,
+                              eps: float=1E-6,
                               verbose: bool=False) -> (torch.Tensor, float):
         """
         Given a list of vectors (v), find the minimum norm element in the convex hull:
@@ -54,7 +55,7 @@ class MinNormSolver(object):
         # Unfortunately sometimes coefficient can be negative therefore I use the clamp.
         # This is always an amazing starting point for the recursive procedure.
         Minv = torch.inverse(M)
-        sol_vec = Minv.sum(dim=-1).clamp(min=0.0)
+        sol_vec = Minv.sum(dim=-1).clamp(min=eps)
         sol_vec /= sol_vec.sum()
 
         if verbose:
@@ -90,6 +91,7 @@ class MinNormSolver(object):
             new_sol_vec = (torch.ones_like(gamma) - gamma) * sol_vec + gamma * v2
 
             # Renormalize the solution at each step to prevent numerical error from accumulating
+            new_sol_vec.clamp_(min=eps)
             new_sol_vec /= new_sol_vec.sum()
 
             # Update

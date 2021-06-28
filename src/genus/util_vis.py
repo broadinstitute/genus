@@ -475,30 +475,26 @@ def plot_gradient_maps(imgs: torch.Tensor,
                        experiment: Optional[neptune.run.Run] = None,
                        neptune_name: Optional[str] = None):
 
-    nrows = 6
+    nrows = 4
     ncols = maps.shape[0] // nrows
     fig, axes = plt.subplots(ncols=ncols, nrows=nrows+1, figsize=figsize)
     for r in range(nrows):
         if r == 0:
             title = "raw_logit"
         elif r == 1:
-            title = "minus grad_total"
+            title = "minus grad_rec"
         elif r == 2:
-            title = "minus grad_mse"
-        elif r == 3:
-            title = "minus grad_nobj"
-        elif r == 4:
-            title = "minus grad_inrange"
-        elif r == 5:
             title = "minus grad_kl"
-        elif r == 6:
+        elif r == 3:
+            title = "minus grad_sp"
+        elif r == 4:
             title = "input_image"
         else:
             raise Exception("error. Out of bounds")
 
         for c in range(ncols):
             n = r * ncols + c
-            if (r >= 1) and (r <= 5):
+            if (r >= 1) and (r <= 3):
                 map = -maps[n, 0] # plot minus gradient
                 map_max = map.abs().max().item()  # this make sure that zero is at the center
                 map_min = -map_max

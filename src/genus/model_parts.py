@@ -12,6 +12,41 @@ from .util_ml import compute_entropy_bernoulli, compute_logp_bernoulli, Grid_DPP
 from .namedtuple import Inference, NmsOutput, BB, UNEToutput, MetricMiniBatch, DIST, TT, GECO
 from .non_max_suppression import NonMaxSuppression
 from .util_vis import plot_hist, plot_gradient_maps
+from .util_moo import MinNormSolver
+
+
+@torch.no_grad()
+def zero_grad(module, variable_list):
+    for v in variable_list:
+        if v.grad is not None:
+            v.grad.detach_()
+            v.grad.zero_()
+    for name, p in module.named_parameters():
+        if p.grad is not None:
+            p.grad.detach_()
+            p.grad.zero_()
+
+@torch.no_grad()
+def get_statistics(grad):
+    if grad is not None:
+        mask_non_zero = (grad != 0.0)
+        n_non_zero = mask_non_zero.sum()
+        mean_non_zero = (mask_non_zero * grad).sum() / n_non_zero.clamp(min=1.0)
+        mean_abs_non_zero = (mask_non_zero * grad).abs().sum() / n_non_zero.clamp(min=1.0)
+        return {"numel": grad.numel(),
+                "max": grad.max().detach().cpu().item(),
+                "min": grad.min().detach().cpu().item(),
+                "n_non_zero": n_non_zero.detach().cpu().item(),
+                "mean_non_zero": mean_non_zero.detach().cpu().item(),
+                "mean_abs_non_zero": mean_abs_non_zero.detach().cpu().item()}
+    else:
+        return {"message": 999.99}
+
+@torch.no_grad()
+def log_dictionary(dictionary, prefix, experiment):
+    for key, value in dictionary.items():
+        experiment[prefix + "/" + key].log(value)
+
 
 
 def softmax_with_indicator(indicator: torch.Tensor, weight: torch.Tensor, dim: int, add_one_to_denominator: bool):
@@ -438,8 +473,11 @@ class InferenceAndGeneration(torch.nn.Module):
 
 
         # Quantities to compute the moving averages
+        self.moo_scales = torch.nn.Parameter(data=torch.zeros(3, dtype=torch.float), requires_grad=False)
+        self.moo_moving_average_calulator = MovingAverageCalculator(beta=0.9,
+                                                                    n_features=3)
         self.kl_moving_average_calulator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
-                                                                    n_features=4)
+                                                                   n_features=4)
 
         # Observation model
         self.sigma_mse = torch.nn.Parameter(data=torch.tensor(config["input_image"]["sigma_mse"],
@@ -778,34 +816,17 @@ class InferenceAndGeneration(torch.nn.Module):
             constraint_kl_box = increase_kl_box - decrease_kl_box
 
         # Produce both the loss and the hyperparameters
-        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
-        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
-
-        geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
-        geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
-
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
 
         geco_kl_fg: GECO = self.geco_kl_fg.forward(constraint=constraint_kl_fg)
         geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
         geco_kl_box: GECO = self.geco_kl_box.forward(constraint=constraint_kl_box)
-        geco_kl_logit: GECO = self.geco_kl_logit.forward(constraint=constraint_kl_logit)
 
+        geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
+        geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
 
-####        # KL_BG: If self.target_mse_bg < mse_bg then decrease kl_background and viceversa
-####        constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * fgfraction_in_range * (annealing_factor == 0.0)
-####
-####        # MSE.
-####        # If mse_av > self.target_mse Increase mse_hyperparameter and viceversa
-####        constraint_mse = (mse_av - self.target_mse)
-####
-####        #####            # SPARSITY:
-####        #####            # If the reconstruction is good enough and n_obj > n_min increase sparsity.
-####        #####            # If n_obj < n_min decrease sparsity
-####        #####            # If n_obj in range and reconstruction is bad do nothing
-####        #####            increase_sparsity = (nav_selected > self.target_nobj_av_per_patch_min) * (mse_av < self.target_mse)
-####        #####            decrease_sparsity = (nav_selected < self.target_nobj_av_per_patch_min)
-####        #####            constraint_sparsity = 1.0 * increase_sparsity - 1.0 * decrease_sparsity
+        #geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
+        #geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
 
         # Confining potential which keeps logit into intermediate regime
         logit_max = 8.0
@@ -817,8 +838,8 @@ class InferenceAndGeneration(torch.nn.Module):
         # TODO
         #  this clamping is why nobj coupling is not effective
         #  look at all the gradients of logit based on different terms
-        lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
-        nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
+        #lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
+        #nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
         lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam)
@@ -830,50 +851,115 @@ class InferenceAndGeneration(torch.nn.Module):
         # Penalize overlapping boxes
         box_overlap_cost = self.box_overlap_strength * box_overlap_b1wh.mean()
 
-
-####        if self.multi_objective_optimization:
-####
-####            loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-####                        geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
-####                        geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
-####
-####            # Reconstruction within the acceptable parameter range
-####            task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size  + \
-####                       lambda_fgfraction * fgfraction_coupling + \
-####                       lambda_nobj * nobj_coupling + all_logit_in_range + \
-####                       geco_kl_fg.hyperparam * zinstance_kl_av + \
-####                       geco_kl_bg.hyperparam * zbg_kl_av + \
-####                       geco_kl_box.hyperparam * zwhere_kl_av
-####
-####            # task_sparsity = c_attached_bk.mean()
-####            # loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av, task_sparsity], dim=0)
-####            loss_tot = torch.stack([task_rec + loss_geco, logit_kl_av], dim=0)
-####
-####            # Idea. After this is done I can turn on a sparsity term
-####
-####
-####        else:
-
+        # Geco
         loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
-                    geco_nobj_max.loss + geco_nobj_min.loss + geco_annealing.loss + \
-                    geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss + geco_kl_logit.loss
+                    geco_annealing.loss + \
+                    geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
+                    #+ geco_kl_logit.loss
+                    # geco_nobj_max.loss + geco_nobj_min.loss + \
 
         # Reconstruction within the acceptable parameter range
         task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + \
                    lambda_fgfraction * fgfraction_coupling + \
-                   lambda_nobj * nobj_coupling + all_logit_in_range + \
                    geco_kl_fg.hyperparam * zinstance_kl_av + \
                    geco_kl_bg.hyperparam * zbg_kl_av + \
-                   geco_kl_box.hyperparam * zwhere_kl_av + \
-                   logit_kl_av / ma_kl_logit
-                # geco_kl_logit.hyperparam * \
+                   geco_kl_box.hyperparam * zwhere_kl_av
+        task_kl = logit_kl_av
+        task_sparsity = unet_output.logit.clamp(min=logit_min).sum() / batch_size
+        loss_tasks = torch.stack((task_rec, task_kl, task_sparsity), dim=0)
 
-        # then I do a crazy low ramp of this term.
-        # N_obj should never be smaller than self.target_nobj_av_per_patch_min
-        # Here I couple to logit_bk so that
-        #task_sparsity = c_attached_bk.mean()
+        # Compute the Multi_Objective-Optimization coefficients
+        if (self.training and self.first_in_epoch) or (self.moo_scales is None):
+            unet_output.logit.retain_grad()
 
-        loss_tot = task_rec + loss_geco #+ 0.001 * task_simplicity + 0.0 * task_sparsity
+            # prepare placeholder for plotting
+            n_to_plot = 3
+            maps_to_plot = torch.zeros_like(unet_output.logit[:4 * n_to_plot])
+
+            # logit themselves
+            raw_logit_dict = get_statistics(unet_output.logit)
+            log_dictionary(dictionary=raw_logit_dict,
+                           experiment=self.experiment,
+                           prefix="debug/raw_logit")
+            plot_hist(x=unet_output.logit.detach(),
+                      title="Hist raw logit",
+                      neptune_name="debug/hist_raw_logit",
+                      figsize=(12, 12),
+                      experiment=self.experiment)
+            maps_to_plot[:n_to_plot] = unet_output.logit[:n_to_plot].clone().detach()
+
+            # task_rec
+            zero_grad(module=self, variable_list=[unet_output.logit])
+            task_rec.backward(retain_graph=True)
+            task_rec_grad = unet_output.logit.grad.clone().detach()
+            rec_dict = get_statistics(task_rec_grad)
+            log_dictionary(dictionary=rec_dict,
+                           experiment=self.experiment,
+                           prefix="debug/grad_logit_rec")
+            plot_hist(x=task_rec_grad,
+                      title="Hist raw logit",
+                      neptune_name="debug/hist_grad_logit_rec",
+                      figsize=(12, 12),
+                      experiment=self.experiment)
+            maps_to_plot[n_to_plot:2*n_to_plot] = task_rec_grad[:n_to_plot]
+
+            # task_kl
+            zero_grad(module=self, variable_list=[unet_output.logit])
+            task_kl.backward(retain_graph=True)
+            task_kl_grad = unet_output.logit.grad.clone().detach()
+            kl_dict = get_statistics(task_kl_grad)
+            log_dictionary(dictionary=kl_dict,
+                           experiment=self.experiment,
+                           prefix="debug/grad_logit_kl")
+            plot_hist(x=task_kl_grad,
+                      title="Hist raw logit",
+                      neptune_name="debug/hist_grad_logit_kl",
+                      figsize=(12, 12),
+                      experiment=self.experiment)
+            maps_to_plot[2*n_to_plot : 3*n_to_plot] = task_kl_grad[:n_to_plot]
+
+            # task_sparsity
+            zero_grad(module=self, variable_list=[unet_output.logit])
+            task_sparsity.backward(retain_graph=True)
+            task_sparsity_grad = unet_output.logit.grad.clone().detach()
+            sparsity_dict = get_statistics(task_sparsity_grad)
+            log_dictionary(dictionary=sparsity_dict,
+                           experiment=self.experiment,
+                           prefix="debug/grad_logit_sparsity")
+            plot_hist(x=task_sparsity_grad,
+                      title="Hist raw logit",
+                      neptune_name="debug/hist_grad_logit_sparsity",
+                      figsize=(12, 12),
+                      experiment=self.experiment)
+            maps_to_plot[3*n_to_plot : 4*n_to_plot] = task_sparsity_grad[:n_to_plot]
+
+            _ = plot_gradient_maps(imgs=imgs_bcwh[:n_to_plot].detach(),
+                                   maps=maps_to_plot,
+                                   experiment=self.experiment,
+                                   neptune_name="debug/gradient_maps")
+
+            # compute the coefficients
+
+
+            grad_list = [task_rec_grad.flatten(), task_kl_grad.flatten(), task_sparsity_grad.flatten()]
+            tmp_scales, _ = MinNormSolver.find_min_norm_element(vecs=grad_list, verbose=False)
+
+            with torch.no_grad():
+                self.moo_scales.data = self.moo_moving_average_calulator.forward(tmp_scales)
+                print("tmp_scales, tmp_scales.min(), moo_scales ->", tmp_scales, tmp_scales.min(), self.moo_scales.data)
+                moo_dict = {'rec_tmp' : tmp_scales[0].detach().cpu().item(),
+                            'kl_tmp': tmp_scales[1].detach().cpu().item(),
+                            'sp_tmp': tmp_scales[2].detach().cpu().item(),
+                            'rec_ma': self.moo_scales[0].detach().cpu().item(),
+                            'kl_ma': self.moo_scales[1].detach().cpu().item(),
+                            'sp_ma': self.moo_scales[2].detach().cpu().item()}
+                log_dictionary(dictionary=moo_dict,
+                               experiment=self.experiment,
+                               prefix="debug/moo_scales")
+
+        # TODO: Should I add nobj_in_range?
+        loss_tot = loss_geco + all_logit_in_range + (self.moo_scales * loss_tasks).sum()
+
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
                               prob_from_ranking_grid=prob_from_ranking_grid.detach(),
@@ -893,144 +979,6 @@ class InferenceAndGeneration(torch.nn.Module):
                               kl_where_k=zwhere_kl_bk.detach())
 
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
-
-        if self.training and self.first_in_epoch:
-            @torch.no_grad()
-            def zero_grad(module):
-                if unet_output.logit.grad is not None:
-                    unet_output.logit.grad.detach_()
-                    unet_output.logit.grad.zero_()
-                for name, p in module.named_parameters():
-                    if p.grad is not None:
-                        #print(name)
-                        p.grad.detach_()
-                        p.grad.zero_()
-                #print(" --> leaving zero grad")
-
-            @torch.no_grad()
-            def get_statistics(grad):
-                if grad is not None:
-                    mask_non_zero = (grad != 0.0)
-                    n_non_zero = mask_non_zero.sum()
-                    mean_non_zero = (mask_non_zero * grad).sum() / n_non_zero.clamp(min=1.0)
-                    mean_abs_non_zero = (mask_non_zero * grad).abs().sum() / n_non_zero.clamp(min=1.0)
-                    return {"numel" : grad.numel(),
-                            "max" : grad.max().detach().cpu().item(),
-                            "min" : grad.min().detach().cpu().item(),
-                            "n_non_zero": n_non_zero.detach().cpu().item(),
-                            "mean_non_zero" : mean_non_zero.detach().cpu().item(),
-                            "mean_abs_non_zero" : mean_abs_non_zero.detach().cpu().item()}
-                else:
-                    return {"message" : 999.99 }
-
-            @torch.no_grad()
-            def log_dictionary(dictionary, prefix, experiment):
-                for key, value in dictionary.items():
-                    experiment[prefix + "/" + key].log(value)
-
-            unet_output.logit.retain_grad()
-
-            # prepare placeholder for plotting
-            n_to_plot = 3
-            maps_to_plot = torch.zeros_like(unet_output.logit[:6*n_to_plot])
-
-            # logit themselves
-            raw_logit_dict=get_statistics(unet_output.logit)
-            log_dictionary(dictionary=raw_logit_dict,
-                           experiment=self.experiment,
-                           prefix="debug/raw_logit")
-            plot_hist(x=unet_output.logit.detach(),
-                      title="Hist raw logit",
-                      neptune_name="debug/hist_raw_logit",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[:n_to_plot] = unet_output.logit[:n_to_plot].detach().clone()
-
-            # loss_total
-            #print(" --> total")
-            zero_grad(self)
-            loss_tot.backward(retain_graph=True)
-            total_dict=get_statistics(unet_output.logit.grad)
-            log_dictionary(dictionary=total_dict,
-                           experiment=self.experiment,
-                           prefix="debug/grad_logit_total")
-            plot_hist(x=unet_output.logit.grad.detach(),
-                      title="Hist grad logit total",
-                      neptune_name="debug/hist_grad_logit_total",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[n_to_plot:2*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
-
-            # mse_av
-            #print(" --> mse_av")
-            zero_grad(self)
-            mse_av.backward(retain_graph=True)
-            mse_dict=get_statistics(unet_output.logit.grad)
-            log_dictionary(dictionary=mse_dict,
-                           experiment=self.experiment,
-                           prefix="debug/grad_logit_mse")
-            plot_hist(x=unet_output.logit.grad.detach(),
-                      title="Hist grad logit mse",
-                      neptune_name="debug/hist_grad_logit_mse",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[2*n_to_plot:3*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
-
-            # nobj_coupling
-            #print(" --> nobj_coupling")
-            zero_grad(self)
-            (lambda_nobj * nobj_coupling).backward(retain_graph=True)
-            nobj_coupling_dict=get_statistics(unet_output.logit.grad)
-            log_dictionary(dictionary=nobj_coupling_dict,
-                           experiment=self.experiment,
-                           prefix="debug/grad_logit_nobj")
-            plot_hist(x=unet_output.logit.grad.detach(),
-                      title="Hist grad logit total",
-                      neptune_name="debug/hist_grad_logit_nobj",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[3*n_to_plot:4*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
-
-            # all_logit_in_range
-            #print(" --> all_logit_in_range")
-            zero_grad(self)
-            all_logit_in_range.backward(retain_graph=True)
-            all_logit_in_range_dict=get_statistics(unet_output.logit.grad)
-            log_dictionary(dictionary=all_logit_in_range_dict,
-                           experiment=self.experiment,
-                           prefix="debug/grad_logit_inrange")
-            plot_hist(x=unet_output.logit.grad.detach(),
-                      title="Hist grad logit total",
-                      neptune_name="debug/hist_grad_logit_inrange",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[4*n_to_plot:5*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
-
-            # kl_logit_in_range
-            #print(" --> kl_logit")
-            zero_grad(self)
-            (logit_kl_av / ma_kl_logit).backward(retain_graph=True)
-            kl_logit_dict=get_statistics(unet_output.logit.grad)
-            log_dictionary(dictionary=kl_logit_dict,
-                           experiment=self.experiment,
-                           prefix="debug/grad_logit_kl")
-            plot_hist(x=unet_output.logit.grad.detach(),
-                      title="Hist grad logit total",
-                      neptune_name="debug/hist_grad_logit_kl",
-                      figsize=(12,12),
-                      experiment=self.experiment)
-            maps_to_plot[5*n_to_plot:6*n_to_plot] = unet_output.logit.grad[:n_to_plot].detach().clone()
-
-            _ = plot_gradient_maps(imgs=imgs_bcwh[:n_to_plot].detach(),
-                                   maps=maps_to_plot,
-                                   experiment=self.experiment,
-                                   neptune_name="debug/gradient_maps")
-
-        # if backbone_no_grad and self.training:
-        # unet_output.zwhere.retain_grad()
-        # unet_output.zbg.retain_grad()
-        # zinstance_mu_and_std.retain_grad()
-        # bottleneck = (unet_output.zwhere, unet_output.logit, unet_output.zbg, zinstance_mu_and_std)
 
         metric = MetricMiniBatch(loss=loss_tot,
                                  bottleneck=unet_output.logit,
@@ -1064,13 +1012,13 @@ class InferenceAndGeneration(torch.nn.Module):
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 lambda_nobj_max=geco_nobj_max.hyperparam.detach().item(),
-                                 lambda_nobj_min=geco_nobj_min.hyperparam.detach().item(),
-                                 lambda_nobj=lambda_nobj.detach().item(),
+                                 lambda_nobj_max=0.0, #geco_nobj_max.hyperparam.detach().item(),
+                                 lambda_nobj_min=0.0, #geco_nobj_min.hyperparam.detach().item(),
+                                 lambda_nobj=0.0, #lambda_nobj.detach().item(),
                                  lambda_kl_fg=geco_kl_fg.hyperparam.detach().item(),
                                  lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
                                  lambda_kl_box=geco_kl_box.hyperparam.detach().item(),
-                                 lambda_kl_logit=geco_kl_logit.hyperparam.detach().item(),
+                                 lambda_kl_logit=0.0, #geco_kl_logit.hyperparam.detach().item(),
                                  ma_logit_kl=ma_kl_logit.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
