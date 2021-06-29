@@ -96,16 +96,14 @@ input_image:
   sigma_mse: 0.1
   target_mse_fg: 1.0
   target_mse_bg: 1.0
-  target_mse_for_annealing: 5.0  # when this value is reached I start to anneal down the pretraining
-
-
+  target_mse_for_annealing: 3.0  # when this value is reached I start to anneal down the pretraining
 
 # parameter related to the loss function
 # Most likely users should not change these.
 loss:
 
   GMM_observation_model: False
-  lambda_fgfraction_max: 25.0
+  lambda_fgfraction_max: 25.0  # does this make sense?
 
   lambda_kl_logit_min_max: [0.01, 0.99]  # value should be in (0,1)
   lambda_kl_bg_min_max: [0.001, 10.0]
@@ -132,7 +130,7 @@ optimizer:
 
   # Learning rate. Use 3E-4
   lr: 0.0003
-  lr_geco: 0.0003
+  lr_geco: 0.0001
 
   # This parameter set the time-window for the moving averages
   beta_moving_averages: 0.999

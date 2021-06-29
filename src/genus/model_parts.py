@@ -785,19 +785,22 @@ class InferenceAndGeneration(torch.nn.Module):
             decrease_kl_logit = (self.target_nobj_av_per_patch_min - nav_selected_hard).clamp(min=0.0)
             constraint_kl_logit = increase_kl_logit - decrease_kl_logit
 
-            # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other conditions are satisfied
-            decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
-            constraint_annealing = - 1.0 * decrease_annealing
+            # IoU need to be in range.
+            increase_kl_box = (iou_av - self.target_IoU_max).clamp(min=0) # if IoU_av > target_max increases kl strength
+            decrease_kl_box = (self.target_IoU_min - iou_av).clamp(min=0) # if IoU_av < target_min decreases kl strength
+            iou_in_range = (iou_av > self.target_IoU_min) * (iou_av < self.target_IoU_max)
+            constraint_kl_box = increase_kl_box - decrease_kl_box
 
             # MSE_FG AND MSE_BG need to be equal to target. I change kl strength to satisfy this condition
             # if target > mse increases factor in front of kl and viceverse
             constraint_kl_fg = (self.target_mse_fg - mse_fg_av) * (annealing_factor == 0.0)
             constraint_kl_bg = (self.target_mse_bg - mse_bg_av) * (annealing_factor == 0.0)
 
-            # IoU need to be in range.
-            increase_kl_box = (iou_av - self.target_IoU_max).clamp(min=0) # if IoU_av > target_max increases kl strength
-            decrease_kl_box = (self.target_IoU_min - iou_av).clamp(min=0) # if IoU_av < target_min decreases kl strength
-            constraint_kl_box = increase_kl_box - decrease_kl_box
+            # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other conditions are satisfied
+            decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * \
+                                 fgfraction_in_range * iou_in_range
+            constraint_annealing = - 1.0 * decrease_annealing
+
 
         # Produce both the loss and the hyperparameters
         geco_annealing: GECO = self.geco_annealing.forward(constraint=constraint_annealing)
