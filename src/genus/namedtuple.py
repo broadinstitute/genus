@@ -291,9 +291,7 @@ class MetricMiniBatch(NamedTuple):
     Note:
         All entries should be scalars obtained by averaging over minibatch
     """
-    loss: Union[Tuple[torch.Tensor], torch.Tensor]   # this is the only tensor b/c I need to take gradients
-    # bottleneck: Optional[Tuple[torch.Tensor]]  # these are the variable with the gradients to figure out MOO
-    bottleneck: torch.Tensor
+    loss: torch.Tensor   # this is the only tensor b/c I need to take gradients
     # monitoring
     mse_av: float
     mse_fg_av: float
@@ -313,9 +311,6 @@ class MetricMiniBatch(NamedTuple):
     kl_zwhere: float
     kl_logit: float
     # debug
-    logit_min: float
-    logit_mean: float
-    logit_max: float
     similarity_l: float
     similarity_w: float
     iou_boxes: float
@@ -323,14 +318,10 @@ class MetricMiniBatch(NamedTuple):
     lambda_fgfraction_max: float
     lambda_fgfraction_min: float
     lambda_fgfraction: float
-    lambda_nobj_max: float
-    lambda_nobj_min: float
-    lambda_nobj: float
     lambda_kl_fg: float
     lambda_kl_bg: float
     lambda_kl_box: float
     lambda_kl_logit: float
-    ma_logit_kl: float
     entropy_ber: float
     reinforce_ber: float
     # conting accuracy

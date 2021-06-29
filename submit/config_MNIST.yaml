@@ -104,17 +104,10 @@ input_image:
 # Most likely users should not change these.
 loss:
 
-  # parameter related to multi-objective optimization
-  multi_objective_optimization: False
-  multi_objective_approximation: False
-  # approximate_MGDA: False
-  # compute_frankwolfe_coeff_frequency: 10
-
   GMM_observation_model: False
   lambda_fgfraction_max: 25.0
-  lambda_nobj_max: 25.0
 
-  lambda_kl_logit_min_max: [10000.0, 10000.0]
+  lambda_kl_logit_min_max: [0.01, 0.99]  # value should be in (0,1)
   lambda_kl_bg_min_max: [0.001, 10.0]
   lambda_kl_fg_min_max: [0.001, 10.0]
   lambda_kl_box_min_max: [0.001, 10.0]

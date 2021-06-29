@@ -388,11 +388,8 @@ class InferenceAndGeneration(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
 
-        # Variable related to multi-objective optimization
-        self.multi_objective_optimization = config["loss"]["multi_objective_optimization"]
-        self.moo_approximation = config["loss"]["multi_objective_approximation"]
-
         # variables
+        self.first_minibatch_in_epoch = None
         self.GMM = config["loss"]["GMM_observation_model"]
         self.n_mc_samples = config["loss"]["n_mc_samples"]
         self.indicator_type = config["loss"]["indicator_type"]
@@ -473,7 +470,7 @@ class InferenceAndGeneration(torch.nn.Module):
 
 
         # Quantities to compute the moving averages
-        self.moo_scales = torch.nn.Parameter(data=torch.zeros(3, dtype=torch.float), requires_grad=False)
+        self.moo_scales = torch.nn.Parameter(data=torch.ones(3, dtype=torch.float)/3.0, requires_grad=False)
         self.moo_moving_average_calulator = MovingAverageCalculator(beta=0.9,
                                                                     n_features=3)
         self.kl_moving_average_calulator = MovingAverageCalculator(beta=config["optimizer"]["beta_moving_averages"],
@@ -497,23 +494,16 @@ class InferenceAndGeneration(torch.nn.Module):
 
         self.target_nobj_av_per_patch_min = config["input_image"]["target_nobj_av_per_patch_min_max"][0]
         self.target_nobj_av_per_patch_max = config["input_image"]["target_nobj_av_per_patch_min_max"][1]
-        self.geco_nobj_min = GecoParameter(initial_value=1.0,
-                                           min_value=0.0,
-                                           max_value=config["loss"]["lambda_nobj_max"],
-                                           linear_exp=True)
-        self.geco_nobj_max = GecoParameter(initial_value=1.0,
-                                           min_value=0.0,
-                                           max_value=config["loss"]["lambda_nobj_max"],
-                                           linear_exp=True)
-
         self.geco_kl_logit = GecoParameter(initial_value=config["loss"]["lambda_kl_logit_min_max"][0],
                                            min_value=config["loss"]["lambda_kl_logit_min_max"][0],
                                            max_value=config["loss"]["lambda_kl_logit_min_max"][1],
-                                           linear_exp=True)
-
+                                           linear_exp=False)
 
         self.target_mse_for_annealing = config["input_image"]["target_mse_for_annealing"]
-        self.geco_annealing = GecoParameter(initial_value=1.0, min_value=0.0, max_value=1.0, linear_exp=False)
+        self.geco_annealing = GecoParameter(initial_value=1.0,
+                                            min_value=0.0,
+                                            max_value=1.0,
+                                            linear_exp=False)
 
         self.target_mse_fg = config["input_image"]["target_mse_fg"]
         self.geco_kl_fg = GecoParameter(initial_value=config["loss"]["lambda_kl_fg_min_max"][0],
@@ -533,8 +523,6 @@ class InferenceAndGeneration(torch.nn.Module):
                                          min_value=config["loss"]["lambda_kl_box_min_max"][0],
                                          max_value=config["loss"]["lambda_kl_box_min_max"][1],
                                          linear_exp=True)
-
-
 
 
     def forward(self, imgs_bcwh: torch.Tensor,
@@ -765,32 +753,16 @@ class InferenceAndGeneration(torch.nn.Module):
         zwhere_kl_av = (zwhere_kl_bk * indicator_bk).sum() / batch_size
 
         # Compute the slow moving averages of all the KL terms
-        with torch.no_grad():
-            ma_kl_logit, ma_kl_where, ma_kl_what, ma_kl_bg = self.kl_moving_average_calulator.forward(
-                torch.stack((logit_kl_av, zwhere_kl_av, zinstance_kl_av, zbg_kl_av), dim=-1)).chunk(chunks=4, dim=-1)
-            # print("ma_kl_logit", ma_kl_logit)
+        #with torch.no_grad():
+        #    ma_kl_logit, ma_kl_where, ma_kl_what, ma_kl_bg = self.kl_moving_average_calulator.forward(
+        #        torch.stack((logit_kl_av, zwhere_kl_av, zinstance_kl_av, zbg_kl_av), dim=-1)).chunk(chunks=4, dim=-1)
+        #    # print("ma_kl_logit", ma_kl_logit)
 
         # GECO (i.e. make the hyper-parameters dynamical)
         # if constraint < 0, parameter will be decreased
         # if constraint > 0, parameter will be increased
         # if constraint = 0, parameter will stay the same
         with torch.no_grad():
-
-            # NOBJ: Count object using c_detached and couple to unet_prob_b1wh (force n_obj in range)
-            nav_selected_smooth = prob_bk.sum(dim=-1).mean()
-            nav_selected_hard = c_detached_bk.sum(dim=-1).float().mean()
-            nav_selected = torch.max(nav_selected_hard, nav_selected_smooth)
-            nobj_in_range = (nav_selected > self.target_nobj_av_per_patch_min) * \
-                            (nav_selected < self.target_nobj_av_per_patch_max)
-            constraint_nobj_max = nav_selected - self.target_nobj_av_per_patch_max  # positive if nobj > target_max
-            constraint_nobj_min = self.target_nobj_av_per_patch_min - nav_selected  # positive if nobj < target_min
-
-            # KL_LOGIT
-            # increase kl_logit if nobj_av > target_max
-            # decrease kl_logit if nobj_av_hard < target_min
-            increase_kl_logit = (nav_selected - self.target_nobj_av_per_patch_max).clamp(min=0.0)
-            decrease_kl_logit = (self.target_nobj_av_per_patch_min - nav_selected_hard).clamp(min=0.0)
-            constraint_kl_logit = increase_kl_logit - decrease_kl_logit
 
             # FGFRACTION: Count and couple based on mixing_fg (force fg_fraction in range)
             fgfraction_av_hard = (mixing_fg_b1wh > 0.5).float().mean()
@@ -800,6 +772,18 @@ class InferenceAndGeneration(torch.nn.Module):
                                   (fgfraction_av > self.target_fgfraction_min)
             constraint_fgfraction_min = self.target_fgfraction_min - fgfraction_av  # positive if fgfraction < target_min
             constraint_fgfraction_max = fgfraction_av - self.target_fgfraction_max  # positive if fgfraction > target_max
+
+            # KL_LOGIT
+            # increase kl_logit if nobj_av > target_max
+            # decrease kl_logit if nobj_av_hard < target_min
+            nav_selected_smooth = prob_bk.sum(dim=-1).mean()
+            nav_selected_hard = c_detached_bk.sum(dim=-1).float().mean()
+            nav_selected = torch.max(nav_selected_hard, nav_selected_smooth)
+            nobj_in_range = (nav_selected > self.target_nobj_av_per_patch_min) * \
+                            (nav_selected < self.target_nobj_av_per_patch_max)
+            increase_kl_logit = (nav_selected - self.target_nobj_av_per_patch_max).clamp(min=0.0)
+            decrease_kl_logit = (self.target_nobj_av_per_patch_min - nav_selected_hard).clamp(min=0.0)
+            constraint_kl_logit = increase_kl_logit - decrease_kl_logit
 
             # ANNEALING: Reduce if mse_av < self.target_mse_for_annealing and other conditions are satisfied
             decrease_annealing = (mse_av < self.target_mse_for_annealing) * nobj_in_range * fgfraction_in_range
@@ -821,25 +805,16 @@ class InferenceAndGeneration(torch.nn.Module):
         geco_kl_fg: GECO = self.geco_kl_fg.forward(constraint=constraint_kl_fg)
         geco_kl_bg: GECO = self.geco_kl_bg.forward(constraint=constraint_kl_bg)
         geco_kl_box: GECO = self.geco_kl_box.forward(constraint=constraint_kl_box)
+        geco_kl_logit: GECO = self.geco_kl_logit.forward(constraint=constraint_kl_logit)
 
         geco_fgfraction_min: GECO = self.geco_fgfraction_min.forward(constraint=constraint_fgfraction_min)
         geco_fgfraction_max: GECO = self.geco_fgfraction_max.forward(constraint=constraint_fgfraction_max)
-
-        #geco_nobj_min: GECO = self.geco_nobj_min.forward(constraint=constraint_nobj_min)
-        #geco_nobj_max: GECO = self.geco_nobj_max.forward(constraint=constraint_nobj_max)
 
         # Confining potential which keeps logit into intermediate regime
         logit_max = 8.0
         logit_min = -8.0
         all_logit_in_range = torch.sum( (unet_output.logit - logit_max).clamp(min=0.0).pow(2) +
                                       (- unet_output.logit + logit_min).clamp(min=0.0).pow(2) ) / batch_size
-
-        # Linear potential which can be used to control the number of object automatically.
-        # TODO
-        #  this clamping is why nobj coupling is not effective
-        #  look at all the gradients of logit based on different terms
-        #lambda_nobj = (geco_nobj_max.hyperparam - geco_nobj_min.hyperparam)
-        #nobj_coupling = unet_output.logit.clamp(min=logit_min, max=logit_max).sum() / batch_size
 
         # Couple to mixing to push the fgfraction up/down
         lambda_fgfraction = (geco_fgfraction_max.hyperparam - geco_fgfraction_min.hyperparam)
@@ -854,11 +829,10 @@ class InferenceAndGeneration(torch.nn.Module):
         # Geco
         loss_geco = geco_fgfraction_max.loss + geco_fgfraction_min.loss + \
                     geco_annealing.loss + \
-                    geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss
-                    #+ geco_kl_logit.loss
+                    geco_kl_box.loss + geco_kl_bg.loss + geco_kl_fg.loss + geco_kl_logit.loss
                     # geco_nobj_max.loss + geco_nobj_min.loss + \
 
-        # Reconstruction within the acceptable parameter range
+        # Three competing tasks
         task_rec = mse_av + mask_overlap_cost + box_overlap_cost - iou_bk.sum() / batch_size + \
                    lambda_fgfraction * fgfraction_coupling + \
                    geco_kl_fg.hyperparam * zinstance_kl_av + \
@@ -866,10 +840,13 @@ class InferenceAndGeneration(torch.nn.Module):
                    geco_kl_box.hyperparam * zwhere_kl_av
         task_kl = logit_kl_av
         task_sparsity = unet_output.logit.clamp(min=logit_min).sum() / batch_size
-        loss_tasks = torch.stack((task_rec, task_kl, task_sparsity), dim=0)
+
+        # Put everything together
+        loss_tot = loss_geco + all_logit_in_range + geco_kl_logit.hyperparam * task_kl + \
+                   (torch.ones_like(geco_kl_logit.hyperparam) - geco_kl_logit.hyperparam) * task_rec
 
         # Compute the Multi_Objective-Optimization coefficients
-        if (self.training and self.first_in_epoch) or (self.moo_scales is None):
+        if self.training and self.first_minibatch_in_epoch:
             unet_output.logit.retain_grad()
 
             # prepare placeholder for plotting
@@ -897,7 +874,7 @@ class InferenceAndGeneration(torch.nn.Module):
                            experiment=self.experiment,
                            prefix="debug/grad_logit_rec")
             plot_hist(x=task_rec_grad,
-                      title="Hist raw logit",
+                      title="Hist grad logit rec",
                       neptune_name="debug/hist_grad_logit_rec",
                       figsize=(12, 12),
                       experiment=self.experiment)
@@ -912,7 +889,7 @@ class InferenceAndGeneration(torch.nn.Module):
                            experiment=self.experiment,
                            prefix="debug/grad_logit_kl")
             plot_hist(x=task_kl_grad,
-                      title="Hist raw logit",
+                      title="Hist grad logit kl",
                       neptune_name="debug/hist_grad_logit_kl",
                       figsize=(12, 12),
                       experiment=self.experiment)
@@ -927,7 +904,7 @@ class InferenceAndGeneration(torch.nn.Module):
                            experiment=self.experiment,
                            prefix="debug/grad_logit_sparsity")
             plot_hist(x=task_sparsity_grad,
-                      title="Hist raw logit",
+                      title="Hist grad logit sparsity",
                       neptune_name="debug/hist_grad_logit_sparsity",
                       figsize=(12, 12),
                       experiment=self.experiment)
@@ -938,9 +915,10 @@ class InferenceAndGeneration(torch.nn.Module):
                                    experiment=self.experiment,
                                    neptune_name="debug/gradient_maps")
 
+            zero_grad(module=self, variable_list=[unet_output.logit])
+
             # compute the coefficients
             # TODO: compute the coefficients based on the entry which are not zero in mse
-
             grad_list = [task_rec_grad.flatten(), task_kl_grad.flatten(), task_sparsity_grad.flatten()]
             tmp_scales, _ = MinNormSolver.find_min_norm_element(vecs=grad_list[:2], verbose=False)
 
@@ -957,9 +935,6 @@ class InferenceAndGeneration(torch.nn.Module):
                 log_dictionary(dictionary=moo_dict,
                                experiment=self.experiment,
                                prefix="debug/moo_scales")
-
-        # TODO: Should I add nobj_in_range?
-        loss_tot = loss_geco + all_logit_in_range + (self.moo_scales * loss_tasks).sum()
 
 
         inference = Inference(logit_grid=unet_output.logit.detach(),
@@ -982,7 +957,6 @@ class InferenceAndGeneration(torch.nn.Module):
         similarity_l, similarity_w = self.grid_dpp.similiraty_kernel.get_l_w()
 
         metric = MetricMiniBatch(loss=loss_tot,
-                                 bottleneck=unet_output.logit,
                                  # monitoring
                                  mse_av=mse_av.detach().item(),
                                  mse_fg_av=mse_fg_av.detach().item(),
@@ -1002,25 +976,18 @@ class InferenceAndGeneration(torch.nn.Module):
                                  kl_zwhere=zwhere_kl_av.detach().item(),
                                  kl_logit=logit_kl_av.detach().item(),
                                  # debug
-                                 logit_min=unet_output.logit.min().detach().item(),
-                                 logit_mean=unet_output.logit.mean().detach().item(),
-                                 logit_max=unet_output.logit.max().detach().item(),
                                  similarity_l=similarity_l.detach().item(),
                                  similarity_w=similarity_w.detach().item(),
                                  iou_boxes=iou_av.detach().item(),
-                                 # TODO: change name to geco_kl
+                                 # related to geco
                                  lambda_annealing=geco_annealing.hyperparam.detach().item(),
                                  lambda_fgfraction_max=geco_fgfraction_max.hyperparam.detach().item(),
                                  lambda_fgfraction_min=geco_fgfraction_min.hyperparam.detach().item(),
                                  lambda_fgfraction=lambda_fgfraction.detach().item(),
-                                 lambda_nobj_max=0.0, #geco_nobj_max.hyperparam.detach().item(),
-                                 lambda_nobj_min=0.0, #geco_nobj_min.hyperparam.detach().item(),
-                                 lambda_nobj=0.0, #lambda_nobj.detach().item(),
                                  lambda_kl_fg=geco_kl_fg.hyperparam.detach().item(),
                                  lambda_kl_bg=geco_kl_bg.hyperparam.detach().item(),
                                  lambda_kl_box=geco_kl_box.hyperparam.detach().item(),
-                                 lambda_kl_logit=0.0, #geco_kl_logit.hyperparam.detach().item(),
-                                 ma_logit_kl=ma_kl_logit.detach().item(),
+                                 lambda_kl_logit=geco_kl_logit.hyperparam.detach().item(),
                                  entropy_ber=entropy_ber.detach().item(),
                                  reinforce_ber=reinforce_ber.detach().item(),
                                  # TODO: remove the running averages

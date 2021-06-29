@@ -948,114 +948,11 @@ def process_one_epoch(model: CompositionalVae,
 
         # Start loop over minibatches
         for counter, (imgs, labels, index) in enumerate(dataloader):
-            model.inference_and_generator.first_in_epoch = (counter == 0)
+            model.inference_and_generator.first_minibatch_in_epoch = (counter == 0)
 
             # Put data in GPU if available
             imgs = imgs.cuda() if (torch.cuda.is_available() and (imgs.device == torch.device('cpu'))) else imgs
 
-
-            if model.training and model.inference_and_generator.multi_objective_optimization:
-                # Preliminary calculation to obtain scales (to scale the different terms in the loss function)
-
-                # TODO: wrap into a function to compute scales
-                # tin = time.time()
-                MOO_metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
-                                                             iom_threshold=iom_threshold,
-                                                             noisy_sampling=noisy_sampling,
-                                                             draw_image=False,
-                                                             draw_bg=False,
-                                                             draw_boxes=False,
-                                                             draw_boxes_ideal=False,
-                                                             backbone_no_grad=True).metrics
-                # print("forward MOO_metrics ->", time.time() - tin)
-
-                # compute the frankwolfe coefficients
-                # multiple backward passes for all losses which are not identically zero
-                grads = {}  # empty dictionary
-                active_task = (MOO_metrics.loss != 0.0)
-                scales = torch.zeros_like(MOO_metrics.loss)
-                cumsum_active_task = torch.cumsum(active_task, dim=0)
-                is_last = (cumsum_active_task == cumsum_active_task[-1]) * active_task
-
-                # Put all the gradients in a dictionary
-                for n, loss_task in enumerate(MOO_metrics.loss):
-                    if active_task[n]:
-                        # tin = time.time()
-                        optimizer.zero_grad()
-                        loss_task.backward(retain_graph=~is_last[n])
-                        # print(n,"backward ->", time.time() - tin)
-
-                        # Copy all the gradients in a list
-                        if model.inference_and_generator.moo_approximation:
-                            tmp = MOO_metrics.bottleneck
-                            if tmp.grad is not None:
-                                grads[n] = tmp.grad.clone().detach().flatten()
-                            tmp.grad.detach_()
-                            tmp.grad.zero_()
-
-
-#                            tmp_grads = []
-#                            for n_index, v in enumerate(MOO_metrics.bottleneck):
-#                                if v.grad is not None:
-#                                    # print("inside inner loop",n_index, v.grad.clone().detach().flatten().pow(2).sum().sqrt())
-#                                    tmp_grads.append(v.grad.clone().detach().flatten())
-#                                    # these two lines act like optimizer.zero_grad()
-#                                    v.grad.detach_()
-#                                    v.grad.zero_()
-#                            grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
-                        else:
-                            tmp_grads = []
-                            for param in model.parameters():
-                                if param.grad is not None:
-                                    tmp_grads.append(param.grad.data.clone().detach().flatten())
-                            grads[n] = torch.cat(tmp_grads, dim=0)  # Long vector with millions of entries
-                    else:
-                        grads[n] = 0.0
-
-                # Frank-Wolfe iteration to compute scales.
-                # Compute the dot products (i.e. the angle between the tensors)
-                active_labels = torch.arange(active_task.shape[0])[active_task]
-                print("active_labels", active_labels, active_labels.shape[0])
-                mean_non_zero_element = []
-                for i, ni in enumerate(active_labels.numpy()):
-                    std, mu = torch.std_mean(grads[ni], unbiased=True)
-                    norm = grads[ni].pow(2).sum().sqrt()
-                    max = grads[ni].abs().max(),
-                    mask_zero = (grads[ni] == 0)
-                    n_non_zero = (~mask_zero).sum()
-                    mean_non_zero = (~mask_zero * grads[ni].abs()).sum() / n_non_zero
-                    mean_non_zero_element.append(mean_non_zero)
-                print("mean_non_zero_element", mean_non_zero_element)
-                    #print("task, std, mu, norm, shape, max, n_non_zero, mean_non_zero",
-                    #      i, std, mu, norm, grads[ni].shape, max, n_non_zero, mean_non_zero)
-
-                #matrix_dot_product_grads = torch.zeros((active_labels.shape[0], active_labels.shape[0]),
-                #                                       dtype=MOO_metrics.loss.dtype,
-                #                                       device=MOO_metrics.loss.device)
-                #for i, ni in enumerate(active_labels.numpy()):
-                #    for j, nj in enumerate(active_labels.numpy()):
-                #        if ni == nj:
-                #            matrix_dot_product_grads[i, i] = torch.sum(grads[ni] * grads[ni])
-                #        elif ni > nj:
-                #            matrix_dot_product_grads[i, j] = torch.sum(grads[ni] * grads[nj])
-                #            matrix_dot_product_grads[j, i] = matrix_dot_product_grads[i, j]
-                #print(matrix_dot_product_grads)
-                #print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
-                del MOO_metrics
-                del grads
-                torch.cuda.empty_cache()
-                #print("GPU GB ->", torch.cuda.memory_allocated() / 1E9)
-
-                # tin = time.time()
-                #tmp_scales_active, _ = MinNormSolver.find_min_norm_element(dot_product_matrix=matrix_dot_product_grads)
-                tmp_scales_active = torch.tensor(mean_non_zero_element).pow(-1.0)  # this is very noisy, use a running average
-                # print("tmp_scales_active", tmp_scales_active)
-                scales[active_task] = tmp_scales_active
-                # print("Franck-Wolfe time ->", time.time() - tin)
-                print("Franck-Wolfe scales ->", scales)
-
-            # In all cases run the model forward with the backbone attached
-            # tin = time.time()
             metrics: MetricMiniBatch = model.forward(imgs_in=imgs,
                                                      iom_threshold=iom_threshold,
                                                      noisy_sampling=noisy_sampling,
@@ -1067,13 +964,8 @@ def process_one_epoch(model: CompositionalVae,
             # print("forward ->", time.time() - tin)
 
             if model.training:
-                loss = torch.sum(metrics.loss * scales) if \
-                    model.inference_and_generator.multi_objective_optimization else metrics.loss
                 optimizer.zero_grad()
-                loss.backward()
-                #logit = metrics.bottleneck
-                #if logit.grad is not None:
-                #    print("logit grad min, max",logit.grad.min(),logit.grad.max())
+                metrics.loss.backward()
                 optimizer.step()
 
             # Here you could print some gradient during test to see what's going on
