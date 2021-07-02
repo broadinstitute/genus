@@ -143,7 +143,7 @@ def optimal_bb(mixing_k1wh: torch.Tensor,
 
 
     # Compute the ideal Bounding boxes
-    mask_kwh = (mixing_k1wh.squeeze(-3) > 0.5).int()
+    mask_kwh = (mixing_k1wh.squeeze(-3) > 0.75).int()
     mask_kh = torch.max(mask_kwh, dim=-2)[0]
     mask_kw = torch.max(mask_kwh, dim=-1)[0]
     mask_k = torch.max(mask_kw, dim=-1)[0]  # 0 if empty, 1 if non-empty
