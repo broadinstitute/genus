@@ -253,7 +253,7 @@ class FiniteDPP(Distribution):
     support = constraints.boolean
     has_rsample = False
 
-    def __init__(self, K=None, L=None, validate_args=None):
+    def __init__(self, K=None, L=None, validate_args: bool=False):
         """
         A Finite DPP can be specified by either by the correlation matrix (K) or the likelihood matrix (L).
         For example:
@@ -282,14 +282,19 @@ class FiniteDPP(Distribution):
         if (K is None) and (L is None):
             raise ValueError("Either `K` or `L` must be specified, but not both.")
 
-        if L is not None:
-            self.L = 0.5 * (L + L.transpose(-1, -2))
-        else:
-            self.K = 0.5 * (K + K.transpose(-1, -2))
+        self.validate_args = validate_args
 
-        self._eigen_L = None
-        self._param = self.L if L is not None else self.K
-        batch_shape, event_shape = self._param.shape[:-2], self._param.shape[-1:]
+        if L is not None:
+            self._eigen_L = None
+            self._K = None
+            self._L = 0.5 * (L + L.transpose(-1, -2))
+            batch_shape, event_shape = self._L.shape[:-2], self._L.shape[-1:]
+        else:
+            self._eigen_L = None
+            self._L = None
+            self._K = 0.5 * (K + K.transpose(-1, -2))
+            batch_shape, event_shape = self._K.shape[:-2], self._K.shape[-1:]
+
         super(FiniteDPP, self).__init__(batch_shape, event_shape, validate_args=validate_args)
 
     def expand(self, batch_shape, _instance=None):
@@ -298,13 +303,8 @@ class FiniteDPP(Distribution):
         kernel_shape = batch_shape + self.event_shape + self.event_shape
         value_shape = batch_shape + self.event_shape
 
-        if 'L' in self.__dict__:
-            new.L = self.L.expand(kernel_shape)
-            new._param = new.L
-        if 'K' in self.__dict__:
-            new.K = self.K.expand(kernel_shape)
-            new._param = new.K
-
+        new._L = None if self._L is None else self._L.expand(kernel_shape)
+        new._K = None if self._K is None else self._K.expand(kernel_shape)
         new._eigen_L = None if self._eigen_L is None else self._eigen_L.expand(value_shape)
 
         super(FiniteDPP, new).__init__(batch_shape, self.event_shape, validate_args=False)
@@ -313,31 +313,50 @@ class FiniteDPP(Distribution):
 
     @lazy_property
     def K(self):
-        u, s_l, v = torch.svd(self.L)
-        s_k = s_l / (1.0 + s_l)
-        self._eigen_L = s_l
-        return torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
+
+        if self._K is not None:
+            return self._K
+
+        else:
+            try:
+                u, s_l, v = torch.svd(self._L)
+            except:
+                # torch.svd may have convergence issues for GPU and CPU.
+                u, s_l, v = torch.svd(self._L + 1e-3 * self._L.mean() * torch.ones_like(self._L))
+
+            s_k = s_l / (1.0 + s_l)
+            self._eigen_L = s_l
+            return torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
 
     @lazy_property
     def L(self):
-        u, s_k, v = torch.svd(self.K)
-        s_l = s_k / (1.0 - s_k)
-        self._eigen_L = s_l
-        return torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
 
-    @property
-    def eigen_L(self):
-        if self._eigen_L is None:
-            if 'L' in self.__dict__:
-                u, s_l, v = torch.svd(self.L)
-                s_k = s_l / (1.0 + s_l)
-                self.K = torch.matmul(u * s_k.unsqueeze(-2), v.transpose(-1, -2))
-            elif 'K' in self.__dict__:
-                u, s_k, v = torch.svd(self.K)
-                s_l = s_k / (1.0 - s_k)
-                self.L = torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
+        if self._L is not None:
+            return self._L
+        else:
+
+            try:
+                u, s_k, v = torch.svd(self._K)
+            except:
+                # torch.svd may have convergence issues for GPU and CPU.
+                u, s_k, v = torch.svd(self._K + 1e-3 * self._K.mean() * torch.ones_like(self._K))
+
+            s_l = s_k / (1.0 - s_k)
             self._eigen_L = s_l
-        return self._eigen_L
+            return torch.matmul(u * s_l.unsqueeze(-2), v.transpose(-1, -2))
+
+    @lazy_property
+    def eigen_L(self):
+        if self._eigen_L is not None:
+            return self._eigen_L
+        elif self._L is None:
+            _ = self.L # this triggers a torch.SVD
+            assert self._eigen_L is not None
+            return self._eigen_L
+        elif self._K is None:
+            _ = self.K # this triggers a torch.SVD
+            assert self._eigen_L is not None
+            return self._eigen_L
 
     @property
     def n_mean(self):
@@ -533,8 +552,8 @@ class Grid_DPP(torch.nn.Module):
         length, weight = self.similiraty_kernel.get_l_w()
         current_figerprint = (length, weight, value.shape[-2], value.shape[-1])
 
-        if (current_figerprint != self.fingerprint) or self.learnable_params:
-            # Need to create connections between similarity parameters and logp_DPP
+        if (current_figerprint != self.fingerprint) or (self.learnable_params and self.training):
+            # Need to create connections between similarity parameters and logp_DPP so that I can backpropagate
             similarity = self.similiraty_kernel.forward(n_width=value.shape[-2], n_height=value.shape[-1])
             self.finite_dpp = FiniteDPP(L=similarity)
             self.fingerprint = current_figerprint
