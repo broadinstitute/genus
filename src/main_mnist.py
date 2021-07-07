@@ -14,6 +14,7 @@ import numpy
 from platform import python_version
 print("python_version() ---> ", python_version())
 print("torch.__version__ --> ", torch.__version__)
+import cugraph
 
 # make sure to fix the randomness at the very beginning
 torch.manual_seed(0)
