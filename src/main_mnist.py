@@ -12,8 +12,6 @@ from genus.util import load_yaml_as_dict, load_obj, file2ckpt, append_to_dict, l
 import torch
 import numpy
 from platform import python_version
-print("python_version() ---> ", python_version())
-print("torch.__version__ --> ", torch.__version__)
 import cugraph
 
 # make sure to fix the randomness at the very beginning
@@ -28,6 +26,10 @@ exp: neptune.run.Run = neptune.init(project=config["neptune_project"],
                                     capture_stderr=True,
                                     capture_hardware_metrics=True)
 exp['config'] = config
+
+print("python_version() -----> ", python_version())
+print("torch.__version__ ----> ", torch.__version__)
+print("cugraph.__version__ --> ", cugraph.__version__)
 
 
 # Get the training and test data
